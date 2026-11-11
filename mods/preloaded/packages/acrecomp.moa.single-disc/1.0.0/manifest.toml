@@ -1,0 +1,25 @@
+format_version = 5
+id = "acrecomp.moa.single-disc"
+version = "1.0.0"
+name = "Master of Arena: Single Disc"
+author = "AC1Recomp"
+description = "Play Master of Arena from one disc. The game's 'insert Disc 1 / Disc 2' prompt is skipped: the game is told the disc it asks for is inserted. The two discs hold identical data apart from their disc id, so nothing else changes. No disc or game data is modified."
+resolver = "declarative"
+save_compatibility = "shared"
+
+[[target]]
+game_id = "SLUS-01030"
+
+[[target]]
+game_id = "SLUS-01081"
+
+[[feature]]
+id = "single-disc"
+name = "Single disc play"
+description = "Skips the disc-swap prompt so either Master of Arena disc plays the whole game. Turn off to get the original swap prompts back."
+group = "Gameplay"
+default_enabled = false
+
+[[plugin]]
+feature = "single-disc"
+id = "moa.single-disc"

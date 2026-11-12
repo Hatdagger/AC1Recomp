@@ -100,7 +100,7 @@ if [ ! -d "\$RUNTIME" ]; then
         if [ -d "\$PREVIOUS/saves" ]; then
             cp -an "\$PREVIOUS/saves/." "\$CARDS/" || true
         fi
-        for dir in mods netplay games/master-of-arena/disc; do
+        for dir in saves mods netplay games/master-of-arena/disc; do
             if [ -d "\$PREVIOUS/\$dir" ]; then
                 mkdir -p "\$TEMP_RUNTIME/\$dir"
                 cp -an "\$PREVIOUS/\$dir/." "\$TEMP_RUNTIME/\$dir/" || true

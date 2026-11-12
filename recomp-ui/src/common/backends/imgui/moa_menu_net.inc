@@ -309,7 +309,74 @@ static void host_room_dialog(LauncherModel* m) {
     m->netplay_host_modal_open = true;
 }
 
+/* ---- recent hosts ----------------------------------------------------------------- */
+
+/* Addresses joined before, newest first, kept beside the other network
+ * settings. They are offered in the room list so a repeat connection is one
+ * press, never a second round of dialling. */
+static const size_t kRecentMax = 4;
+
+static std::string recent_path() { return asset("saves/netplay/recent_hosts.txt"); }
+
+static bool endpoint_ok(const std::string& e) {
+    int a = -1, b = -1, c = -1, d = -1, port = -1;
+    char tail = 0;
+    if (std::sscanf(e.c_str(), "%d.%d.%d.%d:%d%c", &a, &b, &c, &d, &port, &tail) != 5)
+        return false;
+    return a >= 0 && a <= 255 && b >= 0 && b <= 255 && c >= 0 && c <= 255 &&
+           d >= 0 && d <= 255 && port >= 1 && port <= 65535;
+}
+
+static void recent_load() {
+    if (g_state.recent_loaded) return;
+    g_state.recent_loaded = true;
+    g_state.recent.clear();
+    FILE* f = std::fopen(recent_path().c_str(), "rb");
+    if (!f) return;
+    char line[128];
+    while (std::fgets(line, sizeof line, f) && g_state.recent.size() < kRecentMax) {
+        std::string e(line);
+        while (!e.empty() && (e.back() == '\n' || e.back() == '\r' || e.back() == ' '))
+            e.pop_back();
+        if (endpoint_ok(e) &&
+            std::find(g_state.recent.begin(), g_state.recent.end(), e) == g_state.recent.end())
+            g_state.recent.push_back(e);
+    }
+    std::fclose(f);
+}
+
+static void recent_save() {
+    std::error_code ec;
+    const std::filesystem::path file = std::filesystem::u8path(recent_path());
+    std::filesystem::create_directories(file.parent_path(), ec);
+    FILE* f = std::fopen(recent_path().c_str(), "wb");
+    if (!f) return;
+    for (const std::string& e : g_state.recent) std::fprintf(f, "%s\n", e.c_str());
+    std::fclose(f);
+}
+
+static void recent_add(const char* endpoint) {
+    recent_load();
+    const std::string e(endpoint ? endpoint : "");
+    if (!endpoint_ok(e)) return;
+    g_state.recent.erase(std::remove(g_state.recent.begin(), g_state.recent.end(), e),
+                         g_state.recent.end());
+    g_state.recent.insert(g_state.recent.begin(), e);
+    if (g_state.recent.size() > kRecentMax) g_state.recent.resize(kRecentMax);
+    recent_save();
+}
+
+static void recent_forget(const std::string& e) {
+    g_state.recent.erase(std::remove(g_state.recent.begin(), g_state.recent.end(), e),
+                         g_state.recent.end());
+    recent_save();
+}
+
 /* ---- join by address ----------------------------------------------------------- */
+
+/* The address is edited a digit at a time: twelve for the four numbers, five
+ * for the port. No digit is more than five presses from any other. */
+static const int kDirectDigits = 17;
 
 static void direct_open(LauncherModel* m) {
     int a = 0, b = 0, c = 0, d = 0;
@@ -326,12 +393,46 @@ static void direct_open(LauncherModel* m) {
         g_state.direct_ip[i] = ip[i] < 0 ? 0 : ip[i] > 255 ? 255 : ip[i];
     g_state.direct_port = np_valid_port(m->netplay_direct_port)
                               ? std::atoi(m->netplay_direct_port) : 7777;
-    g_state.direct_field = 3;
+    g_state.direct_digit = 9;   /* first digit of the last number */
     g_state.direct = true;
     m->netplay_status[0] = '\0';
 }
 
-static void direct_join(LauncherModel* m) {
+/* Which number a digit belongs to (0-3 address, 4 port) and what it is worth. */
+static int direct_field_of(int digit) { return digit < 12 ? digit / 3 : 4; }
+static int direct_place_of(int digit) {
+    static const int three[3] = { 100, 10, 1 };
+    static const int five[5] = { 10000, 1000, 100, 10, 1 };
+    return digit < 12 ? three[digit % 3] : five[digit - 12];
+}
+static int& direct_value_of(int digit) {
+    const int f = direct_field_of(digit);
+    return f < 4 ? g_state.direct_ip[f] : g_state.direct_port;
+}
+static int direct_digit_get(int digit) {
+    return (direct_value_of(digit) / direct_place_of(digit)) % 10;
+}
+static void direct_digit_put(int digit, int n) {
+    int& v = direct_value_of(digit);
+    const int place = direct_place_of(digit);
+    v += (n - (v / place) % 10) * place;
+    if (direct_field_of(digit) < 4) {
+        if (v > 255) v = 255;
+    } else {
+        if (v > 65535) v = 65535;
+        if (v < 1) v = 1;
+    }
+}
+static void direct_digit_step(int digit, int step) {
+    /* The leading digit of a number only runs as far as the number can go. */
+    const int f = direct_field_of(digit);
+    const int place = direct_place_of(digit);
+    const int span = (f < 4 && place == 100) ? 3 : (f == 4 && place == 10000) ? 7 : 10;
+    const int now = direct_digit_get(digit) % span;
+    direct_digit_put(digit, ((now + step) % span + span) % span);
+}
+
+static void join_address(LauncherModel* m, const char* ip, const char* port) {
     const auto* np = np_cb(m);
     if (!np || !np->join) return;
     if (!launcher_model_netplay_disc_ok(m)) {
@@ -339,15 +440,9 @@ static void direct_join(LauncherModel* m) {
                       disc_complaint(m));
         return;
     }
-    std::snprintf(m->netplay_direct_ip, sizeof m->netplay_direct_ip, "%d.%d.%d.%d",
-                  g_state.direct_ip[0], g_state.direct_ip[1],
-                  g_state.direct_ip[2], g_state.direct_ip[3]);
-    std::snprintf(m->netplay_direct_port, sizeof m->netplay_direct_port, "%d",
-                  g_state.direct_port);
     char lobby_id[96];
     char guest_bind[64];
-    std::snprintf(lobby_id, sizeof lobby_id, "lan:%s:%s", m->netplay_direct_ip,
-                  m->netplay_direct_port);
+    std::snprintf(lobby_id, sizeof lobby_id, "lan:%s:%s", ip, port);
     if (!np_prepare_guest_bind(guest_bind, sizeof guest_bind, m->netplay_status,
                                sizeof m->netplay_status))
         return;
@@ -359,9 +454,11 @@ static void direct_join(LauncherModel* m) {
         m->netplay_lobby_max_slots = np_game_max_players(m, true);
         m->netplay_status[0] = '\0';
         g_state.direct = false;
+        recent_add(lobby_id + 4);
     } else if (rc == -2) {
         std::snprintf(m->netplay_status, sizeof m->netplay_status,
-                      "That room has a password. Use TYPE IT to enter one.");
+                      "That room has a password. Use JOIN BY ADDRESS, then "
+                      "TYPE IT, to enter one.");
     } else if (rc == -3) {
         std::snprintf(m->netplay_status, sizeof m->netplay_status,
                       "No answer from that address. Check that the host has a "
@@ -373,53 +470,69 @@ static void direct_join(LauncherModel* m) {
     }
 }
 
+static void direct_store(LauncherModel* m) {
+    std::snprintf(m->netplay_direct_ip, sizeof m->netplay_direct_ip, "%d.%d.%d.%d",
+                  g_state.direct_ip[0], g_state.direct_ip[1],
+                  g_state.direct_ip[2], g_state.direct_ip[3]);
+    std::snprintf(m->netplay_direct_port, sizeof m->netplay_direct_port, "%d",
+                  g_state.direct_port);
+}
+
+static void direct_join(LauncherModel* m) {
+    direct_store(m);
+    join_address(m, m->netplay_direct_ip, m->netplay_direct_port);
+}
+
 static void draw_net_direct(LauncherModel* m, const Gfx& g, const Input& in) {
-    int& field = g_state.direct_field;
-    if (in.left)  field = (field + 4) % 5;
-    if (in.right) field = (field + 1) % 5;
-    int step = 0;
-    if (in.up) step = 1;
-    if (in.down) step = -1;
-    if (in.page_up) step = 10;
-    if (in.page_down) step = -10;
-    if (step != 0) {
-        if (field < 4) {
-            int& v = g_state.direct_ip[field];
-            v = ((v + step) % 256 + 256) % 256;
-        } else {
-            int& v = g_state.direct_port;
-            v += step * (step == 10 || step == -10 ? 10 : 1);   /* 1 or 100 */
-            if (v < 1) v = 65535;
-            if (v > 65535) v = 1;
+    int& digit = g_state.direct_digit;
+    if (digit < 0 || digit >= kDirectDigits) digit = 9;
+    if (in.left)  digit = (digit + kDirectDigits - 1) % kDirectDigits;
+    if (in.right) digit = (digit + 1) % kDirectDigits;
+    if (in.up)    direct_digit_step(digit, 1);
+    if (in.down)  direct_digit_step(digit, -1);
+    /* Shoulder buttons: the first digit of the next or the previous number. */
+    static const int field_start[5] = { 0, 3, 6, 9, 12 };
+    if (in.page_up)   digit = field_start[(direct_field_of(digit) + 1) % 5];
+    if (in.page_down) digit = field_start[(direct_field_of(digit) + 4) % 5];
+    /* A keyboard types straight in. */
+    if (!ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId |
+                                     ImGuiPopupFlags_AnyPopupLevel)) {
+        for (int n = 0; n < 10; ++n) {
+            if (ImGui::IsKeyPressed((ImGuiKey)(ImGuiKey_0 + n), false) ||
+                ImGui::IsKeyPressed((ImGuiKey)(ImGuiKey_Keypad0 + n), false)) {
+                direct_digit_put(digit, n);
+                digit = (digit + 1) % kDirectDigits;
+                break;
+            }
         }
     }
 
     header(g, "JOIN BY ADDRESS", "LAN PLAY");
     panel(g, 24.0f, 76.0f, 592.0f, 190.0f, "HOST ADDRESS");
     {
-        /* One line of five fields, centred, the chosen one boxed. */
+        /* One line of seventeen digit cells, centred, the chosen one boxed. */
         const float size = 30.0f;
-        char part[5][8];
-        for (int i = 0; i < 4; ++i)
-            std::snprintf(part[i], sizeof part[i], "%03d", g_state.direct_ip[i]);
-        std::snprintf(part[4], sizeof part[4], "%d", g_state.direct_port);
-        const float dot_w = text_width(g, size, " . ");
-        const float colon_w = text_width(g, size, " : ");
-        float total = dot_w * 3.0f + colon_w;
-        for (int i = 0; i < 5; ++i) total += text_width(g, size, part[i]);
-        float x = (kW - total) * 0.5f;
+        float cell = 0.0f;
+        for (char c = '0'; c <= '9'; ++c) {
+            const char one[2] = { c, 0 };
+            cell = std::max(cell, text_width(g, size, one));
+        }
+        cell += 5.0f;
+        const float dot_w = text_width(g, size, ".") + 10.0f;
+        const float colon_w = text_width(g, size, ":") + 16.0f;
+        float x = (kW - (cell * kDirectDigits + dot_w * 3.0f + colon_w)) * 0.5f;
         const float y = 140.0f;
-        for (int i = 0; i < 5; ++i) {
-            const float w = text_width(g, size, part[i]);
-            const bool sel = i == field;
-            const ImVec2 a = at(g, x - 6.0f, y - 6.0f), b = at(g, x + w + 6.0f, y + size + 6.0f);
+        for (int i = 0; i < kDirectDigits; ++i) {
+            const bool sel = i == digit;
+            const char one[2] = { (char)('0' + direct_digit_get(i)), 0 };
+            const ImVec2 a = at(g, x, y - 6.0f), b = at(g, x + cell, y + size + 6.0f);
             if (ImGui::IsMouseHoveringRect(a, b, false) &&
                 ImGui::IsMouseClicked(ImGuiMouseButton_Left))
-                field = i;
+                digit = i;
             if (sel) {
                 g.dl->AddRectFilled(a, b, IM_COL32(240, 160, 32, 50));
                 g.dl->AddRect(a, b, kHi);
-                const float cx = x + w * 0.5f;
+                const float cx = x + cell * 0.5f;
                 g.dl->AddTriangleFilled(at(g, cx - 6.0f, y - 12.0f),
                                         at(g, cx + 6.0f, y - 12.0f),
                                         at(g, cx, y - 20.0f), kHi);
@@ -427,10 +540,18 @@ static void draw_net_direct(LauncherModel* m, const Gfx& g, const Input& in) {
                                         at(g, cx + 6.0f, y + size + 12.0f),
                                         at(g, cx, y + size + 20.0f), kHi);
             }
-            text(g, x, y, size, sel ? kBright : kText, part[i]);
-            x += w;
-            if (i < 3) { text(g, x, y, size, kDim, " . "); x += dot_w; }
-            else if (i == 3) { text(g, x, y, size, kDim, " : "); x += colon_w; }
+            /* The other digits of the number being edited stay lit. */
+            const bool same = direct_field_of(i) == direct_field_of(digit);
+            text(g, x + (cell - text_width(g, size, one)) * 0.5f, y, size,
+                 sel ? kBright : same ? kText : kDim, one);
+            x += cell;
+            if (i == 2 || i == 5 || i == 8) {
+                text(g, x + 5.0f, y, size, kDim, ".");
+                x += dot_w;
+            } else if (i == 11) {
+                text(g, x + 8.0f, y, size, kDim, ":");
+                x += colon_w;
+            }
         }
         text(g, 44.0f, 232.0f, 10.0f, kDim, "ADDRESS");
         text_right(g, 596.0f, 232.0f, 10.0f, kDim, "PORT");
@@ -438,9 +559,10 @@ static void draw_net_direct(LauncherModel* m, const Gfx& g, const Input& in) {
 
     panel(g, 24.0f, 282.0f, 592.0f, 134.0f, "INFO");
     text(g, 38.0f, 298.0f, 11.0f, kText,
-         "Enter the address shown on the host's room screen. Left and right "
-         "choose a number, up and down change it, and the shoulder buttons "
-         "change it faster. The host must already have a room open.", 564.0f);
+         "Enter the address shown on the host's room screen, one digit at a "
+         "time. Left and right choose a digit, up and down change it, and the "
+         "shoulder buttons jump to the next number. The address is remembered "
+         "once you have joined.", 564.0f);
     if (address_usable(m->netplay_host_ip)) {
         char buf[96];
         std::snprintf(buf, sizeof buf, "THIS MACHINE  %s", m->netplay_host_ip);
@@ -449,17 +571,13 @@ static void draw_net_direct(LauncherModel* m, const Gfx& g, const Input& in) {
     if (m->netplay_status[0])
         text(g, 38.0f, 370.0f, 11.0f, kWarn, m->netplay_status, 564.0f);
 
-    footer(g, "A  CONNECT      D-PAD  SET      LB / RB  FASTER      X  TYPE IT      B  BACK");
+    footer(g, "A  CONNECT      D-PAD  SET      LB / RB  NEXT NUMBER      X  TYPE IT      B  BACK");
 
     if (in.confirm || in.start) {
         direct_join(m);
     } else if (in.alt) {
         /* The stock dialog: a keyboard, and room for a password. */
-        std::snprintf(m->netplay_direct_ip, sizeof m->netplay_direct_ip,
-                      "%d.%d.%d.%d", g_state.direct_ip[0], g_state.direct_ip[1],
-                      g_state.direct_ip[2], g_state.direct_ip[3]);
-        std::snprintf(m->netplay_direct_port, sizeof m->netplay_direct_port, "%d",
-                      g_state.direct_port);
+        direct_store(m);
         m->netplay_password[0] = '\0';
         m->netplay_status[0] = '\0';
         m->netplay_direct_modal_open = true;
@@ -515,7 +633,22 @@ static void draw_net_rooms(LauncherModel* m, const Gfx& g, const Input& in) {
         }
     }
 
-    /* One cursor: HOST A ROOM, the rooms, then the fixed rows. */
+    /* Addresses joined before, for LAN play, unless the room is already in
+     * the list under its own name. */
+    std::vector<std::string> recents;
+    if (lan) {
+        recent_load();
+        for (const std::string& e : g_state.recent) {
+            bool listed = false;
+            for (const RecompLauncherCNetplayLobby& r : rooms)
+                if (std::strncmp(r.lobby_id, "lan:", 4) == 0 && e == r.lobby_id + 4)
+                    listed = true;
+            if (!listed) recents.push_back(e);
+        }
+    }
+
+    /* One cursor: HOST A ROOM, the rooms, the recent addresses, then the
+     * fixed rows. */
     enum Extra { EX_DIRECT = 0, EX_OPTIONS, EX_CLASSIC, EX__COUNT };
     int extras[EX__COUNT];
     int ne = 0;
@@ -523,7 +656,8 @@ static void draw_net_rooms(LauncherModel* m, const Gfx& g, const Input& in) {
     extras[ne++] = EX_OPTIONS;
     extras[ne++] = EX_CLASSIC;
     const int nr = (int)rooms.size();
-    const int nl = 1 + nr;
+    const int nq = (int)recents.size();
+    const int nl = 1 + nr + nq;
     const int count = nl + ne;
     const int visible = 7;
     {
@@ -553,6 +687,9 @@ static void draw_net_rooms(LauncherModel* m, const Gfx& g, const Input& in) {
         char value[32] = ">";
         if (i == 0) {
             label = "HOST A ROOM";
+        } else if (i > nr) {
+            label = recents[i - 1 - nr];
+            std::snprintf(value, sizeof value, "RECENT >");
         } else {
             const RecompLauncherCNetplayLobby& r = rooms[i - 1];
             label = upper(r.name[0] ? r.name : "Unnamed room");
@@ -565,8 +702,8 @@ static void draw_net_rooms(LauncherModel* m, const Gfx& g, const Input& in) {
             clicked = i;
         if (hover_moved(hovered)) cur = i;
     }
-    if (nr == 0)
-        text(g, 55.0f, 122.0f, 11.0f, kDim,
+    if (nr == 0 && nq < 6)
+        text(g, 55.0f, 96.0f + kRowH * (1 + nq), 11.0f, kDim,
              !lan && !online ? (connecting ? "CONNECTING TO THE LOBBY SERVER"
                                            : "NOT CONNECTED")
                              : std::fmod(now, 1.6) < 0.8 ? "SEARCHING FOR ROOMS"
@@ -594,6 +731,12 @@ static void draw_net_rooms(LauncherModel* m, const Gfx& g, const Input& in) {
                    "their list within a few seconds. You are player 1."
                  : "Open a room on the lobby server for another pilot to "
                    "join. You are player 1.", 208.0f);
+    } else if (cur > nr && cur < nl) {
+        text(g, 394.0f, 92.0f, 11.0f, kHi, "RECENT ADDRESS");
+        text(g, 394.0f, 114.0f, 11.0f, kBright, recents[cur - 1 - nr].c_str());
+        text(g, 394.0f, 140.0f, 11.0f, kText,
+             "A host you have joined before. Connects straight to it; the "
+             "host must have a room open.", 208.0f);
     } else if (cur < nl) {
         const RecompLauncherCNetplayLobby& r = rooms[cur - 1];
         char buf[96];
@@ -652,20 +795,31 @@ static void draw_net_rooms(LauncherModel* m, const Gfx& g, const Input& in) {
             text(g, 394.0f, 396.0f, 10.0f, kDim, buf);
         }
     }
-    footer(g, "A / ENTER  SELECT      X  REFRESH      B / ESC  BACK");
+    const bool on_recent = cur > nr && cur < nl;
+    footer(g, on_recent ? "A / ENTER  CONNECT      X  FORGET      B / ESC  BACK"
+                        : "A / ENTER  SELECT      X  REFRESH      B / ESC  BACK");
 
     if (clicked >= 0) cur = clicked;
     if (in.confirm || clicked >= 0) {
         if (cur == 0) {
             host_room(m);
+        } else if (cur > nr && cur < nl) {
+            const std::string e = recents[cur - 1 - nr];
+            const size_t colon = e.rfind(':');
+            join_address(m, e.substr(0, colon).c_str(), e.substr(colon + 1).c_str());
         } else if (cur < nl) {
             if (!disc) {
                 std::snprintf(m->netplay_status, sizeof m->netplay_status, "%s",
                               disc_complaint(m));
             } else {
+                const RecompLauncherCNetplayLobby& r = rooms[cur - 1];
                 m->netplay_selected_lobby = room_index[cur - 1];
                 m->netplay_status[0] = '\0';
                 np_join_selected(m);
+                /* Joined a room on this network: remember where it was. */
+                if (std::strncmp(r.lobby_id, "lan:", 4) == 0 && m->netplay_local_room &&
+                    std::strcmp(m->netplay_host_endpoint, r.lobby_id + 4) == 0)
+                    recent_add(r.lobby_id + 4);
             }
         } else {
             switch (extras[cur - nl]) {
@@ -674,6 +828,9 @@ static void draw_net_rooms(LauncherModel* m, const Gfx& g, const Input& in) {
                 default:         g_state.classic_net = true; break;
             }
         }
+    } else if (in.alt && on_recent) {
+        recent_forget(recents[cur - 1 - nr]);
+        note("FORGOTTEN");
     } else if (in.alt) {
         np_refresh_lobby_list(m);
         g_state.next_list = now + 2.0;

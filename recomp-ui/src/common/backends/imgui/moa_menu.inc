@@ -37,7 +37,9 @@ struct State {
     bool   direct = false;             /* the join-by-address editor is up */
     int    direct_ip[4] = {192, 168, 1, 1};
     int    direct_port = 7777;
-    int    direct_field = 3;
+    int    direct_digit = 9;           /* which of its 17 digits is chosen */
+    bool   recent_loaded = false;
+    std::vector<std::string> recent;   /* addresses joined before, newest first */
     int    last_view = -1;
     double next_scan = 0.0;
     std::vector<std::string> new_packages;   /* files waiting in mods/new */

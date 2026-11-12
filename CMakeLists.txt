@@ -121,10 +121,16 @@ if(TARGET psx-master-of-arena)
         # Netplay never writes a player's own card: the host's slot 1 is a
         # match-only file as well (the guest's cards already are).
         PSX_NET_HOST_TEMP_CARD=1
-        # The title menu offers split-screen "VS Mode" only when the link
-        # port reports no partner (status bit 7 set); otherwise it shows
-        # "VS Mode (Link)". The port is not emulated, so report it idle.
-        PSX_SIO1_IDLE_STAT=0x0080)
+        # The serial (link cable) port is not emulated; pin its status word.
+        # Bit 7: the title menu then offers "VS Mode" (the versus setup with
+        # both players' garages) instead of "VS Mode (Link)". Bit 8: the link
+        # engine's "partner present" poll passes at once (the netplay match
+        # runs that engine with the cable replaced, see moa_link_netplay.c).
+        # Bits 0 and 2: transmitter idle.
+        PSX_SIO1_IDLE_STAT=0x0185)
+    # Netplay runs the link versus engine in place of the cable.
+    target_sources(psx-master-of-arena PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_link_netplay.c")
 endif()
 
 # Hub launcher: game picker, per-game disc and shared settings.

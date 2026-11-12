@@ -13176,10 +13176,10 @@ static void draw_setup_disc_frame(LauncherModel* m, const LauncherTheme& th,
     const int ready = launcher_model_discs_ready_count(m);
 
     ImGui::AlignTextToFramePadding();
-    ImGui::TextColored(col(ready >= count ? th.good : th.warn),
+    ImGui::TextColored(col(ready >= 1 ? th.good : th.warn),
                        "%d of %d located", ready, count);
     ImGui::SameLine();
-    ImGui::TextColored(col(th.text_muted), "- all discs are required.");
+    ImGui::TextColored(col(th.text_muted), "- either disc is enough.");
     ImGui::SameLine();
     setup_help_marker(th, long_note);
 

@@ -24,6 +24,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #define MOA_MODE_BYTE      0x8003EA2Au  /* engine the exe launches next */
 #define MOA_LINK           0x80043C70u
@@ -156,6 +157,7 @@ static void moa_link_wait_entry(struct CPUState *cpu, uint32_t address)
 #define MOA_LINK_SOUND_PLAY 0x80053498u  /* start a sound effect */
 #define MOA_LINK_CAMERA    0x80088988u
 #define MOA_LINK_RENDER    0x80067FE4u
+#define MOA_LINK_CAMERA_SET 0x80053280u
 #define MOA_ELAPSED        0x80016724u  /* exe: hblank ticks since a0 */
 #define MOA_RA_RENDER      0x8005291Cu
 #define MOA_RA_NESTED      0x80052924u
@@ -212,6 +214,9 @@ static int moa_draw_guest_view(struct CPUState *cpu, void *user,
     if (moa_camera_valid) moa_camera_copy(moa_camera, 1);
     (void)moa_call(&call, MOA_LINK_CAMERA, camera);
     moa_camera_copy(moa_camera_next, 0);
+    /* The main loop records each frame's camera (position and heading) after
+     * drawing it; the HUD compass reads that record. Record this view's. */
+    (void)moa_call(&call, MOA_LINK_CAMERA_SET, camera);
     /* The render's frame end waits out the frame time; make the frame look
      * old enough. Its two sound routines are skipped (moa_link_sound_filter). */
     const uint32_t now = moa_call(&call, MOA_ELAPSED, 0);
@@ -297,6 +302,18 @@ static void moa_link_render_entry(struct CPUState *cpu, uint32_t address)
 
 PSX_MOD_CONSTRUCTOR(moa_link_netplay_register)
 {
+    /* The framework drops a peer's own view when the newest remote input is
+     * 4 or more ticks further ahead than the input delay, and brings it back
+     * only within 1. A healthy LAN match of this game sits 2-3 ahead and
+     * touches 4, so the guest lost its view for good. The view is the point
+     * of the mode here: keep it unless the player overrides the switch. */
+    if (!getenv("PSX_NET_LOCAL_VIEW_SHED")) {
+#ifdef _WIN32
+        (void)_putenv_s("PSX_NET_LOCAL_VIEW_SHED", "0");
+#else
+        (void)setenv("PSX_NET_LOCAL_VIEW_SHED", "0", 0);
+#endif
+    }
     (void)psx_game_register_netplay_function_entry(
         MOA_MENU_VERSUS, moa_menu_versus_entry);
     (void)psx_game_register_netplay_function_entry(

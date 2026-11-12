@@ -99,7 +99,7 @@ jobs:
       - name: Build recompiler tools
         run: |
           set -euo pipefail
-          psxrecomp/tools/ci/build_emitters.sh --framework psxrecomp --build-dir build-recompiler
+          scripts/build_recompiler_tools.sh "$PWD/build-recompiler"
           ls -la build-recompiler | head -30
 
       - name: Cache compiler bundle downloads
@@ -189,7 +189,7 @@ jobs:
       - name: Build recompiler tools
         run: |
           set -euo pipefail
-          psxrecomp/tools/ci/build_emitters.sh --framework psxrecomp --build-dir build-recompiler
+          scripts/build_recompiler_tools.sh "$PWD/build-recompiler"
           ls -la build-recompiler | head -30
 
       - name: Cache compiler bundle downloads

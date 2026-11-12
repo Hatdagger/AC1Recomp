@@ -33,6 +33,7 @@
  * of the previous frame (the cable delivered pads one frame late, and the
  * local player is delayed by one frame to match). */
 #define MOA_REMOTE_PAD     (MOA_LINK + 948u)
+#define MOA_CLOSED_FD      15u
 
 #define MOA_MENU_VERSUS    0x800B0CB4u  /* menu: split-screen versus setup */
 #define MOA_LINK_WAIT      0x80051F3Cu  /* link engine: wait for a packet */
@@ -73,6 +74,14 @@ static void moa_link_roles_entry(struct CPUState *cpu, uint32_t address)
     if (!moa_link_engine_loaded()) return;
     psx_mod_write_byte(MOA_ROLE_MASTER, 1);
     psx_mod_write_byte(MOA_ROLE_DECIDED, 1);
+    /* The engine still calls read() and write() on its two "sio:" handles.
+     * The serial driver's write waits for the other console to acknowledge
+     * each packet on the DSR line and gives up after 300 ticks, which ends
+     * the match. Point both handles at a file slot that is never open: the
+     * BIOS then rejects the calls at once and the driver never runs. This is
+     * the first link code of a match, before any packet. */
+    psx_mod_write_word(MOA_LINK + 924u, MOA_CLOSED_FD);
+    psx_mod_write_word(MOA_LINK + 928u, MOA_CLOSED_FD);
     psx_mod_counter_add("moa.link.roles", 1);
 }
 

@@ -151,7 +151,9 @@ static void moa_link_wait_entry(struct CPUState *cpu, uint32_t address)
 #define MOA_GFX            0x8019D4F0u  /* +0 buffer index, +4 two 128-byte
                                          * buffer records (+4 DRAWENV) */
 #define MOA_GFX_FRAME_TIME (MOA_GFX + 25928u)
-#define MOA_SOUND_QUEUE    0x80044428u  /* 23 records of 16 bytes */
+#define MOA_LINK_SOUND_BEGIN 0x80053FE4u /* frame begin: reverb/voice upkeep */
+#define MOA_LINK_SOUND_END  0x80053808u  /* frame end: queued sounds */
+#define MOA_LINK_SOUND_PLAY 0x80053498u  /* start a sound effect */
 #define MOA_LINK_CAMERA    0x80088988u
 #define MOA_LINK_RENDER    0x80067FE4u
 #define MOA_ELAPSED        0x80016724u  /* exe: hblank ticks since a0 */
@@ -210,11 +212,8 @@ static int moa_draw_guest_view(struct CPUState *cpu, void *user,
     if (moa_camera_valid) moa_camera_copy(moa_camera, 1);
     (void)moa_call(&call, MOA_LINK_CAMERA, camera);
     moa_camera_copy(moa_camera_next, 0);
-    /* The render's frame end plays queued sounds and waits out the frame
-     * time. The real frame does both; here, drop the queue and make the
-     * frame look old enough. */
-    for (unsigned i = 0; i < 23u; i++)
-        psx_mod_write_half(MOA_SOUND_QUEUE + 16u * i, 0);
+    /* The render's frame end waits out the frame time; make the frame look
+     * old enough. Its two sound routines are skipped (moa_link_sound_filter). */
     const uint32_t now = moa_call(&call, MOA_ELAPSED, 0);
     psx_mod_write_word(MOA_GFX_FRAME_TIME, (now - 800u) & 0xFFFFu);
     /* The render starts by switching to the other buffer: start from the
@@ -222,6 +221,17 @@ static int moa_draw_guest_view(struct CPUState *cpu, void *user,
     psx_mod_write_word(MOA_GFX, psx_mod_read_word(MOA_GFX) ^ 1u);
     (void)moa_call(&call, MOA_LINK_RENDER, camera);
     return !call.broken;
+}
+
+/* The scene render's sound upkeep reads the sound chip, which the sandbox
+ * does not allow (and the real frame already did it). Skip them
+ * while the guest's view is drawn; they run untouched in the simulation. */
+static int moa_link_sound_filter(struct CPUState *cpu, uint32_t address)
+{
+    (void)address;
+    if (!moa_in_view) return 0;
+    cpu->gpr[2] = 0;
+    return 1;
 }
 
 static void moa_link_render_entry(struct CPUState *cpu, uint32_t address)
@@ -297,4 +307,10 @@ PSX_MOD_CONSTRUCTOR(moa_link_netplay_register)
         MOA_LINK_WAIT, moa_link_wait_entry);
     (void)psx_game_register_netplay_function_entry(
         MOA_LINK_RENDER, moa_link_render_entry);
+    (void)psx_game_register_netplay_function_filter(
+        MOA_LINK_SOUND_BEGIN, moa_link_sound_filter);
+    (void)psx_game_register_netplay_function_filter(
+        MOA_LINK_SOUND_END, moa_link_sound_filter);
+    (void)psx_game_register_netplay_function_filter(
+        MOA_LINK_SOUND_PLAY, moa_link_sound_filter);
 }

@@ -59,6 +59,23 @@ cp psxrecomp/LICENSE "${PAYLOAD}/licenses/psxrecomp-LICENSE.txt"
 cp psxrecomp/THIRD_PARTY_ATTRIBUTION.md "${PAYLOAD}/licenses/THIRD_PARTY_ATTRIBUTION.md"
 cp recomp-ui/LICENSE "${PAYLOAD}/licenses/recomp-ui-LICENSE.txt"
 
+# The compiler bundle: lets the game turn the code it loads from the disc into
+# native code on the player's machine, in the background, as areas are visited.
+# Without it that code stays in the interpreter (slow on a handheld). Needs the
+# recompiler tools built (psxrecomp/tools/ci/build_emitters.sh); set
+# MOA_RECOMP_DIR to their build folder.
+if [[ -n "${MOA_RECOMP_DIR:-}" ]]; then
+  python3 psxrecomp/tools/release_stage.py stage-toolchain \
+    --stage "${PAYLOAD}" \
+    --recomp-dir "${MOA_RECOMP_DIR}" \
+    --recomp-tools psxrecomp/tools \
+    --recomp-include psxrecomp/runtime/include \
+    --dl-cache "${MOA_DL_CACHE:-${ROOT}/.cache/toolchain-dl}" \
+    --platform linux
+else
+  echo "note: MOA_RECOMP_DIR not set; packaging without the compiler bundle" >&2
+fi
+
 TEMP="$(mktemp -d "${TMPDIR:-/tmp}/moa-appimage.XXXXXXXX")"
 trap 'rm -rf "${TEMP}"' EXIT
 
@@ -100,7 +117,11 @@ if [ ! -d "\$RUNTIME" ]; then
         if [ -d "\$PREVIOUS/saves" ]; then
             cp -an "\$PREVIOUS/saves/." "\$CARDS/" || true
         fi
-        for dir in saves mods netplay games/master-of-arena/disc; do
+        # Code already compiled from the disc, and the record of what was seen.
+        if [ -f "\$PREVIOUS/overlay_captures.json" ]; then
+            cp -a "\$PREVIOUS/overlay_captures.json" "\$TEMP_RUNTIME/overlay_captures.json"
+        fi
+        for dir in saves mods netplay cache games/master-of-arena/disc; do
             if [ -d "\$PREVIOUS/\$dir" ]; then
                 mkdir -p "\$TEMP_RUNTIME/\$dir"
                 cp -an "\$PREVIOUS/\$dir/." "\$TEMP_RUNTIME/\$dir/" || true

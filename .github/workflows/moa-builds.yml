@@ -96,10 +96,22 @@ jobs:
           cmake --build build-ci --target psx-master-of-arena -j"$(nproc)"
           ls -la build-ci | head -60
 
+      - name: Build recompiler tools
+        run: |
+          set -euo pipefail
+          psxrecomp/tools/ci/build_emitters.sh --framework psxrecomp --build-dir build-recompiler
+          ls -la build-recompiler | head -30
+
+      - name: Cache compiler bundle downloads
+        uses: actions/cache@v4
+        with:
+          path: .cache/toolchain-dl
+          key: moa-toolchain-dl-linux-v1
+
       - name: Wrap as AppImage
         run: |
           set -euo pipefail
-          SKIP_BUILD=1 scripts/build_appimage_moa.sh build-ci
+          MOA_RECOMP_DIR="$PWD/build-recompiler" SKIP_BUILD=1 scripts/build_appimage_moa.sh build-ci
           ls -la dist/
           sha256sum dist/*.AppImage
 
@@ -136,6 +148,7 @@ jobs:
             mingw-w64-x86_64-pkgconf
             mingw-w64-x86_64-vulkan-headers
             mingw-w64-x86_64-shaderc
+            mingw-w64-x86_64-python
             curl
             zip
             unzip
@@ -173,18 +186,32 @@ jobs:
           cmake --build build-ci --target psx-master-of-arena -j"$(nproc)"
           cmake --build build-ci --target psx-moa-shell -j"$(nproc)"
 
+      - name: Build recompiler tools
+        run: |
+          set -euo pipefail
+          psxrecomp/tools/ci/build_emitters.sh --framework psxrecomp --build-dir build-recompiler
+          ls -la build-recompiler | head -30
+
+      - name: Cache compiler bundle downloads
+        uses: actions/cache@v4
+        with:
+          path: .cache/toolchain-dl
+          key: moa-toolchain-dl-win-v1
+
       - name: Lay out the release folder
         run: |
           set -euo pipefail
-          scripts/package_moa_windows.sh build-ci "dist/Armored Core Moa"
+          MOA_RECOMP_DIR="$PWD/build-recompiler" MOA_MINGW_BIN=/mingw64/bin \
+          PSX_RELEASE_STAGE_PYTHON=/mingw64/bin/python3 \
+            scripts/package_moa_windows.sh build-ci "dist/Armored Core Moa"
           echo "--- imports"
           objdump -p "dist/Armored Core Moa/RecompData/ArmoredCoreMasterOfArena.exe" | grep "DLL Name" | sort -u
           objdump -p "dist/Armored Core Moa/Armored Core Moa.exe" | grep "DLL Name" | sort -u
           echo "--- layout"
           (cd dist && find "Armored Core Moa" -maxdepth 3 | sort | head -120)
           # Nothing of the player's or of the build may ship.
-          if find "dist/Armored Core Moa" -type f \( -iname '*.cue' -o -iname '*.chd' -o -iname '*.iso' \
-               -o -iname '*.mcd' -o -iname '*.mcr' -o -iname '*.c' -o -iname 'CMakeCache.txt' \) | grep -q .; then
+          if find "dist/Armored Core Moa" -path '*/overlay_toolchain' -prune -o -type f \( -iname '*.cue' -o -iname '*.chd' -o -iname '*.iso' \
+               -o -iname '*.mcd' -o -iname '*.mcr' -o -iname '*.c' -o -iname 'CMakeCache.txt' \) -print | grep -q .; then
             echo "::error::the release folder contains a disc image, memory card or build file"
             exit 1
           fi

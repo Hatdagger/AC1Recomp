@@ -106,6 +106,18 @@ if [[ -d "${BUILD}/mods" ]]; then
   (cd "${BUILD}/mods" && tar -cf - .) | (cd "${OUT}/Mods" && tar -xf -)
 fi
 
+# The compiler bundle (see scripts/build_appimage_moa.sh): set MOA_RECOMP_DIR
+# to the built recompiler tools to include it.
+if [[ -n "${MOA_RECOMP_DIR:-}" ]]; then
+  "${PSX_RELEASE_STAGE_PYTHON:-python3}" "${ROOT}/psxrecomp/tools/release_stage.py" stage-toolchain \
+    --stage "${DATA}" \
+    --recomp-dir "${MOA_RECOMP_DIR}" \
+    --recomp-tools "${ROOT}/psxrecomp/tools" \
+    --recomp-include "${ROOT}/psxrecomp/runtime/include" \
+    --dl-cache "${MOA_DL_CACHE:-${ROOT}/.cache/toolchain-dl}" \
+    --platform win ${MOA_MINGW_BIN:+--mingw-bin "${MOA_MINGW_BIN}"}
+fi
+
 mkdir -p "${DATA}/licenses"
 cp "${ROOT}/psxrecomp/LICENSE" "${DATA}/licenses/psxrecomp-LICENSE.txt"
 cp "${ROOT}/psxrecomp/THIRD_PARTY_ATTRIBUTION.md" "${DATA}/licenses/THIRD_PARTY_ATTRIBUTION.md"

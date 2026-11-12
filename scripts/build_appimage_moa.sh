@@ -140,7 +140,11 @@ if [ -n "\${APPIMAGE:-}" ]; then
 fi
 export LD_LIBRARY_PATH="\$APPDIR/usr/lib\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
 unset APPIMAGE
-exec "\$RUNTIME/\$APP_EXE" --memcard-dir "\$CARDS" "\$@"
+# Keep the game's own text output from this run and the one before it, so a
+# problem can be reported by sending a file instead of starting from a terminal.
+LOG="\$DATA_ROOT/last_run.log"
+if [ -f "\$LOG" ]; then mv -f "\$LOG" "\$DATA_ROOT/previous_run.log" 2>/dev/null || true; fi
+exec "\$RUNTIME/\$APP_EXE" --memcard-dir "\$CARDS" "\$@" >"\$LOG" 2>&1
 EOF
 chmod 0755 "${TEMP}/AppRun"
 cat >"${TEMP}/armored-core-moa.desktop" <<'EOF'

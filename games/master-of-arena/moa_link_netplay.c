@@ -23,6 +23,7 @@
 #include "psx_netplay.h"
 
 #include <stdint.h>
+#include <stdio.h>
 
 #define MOA_MODE_BYTE      0x8003EA2Au  /* engine the exe launches next */
 #define MOA_LINK           0x80043C70u
@@ -230,9 +231,22 @@ static void moa_link_render_entry(struct CPUState *cpu, uint32_t address)
     if (!moa_link_engine_loaded() ||
         !moa_code_is(MOA_LINK_RENDER, 0x27BDFF98u, 0xAFB20060u))
         return;
+    /* A few bounded lines on stderr (as the framework does for its own pass
+     * faults) so a player's captured output shows why the own view is off. */
+    static unsigned said_slot, said_status, said_failed, said_ok;
+    if (!said_slot) {
+        said_slot = 1;
+        fprintf(stderr, "moa link: scene render hook reached; local slot %d of %d\n",
+                psx_netplay_local_slot(), psx_netplay_seat_count());
+    }
     if (psx_netplay_local_slot() != 1) return; /* the host's view is the frame */
     if (psx_mod_render_local_view_status() != PSX_MOD_RENDER_PASS_READY) {
         psx_mod_counter_add("moa.link.guest_view_unavailable", 1);
+        if (said_status < 4u) {
+            said_status++;
+            fprintf(stderr, "moa link: own view unavailable, status %u\n",
+                    (unsigned)psx_mod_render_local_view_status());
+        }
         return;
     }
     const uint32_t index = psx_mod_read_word(MOA_GFX) & 1u;
@@ -252,8 +266,22 @@ static void moa_link_render_entry(struct CPUState *cpu, uint32_t address)
             moa_camera[i] = moa_camera_next[i];
         moa_camera_valid = 1;
         psx_mod_counter_add("moa.link.guest_view", 1);
+        if (!said_ok) {
+            said_ok = 1;
+            fprintf(stderr, "moa link: own view drawn, rect %u,%u %ux%u\n",
+                    (unsigned)rect.x, (unsigned)rect.y, (unsigned)rect.w,
+                    (unsigned)rect.h);
+        }
     } else {
         psx_mod_counter_add("moa.link.guest_view_failed", 1);
+        if (said_failed < 4u) {
+            said_failed++;
+            fprintf(stderr, "moa link: own view refused or rolled back, "
+                    "status %u, rect %u,%u %ux%u\n",
+                    (unsigned)psx_mod_render_local_view_status(),
+                    (unsigned)rect.x, (unsigned)rect.y, (unsigned)rect.w,
+                    (unsigned)rect.h);
+        }
     }
 }
 

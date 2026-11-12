@@ -22016,12 +22016,10 @@ soft_return_lobby:
             {
                 PSXRecompV4::HostLaunchTimingScope timing(HOST_LAUNCH_RUNTIME_COMMIT);
                 if (dual_analog_buttons_offered) {
+                    /* Settings were already saved by the launcher-exit block
+                     * above; only the live values are refreshed here. */
                     dual_analog_buttons = ls.dual_analog_buttons != 0;
-                    us.dual_analog_buttons = dual_analog_buttons != 0;
-                    us.has_dual_analog_buttons = true;
                     dual_analog_duplicate_face = ls.dual_analog_duplicate_face != 0;
-                    us.dual_analog_duplicate_face = dual_analog_duplicate_face != 0;
-                    us.has_dual_analog_duplicate_face = true;
                 }
                 std::string mod_error;
                 if (net_cfg.enabled) {

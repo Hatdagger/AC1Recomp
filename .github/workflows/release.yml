@@ -160,7 +160,9 @@ jobs:
 
       # The release is built from COMMITTED C. Fail here, at the top, when a
       # title's generated game C is absent or untracked, or when a disc image
-      # or BIOS dump is tracked.
+      # or BIOS dump is tracked. (This fork carries psxrecomp as plain files,
+      # so its SCPH*.toml / seed .json descriptions are tracked too; only a
+      # SCPH*.bin dump counts.)
       - name: Verify committed game C
         shell: bash
         run: |
@@ -179,9 +181,9 @@ jobs:
               exit 1
             fi
           done
-          if git ls-files | grep -iE '\.(cue|iso|img|chd|mcd|mcr)$|(^|/)SCPH' | grep -q .; then
+          if git ls-files | grep -iE '\.(cue|iso|img|chd|mcd|mcr)$|(^|/)SCPH[^/]*\.bin$' | grep -q .; then
             echo "::error::a disc image, memory card or BIOS dump is tracked:"
-            git ls-files | grep -iE '\.(cue|iso|img|chd|mcd|mcr)$|(^|/)SCPH'
+            git ls-files | grep -iE '\.(cue|iso|img|chd|mcd|mcr)$|(^|/)SCPH[^/]*\.bin$'
             exit 1
           fi
 

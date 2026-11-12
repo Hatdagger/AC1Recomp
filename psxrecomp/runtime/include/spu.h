@@ -17,6 +17,11 @@ uint32_t spu_output_available(void);
 uint32_t spu_output_pop(int16_t* out_stereo, uint32_t max_frames);
 void spu_output_drop(uint32_t frames);   /* oldest first */
 void spu_output_flush(void);
+/* Host presentation only, never SPU state: for the next `pops` calls of
+ * spu_output_pop, hand the host one channel (0 left, 1 right) on both
+ * speakers. A title whose netplay match mixes each player's sound onto one
+ * channel renews this every frame on each peer; it lapses by itself. */
+void spu_output_mono_request(int channel, uint32_t pops);
 uint64_t spu_output_overflow_drops(void);
 /* Host gate: while it returns nonzero (rollback resimulation, FMV-skip mute)
  * rendered samples advance SPU state but are not queued. */

@@ -1500,6 +1500,14 @@ void spu_catch_up(void) {
 
 uint32_t spu_output_available(void) { return s_out_count; }
 
+static int s_out_mono_channel;
+static uint32_t s_out_mono_pops;
+
+void spu_output_mono_request(int channel, uint32_t pops) {
+    s_out_mono_channel = channel ? 1 : 0;
+    s_out_mono_pops = pops;
+}
+
 uint32_t spu_output_pop(int16_t *out_stereo, uint32_t max_frames) {
     uint32_t n = s_out_count < max_frames ? s_out_count : max_frames;
     for (uint32_t i = 0; i < n; i++) {
@@ -1508,6 +1516,15 @@ uint32_t spu_output_pop(int16_t *out_stereo, uint32_t max_frames) {
         s_out_head = (s_out_head + 1u) % SPU_OUT_FRAMES;
     }
     s_out_count -= n;
+    if (s_out_mono_pops) {
+        /* The queue itself stays stereo; only what the host hears changes. */
+        s_out_mono_pops--;
+        for (uint32_t i = 0; i < n; i++) {
+            const int16_t v = out_stereo[i * 2u + (uint32_t)s_out_mono_channel];
+            out_stereo[i * 2u] = v;
+            out_stereo[i * 2u + 1u] = v;
+        }
+    }
     return n;
 }
 

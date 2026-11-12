@@ -18150,8 +18150,18 @@ int main(int argc, char** argv) {
                 PSXRecompV4::host_resolve(exe_dir_now, resolved_disc), dec);
         if (!have_disc) {
             std::string found_serial;
-            const std::filesystem::path found =
+            std::filesystem::path found =
                 discover_game_disc_near(exe_dir_now, game_id, &found_serial);
+            if (found.empty()) {
+                /* A packaged build (an AppImage) runs from a private folder
+                 * the player never sees; its start script names the folder
+                 * the package itself sits in, which is where a player puts
+                 * the disc image. */
+                const char* extra = std::getenv("PSX_DISC_SEARCH_DIR");
+                if (extra && extra[0])
+                    found = discover_game_disc_near(std::filesystem::path(extra),
+                                                    game_id, &found_serial);
+            }
             if (!found.empty()) {
                 resolved_disc = normalize_disc_path_for_launch(found);
                 /* Keep the set's selected index in step with the image found. */

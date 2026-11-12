@@ -1,0 +1,111 @@
+# Master of Arena as a Linux AppImage (Steam Deck and other Linux PCs).
+#
+# Runs on every push to the launcher branch and on request. The AppImage is
+# kept as a build artifact on the run's page; nothing is published.
+
+name: Master of Arena AppImage
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [moa-launcher]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: appimage-moa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  appimage:
+    name: linux-x64 AppImage
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Verify committed game C
+        run: |
+          set -euo pipefail
+          for pattern in 'games/master-of-arena/generated/*_dispatch.c' \
+                         'games/master-of-arena/generated/*_full_*.c' \
+                         'games/master-of-arena/game.toml'; do
+            if ! git ls-files "${pattern}" | grep -q .; then
+              echo "::error::${pattern} is not committed"
+              exit 1
+            fi
+          done
+          if git ls-files -- . ':!psxrecomp' ':!recomp-ui' | grep -iE '\.(cue|iso|img|chd|mcd|mcr|psxmod)$|(^|/)SCPH' | grep -q .; then
+            echo "::error::a disc image, memory card, mod package or BIOS dump is tracked"
+            exit 1
+          fi
+
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config rsync \
+            libgl1-mesa-dev libxtst-dev \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
+            libxfixes-dev libxi-dev libxss-dev libxkbcommon-dev \
+            libwayland-dev libdecor-0-dev wayland-protocols libegl1-mesa-dev \
+            libasound2-dev libpulse-dev libpipewire-0.3-dev libudev-dev libdbus-1-dev \
+            zip unzip file libfuse2t64 \
+            libvulkan-dev glslc
+
+      - name: Cache SDL3 source
+        uses: actions/cache@v4
+        with:
+          path: .cache/sdl3-src
+          key: sdl3-3.4.10-src
+
+      - name: Prefetch SDL3 source
+        run: |
+          set -euo pipefail
+          OUT=".cache/sdl3-src"
+          if [[ ! -f "${OUT}/CMakeLists.txt" ]]; then
+            bash psxrecomp/tools/ci/prefetch_sdl3.sh --out-dir "${OUT}"
+          fi
+          echo "PSX_SDL3_SOURCE_DIR=$(cd "${OUT}" && pwd)" >>"$GITHUB_ENV"
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: moa-appimage
+          max-size: 2G
+
+      - name: Configure and build
+        run: |
+          set -euo pipefail
+          export VULKAN_SDK=/usr
+          cmake -S . -B build-ci -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DPSXRECOMP_REQUIRE_GAME_C=ON \
+            -DPSXRECOMP_FORCE_SETUP_HOST=OFF \
+            -DPSXRECOMP_ALLOW_NO_BIOS=OFF \
+            -DPSX_SETUP_WIZARD=ON \
+            -DGLSLC_EXE="$(command -v glslc)" \
+            -DFETCHCONTENT_SOURCE_DIR_SDL3="${PSX_SDL3_SOURCE_DIR}" \
+            2>&1 | tee build-ci-configure.log
+          cmake --build build-ci --target psx-master-of-arena -j"$(nproc)"
+          ls -la build-ci | head -60
+
+      - name: Wrap as AppImage
+        run: |
+          set -euo pipefail
+          SKIP_BUILD=1 scripts/build_appimage_moa.sh build-ci
+          ls -la dist/
+          sha256sum dist/*.AppImage
+
+      - name: Upload AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: armored-core-moa-linux-x64-appimage
+          path: dist/*.AppImage
+          if-no-files-found: error
+          retention-days: 30

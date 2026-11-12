@@ -2765,7 +2765,13 @@ void panel_save_draw(LauncherModel* m, const LauncherTheme* th) {
         // No outer "MEMORY CARDS" card/eyebrow: the small per-slot cards ARE the
         // UI. Fixed width (same as player cards); wider windows add columns
         // instead of stretching the pair across the column.
+#if defined(RECOMP_LAUNCHER_MEMCARD_SLOTS)
+        // Title override: only this many slots are the player's to manage
+        // (e.g. slot 2 is fixed offline and is the guest's card in netplay).
+        const int slots = RECOMP_LAUNCHER_MEMCARD_SLOTS;
+#else
         const int slots = (prof->save.slots > 0 && prof->save.slots <= 2) ? prof->save.slots : 2;
+#endif
         const float gap = px(th->spacing_sm);
         const float avail = ImGui::GetContentRegionAvail().x;
         const float cw = dash_card_width(avail, gap, slots);

@@ -3042,6 +3042,63 @@ static std::filesystem::path resolve_persisted_disc_path(
     return normalize_disc_path_for_launch(PSXRecompV4::host_resolve(exe_dir, path));
 }
 
+/* First run, or the remembered image is gone: adopt a disc image of THIS game
+ * that sits beside the executable (or in a disc folder there) instead of
+ * asking for one. Candidates are identified by the serial on the disc itself,
+ * never by file name. The game's own id (disc 1 of a set) is preferred, then
+ * the other discs of the set; a cue or CHD is preferred over a bare image. */
+static std::filesystem::path discover_game_disc_near(
+    const std::filesystem::path& exe_dir, const std::string& game_id,
+    std::string* serial_out) {
+    namespace fs = std::filesystem;
+    std::vector<std::string> serials;
+    if (!game_id.empty()) serials.push_back(uppercase_ascii(game_id));
+    for (const auto& kv : g_disc_serials) {
+        const std::string up = uppercase_ascii(kv.second);
+        if (std::find(serials.begin(), serials.end(), up) == serials.end())
+            serials.push_back(up);
+    }
+    if (serials.empty()) return {};
+    static const char* kSubdirs[] = { "", "disc", "discs", "iso", "roms", "games" };
+    static const char* kExts[] = { ".cue", ".chd", ".iso", ".img", ".bin" };
+    fs::path best;
+    int best_rank = 1 << 30;
+    std::string best_serial;
+    for (const char* sub : kSubdirs) {
+        const fs::path dir = sub[0] ? (exe_dir / sub) : exe_dir;
+        std::error_code ec;
+        if (!fs::is_directory(dir, ec)) continue;
+        int seen = 0;
+        for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+            if (++seen > 512) break;
+            std::error_code fec;
+            if (!it->is_regular_file(fec)) continue;
+            const fs::path cand = it->path();
+            std::string ext = cand.extension().string();
+            for (char& c : ext) c = (char)std::tolower((unsigned char)c);
+            int ext_rank = -1;
+            for (int i = 0; i < (int)(sizeof kExts / sizeof kExts[0]); ++i)
+                if (ext == kExts[i]) { ext_rank = i; break; }
+            if (ext_rank < 0) continue;
+            const PSXRecompV4::DiscIdentity id = PSXRecompV4::identify_disc(
+                cand, std::string(), /*expected_crc*/0, /*has_expected_crc*/false,
+                /*compute_crc*/false);
+            if (!id.opened || !id.has_header) continue;
+            const std::string serial = uppercase_ascii(id.detected_serial);
+            const auto pos = std::find(serials.begin(), serials.end(), serial);
+            if (pos == serials.end()) continue;
+            const int rank = (int)(pos - serials.begin()) * 16 + ext_rank;
+            if (rank < best_rank) {
+                best_rank = rank;
+                best = cand;
+                best_serial = serial;
+            }
+        }
+    }
+    if (serial_out) *serial_out = best_serial;
+    return best;
+}
+
 /* Which image of a MULTI-DISC set to mount, given the roster this build was
  * made from (game.toml [game] discs), the player's persisted [disc] selected
  * index, and the [disc] path the launcher last wrote.
@@ -18082,6 +18139,37 @@ int main(int argc, char** argv) {
             g_frame_interpolation_fps = us.frame_interpolation_fps;
     }
 
+    /* No usable disc yet (first run, or the remembered image moved): look for
+     * one of this game's images beside the executable before the launcher has
+     * to ask. A --disc override is never second-guessed. */
+    if (!disc_override_path) {
+        const std::filesystem::path exe_dir_now = runtime_profile_dir(argv[0]);
+        std::error_code dec;
+        const bool have_disc = !resolved_disc.empty() &&
+            std::filesystem::exists(
+                PSXRecompV4::host_resolve(exe_dir_now, resolved_disc), dec);
+        if (!have_disc) {
+            std::string found_serial;
+            const std::filesystem::path found =
+                discover_game_disc_near(exe_dir_now, game_id, &found_serial);
+            if (!found.empty()) {
+                resolved_disc = normalize_disc_path_for_launch(found);
+                /* Keep the set's selected index in step with the image found. */
+                for (size_t i = 0; i < game_discs.size(); ++i) {
+                    const auto it = g_disc_serials.find(
+                        uppercase_ascii(game_discs[i].stem().string()));
+                    if (it != g_disc_serials.end() &&
+                        uppercase_ascii(it->second) == found_serial) {
+                        selected_disc_index = (int)i + 1;
+                        break;
+                    }
+                }
+                std::fprintf(stdout, "psxrecomp: adopted disc image %s (%s)\n",
+                             resolved_disc.string().c_str(), found_serial.c_str());
+            }
+        }
+    }
+
     /* lock_mode: the game supports exactly ONE pad type (e.g. X4 / Tomba 2 are
      * digital-only — X4's pre-DualShock libpad silently discards input from a
      * pad answering id 0x73). The launcher hides its selector for such games,
@@ -20084,6 +20172,17 @@ session_reboot:
      * ports during early boot. */
     for (int s = 0; s < PSX_MAX_PLAYERS; ++s) {
         set_player_device(g_players[s], player_device[s], player_mode[s]);
+#if defined(PSX_P1_AUTO_GAMEPAD) && PSX_P1_AUTO_GAMEPAD
+        /* Title policy: player 1 is whatever game controller is connected,
+         * with the keyboard binds live beside it (pad_sources_for keeps them
+         * on for every routed seat). A seat saved as "keyboard" therefore
+         * also picks up a controller, now or when one is plugged in; with no
+         * controller the keyboard alone drives it, as before. */
+        if (s == 0 && g_players[0].kind == 1) {
+            g_players[0].kind = 2;
+            g_players[0].guid[0] = '\0';
+        }
+#endif
         g_players[s].preferred_instance = player_instance[s]
             ? (SDL_JoystickID)(player_instance[s] - 1) : -1;
         g_players[s].deadzone = player_deadzone[s];
@@ -20234,6 +20333,14 @@ session_reboot:
                          divisor, cdrom_get_instant_rate());
     }
     {
+#if defined(PSX_MEMCARD2_FIXED) && PSX_MEMCARD2_FIXED
+        /* Title policy: slot 2 is not the player's to configure. Offline it is
+         * always the default second card (card2.mcd in the memory-card
+         * directory), so split-screen player 2 has saves to load; in a
+         * netplay match the session rebinds it to the guest's card. */
+        memcard2_enabled = true;
+        memcard2_path.clear();
+#endif
         std::string mc1 = memcard1_path.string();
         std::string mc2 = memcard2_path.string();
         const MemcardSlotConfig slots[2] = {

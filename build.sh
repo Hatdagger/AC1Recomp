@@ -1,12 +1,15 @@
 #!/bin/sh
-# Builds the launcher and all three games for Linux and Windows (MinGW cross-compile).
+# Builds Armored Core: Master of Arena for Linux and Windows (MinGW cross-compile).
 # Usage: ./build.sh [linux|windows|all]   (default: all)
 # Outputs: build-release/ (Linux) and build-windows/ (Windows), runnable files only.
 # CMake/Ninja state stays in build/linux and build/windows.
 set -eu
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-TARGETS="psx-armored-core psx-project-phantasma psx-master-of-arena psx-launcher"
+# This build is Master of Arena only. The other targets still exist in
+# CMakeLists.txt; to build them as well:
+#   AC1RECOMP_TARGETS="psx-armored-core psx-project-phantasma psx-master-of-arena psx-launcher" ./build.sh
+TARGETS="${AC1RECOMP_TARGETS:-psx-master-of-arena}"
 JOBS=$(nproc)
 
 # One target at a time: their shared asset staging races when linked in parallel.

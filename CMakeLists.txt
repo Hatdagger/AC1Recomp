@@ -127,7 +127,14 @@ if(TARGET psx-master-of-arena)
         # engine's "partner present" poll passes at once (the netplay match
         # runs that engine with the cable replaced, see moa_link_netplay.c).
         # Bits 0 and 2: transmitter idle.
-        PSX_SIO1_IDLE_STAT=0x0185)
+        PSX_SIO1_IDLE_STAT=0x0185
+        # Player 1 uses whatever game controller is connected; the keyboard
+        # stays live beside it.
+        PSX_P1_AUTO_GAMEPAD=1
+        # Memory card slot 2 is fixed (default card offline, the guest's card
+        # in netplay) and is not shown in the launcher.
+        PSX_MEMCARD2_FIXED=1
+        RECOMP_LAUNCHER_MEMCARD_SLOTS=1)
     # Netplay runs the link versus engine in place of the cable.
     target_sources(psx-master-of-arena PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_link_netplay.c")
@@ -176,11 +183,15 @@ configure_file(
     "${CMAKE_CURRENT_BINARY_DIR}/games/master-of-arena/game.toml"
     COPYONLY)
 
+# Every game target stages the custom UI assets: build.sh builds Master of
+# Arena alone, so the staging cannot hang off another game's target.
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/ui")
-    add_custom_command(TARGET psx-armored-core POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${CMAKE_CURRENT_SOURCE_DIR}/assets/ui"
-            "$<TARGET_FILE_DIR:psx-armored-core>/assets/ui"
-        COMMENT "Staging custom UI assets"
-        VERBATIM)
+    foreach(_PSX_AC_UI_TARGET psx-armored-core psx-project-phantasma psx-master-of-arena)
+        add_custom_command(TARGET ${_PSX_AC_UI_TARGET} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CMAKE_CURRENT_SOURCE_DIR}/assets/ui"
+                "$<TARGET_FILE_DIR:${_PSX_AC_UI_TARGET}>/assets/ui"
+            COMMENT "Staging custom UI assets"
+            VERBATIM)
+    endforeach()
 endif()

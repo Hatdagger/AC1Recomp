@@ -1,10 +1,11 @@
 /* Master of Arena system menu: a controller-first front end for the launcher.
  *
  * Included by launcher_imgui.cpp when RECOMP_LAUNCHER_MOA_MENU is set. It owns
- * three of the launcher's views (dashboard, settings, mods) and draws them as
- * one list at a time: D-pad to move, one button to confirm or toggle, one to go
- * back. Everything else (netplay pages, the controller page, every modal) is
- * the stock launcher, reached from here and returned from with its own Back.
+ * the launcher's dashboard, settings, mods and netplay views (the network
+ * pages are in moa_menu_net.inc) and draws them as one list at a time: D-pad
+ * to move, one button to confirm or toggle, one to go back. Everything else
+ * (the controller page, online sign-in, every modal) is the stock launcher,
+ * reached from here and returned from with its own Back.
  *
  * It draws straight onto the launcher window's draw list on a 640x480 design
  * grid scaled to the window, and reads input through ImGui's key state, so it
@@ -14,18 +15,30 @@
  *
  * Expected from the including file: LauncherModel, LauncherTheme, asset(),
  * ui_pick_file(), request_mod_commit_launch(), mod_note_error(),
- * moa_menu_open_folder().
+ * moa_menu_open_folder(), and what moa_menu_net.inc lists.
  */
 
 namespace moa_menu {
 
-enum Page { PAGE_MAIN = 0, PAGE_SETTINGS, PAGE_MODS, PAGE__COUNT };
+enum Page {
+    PAGE_MAIN = 0, PAGE_SETTINGS, PAGE_MODS,
+    PAGE_NET_MODE, PAGE_NET_ROOMS, PAGE_LOBBY, PAGE__COUNT
+};
 
 struct State {
-    int    cursor[PAGE__COUNT] = {0, 0, 0};
-    int    top[PAGE__COUNT] = {0, 0, 0};
+    int    cursor[PAGE__COUNT] = {0};
+    int    top[PAGE__COUNT] = {0};
     bool   classic_settings = false;   /* the stock page was asked for */
     bool   classic_mods = false;
+    bool   classic_net = false;
+    bool   net_ready = false;          /* network settings loaded this run */
+    double signin_since = 0.0;         /* waiting on a saved online sign-in */
+    double next_list = 0.0;            /* next room list request */
+    bool   direct = false;             /* the join-by-address editor is up */
+    int    direct_ip[4] = {192, 168, 1, 1};
+    int    direct_port = 7777;
+    int    direct_field = 3;
+    int    last_view = -1;
     double next_scan = 0.0;
     std::vector<std::string> new_packages;   /* files waiting in mods/new */
     char   note[200] = {0};
@@ -159,7 +172,7 @@ static bool row(const Gfx& g, float x, float y, float w, bool selected,
 /* ---- input ---------------------------------------------------------------- */
 
 struct Input {
-    bool up, down, left, right, confirm, back, alt, start;
+    bool up, down, left, right, confirm, back, alt, start, page_up, page_down;
 };
 
 static bool key(ImGuiKey k, bool repeat) { return ImGui::IsKeyPressed(k, repeat); }
@@ -188,6 +201,8 @@ static Input read_input(const LauncherModel* m) {
                key(ImGuiKey_GamepadFaceUp, false);
     in.alt   = key(ImGuiKey_Delete, false) || key(ImGuiKey_GamepadFaceLeft, false);
     in.start = key(ImGuiKey_GamepadStart, false);
+    in.page_up   = key(ImGuiKey_PageUp, true) || key(ImGuiKey_GamepadR1, true);
+    in.page_down = key(ImGuiKey_PageDown, true) || key(ImGuiKey_GamepadL1, true);
     return in;
 }
 
@@ -699,6 +714,8 @@ static void draw_mods_page(LauncherModel* m, const Gfx& g, const Input& in) {
     if (in.back) launcher_model_set_view(m, LNG_VIEW_DASHBOARD);
 }
 
+#include "moa_menu_net.inc"
+
 /* ---- entry points -------------------------------------------------------------- */
 
 /* True when this menu, not the stock page, draws the current view. */
@@ -706,14 +723,24 @@ static bool owns_view(const LauncherModel* m) {
     if (m->view == LNG_VIEW_DASHBOARD) {
         g_state.classic_settings = false;
         g_state.classic_mods = false;
+        g_state.classic_net = false;
+        g_state.direct = false;
         return true;
     }
+    if (m->view == LNG_VIEW_NETPLAY_MODE) {
+        /* The stock pages' Back lands here, which ends the detour. */
+        g_state.classic_net = false;
+        g_state.direct = false;
+        return m->netplay_supported;
+    }
+    if (m->view == LNG_VIEW_NETPLAY || m->view == LNG_VIEW_LOBBY)
+        return m->netplay_supported && !g_state.classic_net;
     if (m->view == LNG_VIEW_SETTINGS) return !g_state.classic_settings;
     if (m->view == LNG_VIEW_MODS)     return !g_state.classic_mods && m->mods != nullptr;
     return false;
 }
 
-static void draw(LauncherModel* m) {
+static void draw(LauncherModel* m, const LauncherTheme& th) {
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     Gfx g;
     g.dl = ImGui::GetWindowDrawList();
@@ -734,9 +761,16 @@ static void draw(LauncherModel* m) {
         g.dl->AddLine(ImVec2(a.x, y), ImVec2(b.x, y), kGrid);
 
     const Input in = read_input(m);
+    if ((int)m->view != g_state.last_view) {   /* a note belongs to its page */
+        g_state.last_view = (int)m->view;
+        g_state.note[0] = '\0';
+    }
     switch (m->view) {
         case LNG_VIEW_SETTINGS: draw_settings_page(m, g, in); break;
         case LNG_VIEW_MODS:     draw_mods_page(m, g, in); break;
+        case LNG_VIEW_NETPLAY_MODE: draw_net_mode(m, g, in); break;
+        case LNG_VIEW_NETPLAY:      draw_net_rooms(m, g, in); break;
+        case LNG_VIEW_LOBBY:        draw_lobby_page(m, th, g, in); break;
         default:                draw_main(m, g, in); break;
     }
     g.dl->PopClipRect();

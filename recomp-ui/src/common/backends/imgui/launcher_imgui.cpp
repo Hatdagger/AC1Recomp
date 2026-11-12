@@ -14160,6 +14160,20 @@ static bool moa_menu_open_folder(const std::string& dir) {
     return SDL_OpenURL(url.c_str()) == 0;
 #endif
 }
+/* The stock room page's dialogs, for the menu's own room page: match
+ * settings, the missing-disc prompt, and the room's mod plan. */
+static void moa_menu_lobby_popups(LauncherModel* m, const LauncherTheme& th,
+                                  const RecompLauncherCNetplayCallbacks* np,
+                                  const LobbySnapshot& s) {
+    draw_lobby_settings_popup(m, th, np, s);
+    draw_lobby_game_rom_popup(m, th, s);
+#if RECOMP_UI_ENABLE_MODS
+    draw_lobby_mods_popup(m, th, np, s.is_host);
+    if (!m->netplay_lobby_mods_open && !s.local_rom_missing)
+        draw_lobby_mod_files_popup(m, th, np, s.is_host);
+#endif
+}
+
 #include "moa_menu.inc"
 #endif
 
@@ -14201,7 +14215,7 @@ void draw_ui(LauncherModel* m, const LauncherTheme& th, int logical_w, int logic
     bool title_menu = false;
 #if defined(RECOMP_LAUNCHER_MOA_MENU) && RECOMP_LAUNCHER_MOA_MENU
     title_menu = moa_menu::owns_view(m);
-    if (title_menu) moa_menu::draw(m);
+    if (title_menu) moa_menu::draw(m, th);
 #endif
     if (!title_menu) {   /* stock header, page body and footer */
     // ---- Marquee header: brand · GAME TITLE · subtitle .......... [nav] ----

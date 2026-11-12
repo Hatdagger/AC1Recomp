@@ -351,8 +351,97 @@ static void moa_vs_start_entry(struct CPUState *cpu, uint32_t address)
     psx_mod_counter_add("moa.ai.match", 1);
 }
 
+/* ---- straight to the versus menu ----------------------------------------------
+ *
+ * An AI Battle session goes from boot to the versus menu by itself. The menu
+ * module's input routines are fed a tapped START until the versus menu opens:
+ * that skips the logos and the intro video and passes the title screen. The
+ * mode choice that follows ("Scenario Mode / VS Mode") is settled when its
+ * confirm handler runs: the highlighted row is made the versus one.
+ */
+#define MOA_MENU_ENTRY      0x800A69C8u  /* menu module entry */
+#define MOA_SIG_MENU_ENTRY  0x27BDFEB0u
+#define MOA_MENU_VERSUS     0x800B0CB4u  /* menu: versus setup */
+#define MOA_SIG_MENU_VERSUS 0x27BDFFC0u
+#define MOA_MENU_INPUT_A    0x800639A4u  /* menu: controller sampling */
+#define MOA_SIG_INPUT_A     0x27BDFFE8u
+#define MOA_MENU_INPUT_B    0x800AF590u
+#define MOA_SIG_INPUT_B     0x27BDFFD0u
+#define MOA_MODE_CONFIRM    0x800AB500u  /* title: mode row confirmed */
+#define MOA_SIG_MODE_CONFIRM 0x27BDFFC8u
+#define MOA_MODE_ROW_Y      80u          /* row widget: 176 scenario, 192 versus */
+#define MOA_MODE_ROW_VERSUS 192u
+#define MOA_MENU_FLAGS      0x801B1CD0u  /* bit 9: second controller port usable */
+#define MOA_PAD_BUFFER      0x800458D8u  /* port 1: status, id, buttons (low = held) */
+
+static int moa_autopilot;
+static uint32_t moa_autopilot_ticks;
+
+static void moa_menu_entry(struct CPUState *cpu, uint32_t address)
+{
+    (void)cpu;
+    moa_ai_enabled = -1;
+    if (!moa_ai_battle_on() || psx_mod_read_word(address) != MOA_SIG_MENU_ENTRY)
+        return;
+    moa_autopilot = 1;
+    moa_autopilot_ticks = 0;
+    psx_mod_counter_add("moa.ai.menu_entry", 1);
+}
+
+static void moa_menu_versus_entry(struct CPUState *cpu, uint32_t address)
+{
+    (void)cpu;
+    if (psx_mod_read_word(address) == MOA_SIG_MENU_VERSUS) moa_autopilot = 0;
+}
+
+static void moa_menu_input_entry(struct CPUState *cpu, uint32_t address)
+{
+    (void)cpu;
+    if (!moa_autopilot || !moa_ai_battle_on()) return;
+    const uint32_t word = psx_mod_read_word(address);
+    if (word != MOA_SIG_INPUT_A && word != MOA_SIG_INPUT_B) return;
+    /* START held for 3 samples out of every 24. */
+    const int held = (moa_autopilot_ticks++ % 24u) < 3u;
+    psx_mod_write_half(MOA_PAD_BUFFER + 2u,
+                       held ? (uint16_t)~MOA_PAD_START : (uint16_t)0xFFFFu);
+}
+
+/* The movie player polls the controller inside its own loop and returns 1
+ * when the player skips. During the autopilot every movie is "skipped"
+ * before it starts. */
+#define MOA_MOVIE_PLAY      0x80054B54u
+#define MOA_SIG_MOVIE_PLAY  0x27BDFFD8u
+
+static int moa_movie_filter(struct CPUState *cpu, uint32_t address)
+{
+    if (!moa_autopilot || !moa_ai_battle_on() ||
+        psx_mod_read_word(address) != MOA_SIG_MOVIE_PLAY)
+        return 0;
+    cpu->gpr[2] = 1;
+    psx_mod_counter_add("moa.ai.movie_skipped", 1);
+    return 1;
+}
+
+static void moa_mode_confirm_entry(struct CPUState *cpu, uint32_t address)
+{
+    if (!moa_autopilot || !moa_ai_battle_on() ||
+        psx_mod_read_word(address) != MOA_SIG_MODE_CONFIRM)
+        return;
+    const uint32_t row = psx_mod_read_word(cpu->gpr[4] + 148u);
+    if (row < 0x80000000u || row >= 0x80200000u) return;
+    psx_mod_write_word(row + MOA_MODE_ROW_Y, MOA_MODE_ROW_VERSUS);
+    psx_mod_write_word(MOA_MENU_FLAGS, psx_mod_read_word(MOA_MENU_FLAGS) | 0x200u);
+    psx_mod_counter_add("moa.ai.mode_forced", 1);
+}
+
 PSX_MOD_CONSTRUCTOR(moa_ai_battle_register)
 {
+    (void)psx_game_register_offline_function_entry(MOA_MENU_ENTRY, moa_menu_entry);
+    (void)psx_game_register_offline_function_entry(MOA_MENU_VERSUS, moa_menu_versus_entry);
+    (void)psx_game_register_offline_function_entry(MOA_MENU_INPUT_A, moa_menu_input_entry);
+    (void)psx_game_register_offline_function_entry(MOA_MENU_INPUT_B, moa_menu_input_entry);
+    (void)psx_game_register_offline_function_entry(MOA_MODE_CONFIRM, moa_mode_confirm_entry);
+    (void)psx_game_register_offline_function_filter(MOA_MOVIE_PLAY, moa_movie_filter);
     (void)psx_game_register_offline_function_entry(MOA_MENU_VS_START, moa_vs_start_entry);
     (void)psx_game_register_offline_function_filter(MOA_AI_SETUP, moa_ai_setup_filter);
     (void)psx_game_register_offline_function_filter(MOA_AI_INIT, moa_ai_init_filter);

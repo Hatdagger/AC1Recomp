@@ -282,8 +282,8 @@ static void draw_main(LauncherModel* m, const Gfx& g, const Input& in) {
             "the guest is player 2 and brings their own memory card." };
     if (!m->in_session)
         entries[count++] = { MAIN_AI_BATTLE, "AI BATTLE (TEST)",
-            "Watch two computer-flown ACs fight. At the title pick VS Mode, "
-            "then VS START: two arena opponents are drawn from your disc." };
+            "Watch two computer-flown ACs fight. The game opens on the versus "
+            "menu: VS START draws two arena opponents from your disc." };
     entries[count++] = { MAIN_SETTINGS, "SETTINGS",
         "Display, sound and controls." };
     if (m->mods)

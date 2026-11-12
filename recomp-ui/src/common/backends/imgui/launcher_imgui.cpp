@@ -73,6 +73,8 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <cfloat>
+#include <cmath>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -14146,6 +14148,21 @@ static void draw_launch_commit_progress(const LauncherTheme& th) {
     ImGui::PopStyleColor();
 }
 
+#if defined(RECOMP_LAUNCHER_MOA_MENU) && RECOMP_LAUNCHER_MOA_MENU
+/* Title front end: a controller-first menu that owns the dashboard, settings
+ * and mods views (see moa_menu.inc). Everything else stays the stock page. */
+static bool moa_menu_open_folder(const std::string& dir) {
+    std::string url, error;
+    if (!launcher_directory_url(dir.c_str(), url, error)) return false;
+#if defined(LNG_SDL3)
+    return SDL_OpenURL(url.c_str());
+#else
+    return SDL_OpenURL(url.c_str()) == 0;
+#endif
+}
+#include "moa_menu.inc"
+#endif
+
 void draw_ui(LauncherModel* m, const LauncherTheme& th, int logical_w, int logical_h) {
     ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->Pos);
@@ -14181,6 +14198,12 @@ void draw_ui(LauncherModel* m, const LauncherTheme& th, int logical_w, int logic
         }
     }
 
+    bool title_menu = false;
+#if defined(RECOMP_LAUNCHER_MOA_MENU) && RECOMP_LAUNCHER_MOA_MENU
+    title_menu = moa_menu::owns_view(m);
+    if (title_menu) moa_menu::draw(m);
+#endif
+    if (!title_menu) {   /* stock header, page body and footer */
     // ---- Marquee header: brand · GAME TITLE · subtitle .......... [nav] ----
     ImVec2 hp = ImGui::GetCursorScreenPos();
     // Vertically center the brand mark against the two-line title block (game
@@ -14344,6 +14367,7 @@ void draw_ui(LauncherModel* m, const LauncherTheme& th, int logical_w, int logic
     end_container();
 
     draw_footer(m, th, footer_h);
+    }   /* !title_menu */
     if (launch_commit_pending()) {
         /* PLAY queued a job in the footer. Finish this drawing stack without
          * any later modal/provider/model callbacks; start only after return. */

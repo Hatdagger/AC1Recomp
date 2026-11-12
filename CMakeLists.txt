@@ -134,7 +134,10 @@ if(TARGET psx-master-of-arena)
         # Memory card slot 2 is fixed (default card offline, the guest's card
         # in netplay) and is not shown in the launcher.
         PSX_MEMCARD2_FIXED=1
-        RECOMP_LAUNCHER_MEMCARD_SLOTS=1)
+        RECOMP_LAUNCHER_MEMCARD_SLOTS=1
+        # Controller-first system menu in place of the stock dashboard,
+        # settings and mods pages (recomp-ui moa_menu.inc).
+        RECOMP_LAUNCHER_MOA_MENU=1)
     # Netplay runs the link versus engine in place of the cable.
     target_sources(psx-master-of-arena PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_link_netplay.c")

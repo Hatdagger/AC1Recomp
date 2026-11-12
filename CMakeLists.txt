@@ -120,7 +120,11 @@ if(TARGET psx-master-of-arena)
         PSX_NET_GUEST_MEMCARD_SHARE_DEFAULT=1
         # Netplay never writes a player's own card: the host's slot 1 is a
         # match-only file as well (the guest's cards already are).
-        PSX_NET_HOST_TEMP_CARD=1)
+        PSX_NET_HOST_TEMP_CARD=1
+        # The title menu offers split-screen "VS Mode" only when the link
+        # port reports no partner (status bit 7 set); otherwise it shows
+        # "VS Mode (Link)". The port is not emulated, so report it idle.
+        PSX_SIO1_IDLE_STAT=0x0080)
 endif()
 
 # Hub launcher: game picker, per-game disc and shared settings.

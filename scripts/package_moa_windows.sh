@@ -43,8 +43,8 @@ USER_FILES=(launcher.ini launcher-window.ini config.ini settings.toml keybinds.i
 # The game: runnable files only. No build state, none of the other games,
 # no saves or mods (they have their own folders), no disc images.
 EXCLUDES=(
-  --exclude=./CMakeFiles --exclude=./CMakeCache.txt --exclude=./build.ninja
-  --exclude=./cmake_install.cmake --exclude='./.ninja_*' --exclude='*_vkgen'
+  --exclude=CMakeFiles --exclude=./CMakeCache.txt --exclude=./build.ninja
+  --exclude='*.cmake' --exclude='./.ninja_*' --exclude='*_vkgen'
   --exclude='*.a' --exclude='*.c' --exclude='*.rc' --exclude='*.res' --exclude='*.obj' --exclude='*.o'
   --exclude='*_generated_sources.txt' --exclude='psx_mod_catalog_*.txt' --exclude='psxrecomp_*.txt'
   --exclude=./Testing --exclude=./CTestTestfile.cmake --exclude=./_deps --exclude=./psx_execution
@@ -63,6 +63,8 @@ EXCLUDES=(
 for file in "${USER_FILES[@]}"; do EXCLUDES+=(--exclude="./${file}"); done
 (cd "${BUILD}" && tar -cf - "${EXCLUDES[@]}" .) | (cd "${DATA}" && tar -xf -)
 cp -f "${BUILD}/${SHELL_EXE}" "${OUT}/${SHELL_EXE}"
+# Build subfolders that held nothing runnable are left empty; drop them.
+find "${DATA}" -mindepth 1 -type d -empty -delete
 
 # Compiler runtime DLLs the exe asks for, when it was not linked statically:
 # copied beside it so the folder runs on a PC without the build tools.

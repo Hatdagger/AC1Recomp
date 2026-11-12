@@ -31,7 +31,7 @@ rm -rf "${PAYLOAD}"
 mkdir -p "${PAYLOAD}"
 rsync -a \
   --exclude='CMakeFiles/' --exclude='CMakeCache.txt' --exclude='build.ninja' \
-  --exclude='cmake_install.cmake' --exclude='.ninja_*' --exclude='*_vkgen/' \
+  --exclude='*.cmake' --exclude='.ninja_*' --exclude='*_vkgen/' --prune-empty-dirs \
   --exclude='*.a' --exclude='*.c' --exclude='*.rc' --exclude='*.log' \
   --exclude='*_generated_sources.txt' \
   --exclude='psx_mod_catalog_*.txt' --exclude='psxrecomp_*.txt' \

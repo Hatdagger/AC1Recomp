@@ -75,7 +75,9 @@ PAYLOAD="\$APPDIR/usr/share/${NAME}"
 DATA_ROOT="\${XDG_DATA_HOME:-\${HOME:?HOME must be set}/.local/share}/armored-core-moa"
 RUNTIME="\$DATA_ROOT/runtime-${VERSION}-${BUILD_ID}"
 APP_EXE="${EXE}"
-mkdir -p "\$DATA_ROOT"
+# Memory cards live in one place for every build, outside the per-build copy.
+CARDS="\$DATA_ROOT/Memory Card"
+mkdir -p "\$DATA_ROOT" "\$CARDS"
 
 if [ ! -d "\$RUNTIME" ]; then
     TEMP_RUNTIME=\$(mktemp -d "\$DATA_ROOT/.runtime.XXXXXXXX")
@@ -94,7 +96,11 @@ if [ ! -d "\$RUNTIME" ]; then
         done
         # Whole folders the player owns. Files the new build ships win; the
         # player's own (cards, installed mods, a disc image) are added to them.
-        for dir in saves mods netplay games/master-of-arena/disc; do
+        # Cards from a build that kept them in its own folder.
+        if [ -d "\$PREVIOUS/saves" ]; then
+            cp -an "\$PREVIOUS/saves/." "\$CARDS/" || true
+        fi
+        for dir in mods netplay games/master-of-arena/disc; do
             if [ -d "\$PREVIOUS/\$dir" ]; then
                 mkdir -p "\$TEMP_RUNTIME/\$dir"
                 cp -an "\$PREVIOUS/\$dir/." "\$TEMP_RUNTIME/\$dir/" || true
@@ -113,7 +119,7 @@ if [ -n "\${APPIMAGE:-}" ]; then
 fi
 export LD_LIBRARY_PATH="\$APPDIR/usr/lib\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
 unset APPIMAGE
-exec "\$RUNTIME/\$APP_EXE" "\$@"
+exec "\$RUNTIME/\$APP_EXE" --memcard-dir "\$CARDS" "\$@"
 EOF
 chmod 0755 "${TEMP}/AppRun"
 cat >"${TEMP}/armored-core-moa.desktop" <<'EOF'

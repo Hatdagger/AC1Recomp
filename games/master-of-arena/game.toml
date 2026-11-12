@@ -52,7 +52,7 @@ strict = true
 mod_function_entry_funcs = [
     # menu
     "0x800A69C8", "0x800B0CB4", "0x800B2D7C", "0x800639A4", "0x800AF590",
-    "0x800AB500", "0x80054B54",
+    "0x800AB500", "0x80054B54", "0x800AAE94",
     # link versus engine (netplay)
     "0x80051F3C", "0x80055428", "0x80055578", "0x80067FE4", "0x80053FE4",
     "0x80053808", "0x80053498", "0x80052C80", "0x80052EE4", "0x800532FC",

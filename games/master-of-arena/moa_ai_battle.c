@@ -422,6 +422,21 @@ static int moa_movie_filter(struct CPUState *cpu, uint32_t address)
     return 1;
 }
 
+/* The title sequence takes one argument: 0 plays the publisher logos and the
+ * intro video first, 1 opens the title screen at once (the game's own path
+ * back from the versus menu). */
+#define MOA_TITLE_OPEN      0x800AAE94u
+#define MOA_SIG_TITLE_OPEN  0x27BDFFE0u
+
+static void moa_title_open_entry(struct CPUState *cpu, uint32_t address)
+{
+    if (!moa_autopilot || !moa_ai_battle_on() ||
+        psx_mod_read_word(address) != MOA_SIG_TITLE_OPEN)
+        return;
+    cpu->gpr[4] = 1;
+    psx_mod_counter_add("moa.ai.logos_skipped", 1);
+}
+
 static void moa_mode_confirm_entry(struct CPUState *cpu, uint32_t address)
 {
     if (!moa_autopilot || !moa_ai_battle_on() ||
@@ -441,6 +456,7 @@ PSX_MOD_CONSTRUCTOR(moa_ai_battle_register)
     (void)psx_game_register_offline_function_entry(MOA_MENU_INPUT_A, moa_menu_input_entry);
     (void)psx_game_register_offline_function_entry(MOA_MENU_INPUT_B, moa_menu_input_entry);
     (void)psx_game_register_offline_function_entry(MOA_MODE_CONFIRM, moa_mode_confirm_entry);
+    (void)psx_game_register_offline_function_entry(MOA_TITLE_OPEN, moa_title_open_entry);
     (void)psx_game_register_offline_function_filter(MOA_MOVIE_PLAY, moa_movie_filter);
     (void)psx_game_register_offline_function_entry(MOA_MENU_VS_START, moa_vs_start_entry);
     (void)psx_game_register_offline_function_filter(MOA_AI_SETUP, moa_ai_setup_filter);

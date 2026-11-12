@@ -12,8 +12,19 @@
  * this game is loaded from disc at the same address, so each hook first
  * checks that the code it expects is the code in memory.
  *
- * All state the hooks keep lives in guest memory (rollback and savestates
- * cover it).
+ * Everything the simulation depends on lives in guest memory (rollback and
+ * savestates cover it). The host statics below only serve this peer's own
+ * picture and sound output and never reach the simulation.
+ *
+ * What a match is:
+ * - The versus menu (both players' ACs, stage, time limit) launches the link
+ *   engine instead of the split-screen one.
+ * - This simulation is the cable's master: player 1 is the host, player 2
+ *   the guest, driven from controller port 2.
+ * - The host's screen is the simulation's own frame. The guest redraws each
+ *   frame from player 2's side in the framework's local-view sandbox.
+ * - Sound is mixed for both players at once, player 1 on the left channel
+ *   and player 2 on the right; each peer plays its own channel in mono.
  *
  * Link struct 0x80043C70: +932 receive packet, +944 send packet, 8 bytes:
  * ['R', check, pad lo, pad hi, x, x, flag, 'C'].
@@ -24,7 +35,6 @@
 #include "spu.h"
 
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 
 #define MOA_MODE_BYTE      0x8003EA2Au  /* engine the exe launches next */
@@ -442,22 +452,9 @@ static void moa_link_render_entry(struct CPUState *cpu, uint32_t address)
     if (!moa_link_engine_loaded() ||
         !moa_code_is(MOA_LINK_RENDER, 0x27BDFF98u, 0xAFB20060u))
         return;
-    /* A few bounded lines on stderr (as the framework does for its own pass
-     * faults) so a player's captured output shows why the own view is off. */
-    static unsigned said_slot, said_status, said_failed, said_ok;
-    if (!said_slot) {
-        said_slot = 1;
-        fprintf(stderr, "moa link: scene render hook reached; local slot %d of %d\n",
-                psx_netplay_local_slot(), psx_netplay_seat_count());
-    }
     if (psx_netplay_local_slot() != 1) return; /* the host's view is the frame */
     if (psx_mod_render_local_view_status() != PSX_MOD_RENDER_PASS_READY) {
         psx_mod_counter_add("moa.link.guest_view_unavailable", 1);
-        if (said_status < 4u) {
-            said_status++;
-            fprintf(stderr, "moa link: own view unavailable, status %u\n",
-                    (unsigned)psx_mod_render_local_view_status());
-        }
         return;
     }
     const uint32_t index = psx_mod_read_word(MOA_GFX) & 1u;
@@ -482,22 +479,8 @@ static void moa_link_render_entry(struct CPUState *cpu, uint32_t address)
         }
         moa_camera_valid = 1;
         psx_mod_counter_add("moa.link.guest_view", 1);
-        if (!said_ok) {
-            said_ok = 1;
-            fprintf(stderr, "moa link: own view drawn, rect %u,%u %ux%u\n",
-                    (unsigned)rect.x, (unsigned)rect.y, (unsigned)rect.w,
-                    (unsigned)rect.h);
-        }
     } else {
         psx_mod_counter_add("moa.link.guest_view_failed", 1);
-        if (said_failed < 4u) {
-            said_failed++;
-            fprintf(stderr, "moa link: own view refused or rolled back, "
-                    "status %u, rect %u,%u %ux%u\n",
-                    (unsigned)psx_mod_render_local_view_status(),
-                    (unsigned)rect.x, (unsigned)rect.y, (unsigned)rect.w,
-                    (unsigned)rect.h);
-        }
     }
 }
 

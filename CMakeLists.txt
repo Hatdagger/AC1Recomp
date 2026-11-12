@@ -113,6 +113,12 @@ psxrecomp_add_game_runtime(psx-master-of-arena
     CODEGEN_SETUP_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/codegen_setup.c"
     CODEGEN_SETUP_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena"
 )
+# Versus needs each player's own AC: the guest (seat 2, player 2) brings its
+# slot-1 memory card as the match's slot-2 card by default, on LAN and online.
+if(TARGET psx-master-of-arena)
+    target_compile_definitions(psx-master-of-arena PRIVATE
+        PSX_NET_GUEST_MEMCARD_SHARE_DEFAULT=1)
+endif()
 
 # Hub launcher: game picker, per-game disc and shared settings.
 set(AC_IMGUI "${CMAKE_CURRENT_SOURCE_DIR}/recomp-ui/src/third_party/imgui")

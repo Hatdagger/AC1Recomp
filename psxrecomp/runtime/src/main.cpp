@@ -13818,6 +13818,12 @@ namespace {
         next.valid = 1;
         next.has_card = has_card ? 1 : 0;
         if (share >= 0) next.share = share ? 1 : 0;
+#if defined(PSX_NET_GUEST_MEMCARD_SHARE_DEFAULT) && PSX_NET_GUEST_MEMCARD_SHARE_DEFAULT
+        /* Title default: a peer offers its slot-1 card from its first
+         * publication, so seat 2 brings its own card (as the match's slot-2
+         * card) without a click. The seat-row glyph still turns it off. */
+        else if (!g_lnch_memcard_offer.valid) next.share = 1;
+#endif
         const bool changed = !g_lnch_memcard_offer.valid ||
                              next.has_card != g_lnch_memcard_offer.has_card ||
                              next.share != g_lnch_memcard_offer.share;

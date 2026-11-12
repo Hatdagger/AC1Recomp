@@ -42,10 +42,13 @@ endif()
 # picker; releases are compiled from the committed generated/ C, so it never
 # needs to generate or rebuild anything on a player's machine.
 # recomp-ui submodule present (PSX_RECOMP_UI defaults ON).
-# Full netplay UI — enable after adding recomp-ui + testing:
-# if(EXISTS "${PSXRECOMP_ROOT}/lib/recomp-net/CMakeLists.txt")
-#     set(PSX_NETPLAY ON CACHE BOOL "…" FORCE)
-# endif()
+# Netplay (rollback / delay-sync over the lobby, LAN or direct IP). PSX_NETPLAY
+# must be set BEFORE runtime.cmake is included: that is where recomp-net, the
+# lobby client and rbengine are wired. Only Master of Arena opts in below.
+if(EXISTS "${PSXRECOMP_ROOT}/lib/recomp-net/CMakeLists.txt")
+    set(PSX_NETPLAY ON CACHE BOOL
+        "Link recomp-net rollback/delay-sync netplay (needs recomp-net)" FORCE)
+endif()
 set(PSX_SETUP_WIZARD ON CACHE BOOL
     "Advertise first-run setup wizard + Generate & rebuild in recomp-ui" FORCE)
 include("${PSXRECOMP_ROOT}/runtime/runtime.cmake")
@@ -99,7 +102,11 @@ psxrecomp_add_game_runtime(psx-master-of-arena
     WINDOW_TITLE "Armored Core: Master of Arena"
     EXE_NAME "ArmoredCoreMasterOfArena"
     DEFAULT_GAME_CONFIG_PATH "games/master-of-arena/game.toml"
-    MAX_PLAYERS 1
+    ENABLE_NETPLAY_IF_PRESENT
+    NETPLAY_LOBBY_URL "ws://netplay.retcomm.net:8765"
+    # Two seats: the stock split-screen versus on pads 1 and 2, and the
+    # netplay seat ceiling for link versus.
+    MAX_PLAYERS 2
     APP_ICON "${CMAKE_CURRENT_SOURCE_DIR}/assets/psxrecomp.ico"
     GEN_MARKER "games/master-of-arena/generated/SLUS_010.30_dispatch.c"
     GEN_FULL_GLOB "games/master-of-arena/generated/SLUS_010.30_full_*.c"

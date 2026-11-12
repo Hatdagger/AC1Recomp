@@ -4,7 +4,7 @@
 [game]
 name = "Armored Core: Master of Arena"
 id = "SLUS-01030"
-players = 1
+players = 2
 exe = "games/master-of-arena/disc/SLUS_010.30"
 # Verified as one program on N images (verify_disc_set.py).
 # Disc 1 boots; the rest are data. The runtime builds its disc

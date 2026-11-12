@@ -163,10 +163,12 @@ static void moa_link_wait_entry(struct CPUState *cpu, uint32_t address)
 #define MOA_RA_NESTED      0x80052924u
 
 static const struct { uint32_t address, bytes; } moa_camera_state[] = {
-    {0x801D1CD8u, 4u}, {0x801D1CE8u, 8u}, {0x801D1CF2u, 28u},
-    {0x801D1D12u, 22u},
+    /* Everything the camera routine and its helpers write in the block
+     * 0x801D1CD8..0x801D1D27; the mode word (0x801D1CDC) and 0x801D1CF0 are
+     * set by the simulation and stay as they are. */
+    {0x801D1CD8u, 4u}, {0x801D1CE0u, 16u}, {0x801D1CF2u, 54u},
 };
-static uint8_t moa_camera[64], moa_camera_next[64];
+static uint8_t moa_camera[96], moa_camera_next[96];
 static int moa_in_view;
 
 static void moa_camera_copy(uint8_t *buffer, int to_guest)

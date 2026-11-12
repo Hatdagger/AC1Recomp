@@ -486,6 +486,7 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_bezel.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_ram.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_moa_disc.c
+    ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_moa_phantasma.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_hd_textures.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_packages.cpp
     ${PSXRECOMP_ROOT}/runtime/src/mod_media.cpp

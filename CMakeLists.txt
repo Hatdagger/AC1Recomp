@@ -117,7 +117,10 @@ psxrecomp_add_game_runtime(psx-master-of-arena
 # slot-1 memory card as the match's slot-2 card by default, on LAN and online.
 if(TARGET psx-master-of-arena)
     target_compile_definitions(psx-master-of-arena PRIVATE
-        PSX_NET_GUEST_MEMCARD_SHARE_DEFAULT=1)
+        PSX_NET_GUEST_MEMCARD_SHARE_DEFAULT=1
+        # Netplay never writes a player's own card: the host's slot 1 is a
+        # match-only file as well (the guest's cards already are).
+        PSX_NET_HOST_TEMP_CARD=1)
 endif()
 
 # Hub launcher: game picker, per-game disc and shared settings.

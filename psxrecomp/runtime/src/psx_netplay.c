@@ -635,6 +635,10 @@ typedef struct {
     int          mc_guest_done;
     int          mc_guest_sent;
     int          host_card_sandbox;
+    /* Title option PSX_NET_HOST_TEMP_CARD: the host's slot 1 writes to a
+     * match-only file too, so no netplay match writes anyone's own card. */
+    int          host_temp_card0;
+    int          personal_mc0_bound;
     int          personal_mc1_bound; /* host: slot 2 had a file before sandbox */
     int          local_save_staged;
     int          local_save_acked;   /* guest: coord reply already sent */
@@ -1416,6 +1420,60 @@ static void np_enter_host_card_sandbox(void)
     printf("psxrecomp: netplay host slot-2 -> guest card (%s)\n", path);
     fflush(stdout);
 }
+
+#if defined(PSX_NET_HOST_TEMP_CARD) && PSX_NET_HOST_TEMP_CARD
+/* Host slot 1 for the match: the card image already in memory (the host's own
+ * card) stays the match card; only the file behind it changes, so what the
+ * match writes lands in <saves>/netplay/host_card1.mcd and the host's own
+ * file is as it was when the match began. */
+static void np_enter_host_temp_card(void)
+{
+    const char *root = savestate_root_dir();
+    const char *dir = (root && root[0]) ? root : savestate_dir();
+    const char *p0 = NULL;
+    char base[512];
+    char path[600];
+
+    if (g_np.host_temp_card0) return;
+    (void)memcard_debug_info(0, &p0, NULL, NULL, NULL);
+    if (!p0 || !p0[0]) return; /* slot 1 disabled: nothing to protect */
+    g_np.personal_mc0[0] = '\0';
+    strncpy(g_np.personal_mc0, p0, sizeof(g_np.personal_mc0) - 1);
+    g_np.personal_mc0_bound = 1;
+
+    base[0] = '\0';
+    if (dir && dir[0]) {
+        size_t n;
+        strncpy(base, dir, sizeof(base) - 1);
+        base[sizeof(base) - 1] = '\0';
+        n = strlen(base);
+        while (n > 0 && (base[n - 1] == '/' || base[n - 1] == '\\'))
+            base[--n] = '\0';
+    }
+    if (base[0])
+        snprintf(path, sizeof(path), "%s/netplay/host_card1.mcd", base);
+    else
+        snprintf(path, sizeof(path), "%s/host_card1.mcd", NP_SANDBOX_FALLBACK);
+    /* Anything pending belongs to the personal file; write it there first. */
+    memcard_flush(0);
+    (void)memcard_rebind_path(0, path); /* creates netplay/ if needed */
+    g_np.host_temp_card0 = 1;
+    printf("psxrecomp: netplay host slot-1 -> match-only card (%s)\n", path);
+    fflush(stdout);
+}
+
+static void np_leave_host_temp_card(void)
+{
+    if (!g_np.host_temp_card0) return;
+    memcard_flush(0); /* to the match-only file */
+    (void)memcard_rebind_path(0, g_np.personal_mc0_bound ? g_np.personal_mc0 : NULL);
+    (void)memcard_reload_bound(); /* back to the personal card's contents */
+    g_np.host_temp_card0 = 0;
+}
+#else
+static void np_enter_host_temp_card(void) {}
+static void np_leave_host_temp_card(void) {}
+#endif
 
 static void np_leave_host_card_sandbox(void)
 {
@@ -4620,6 +4678,7 @@ void psx_netplay_bind_guest_saves(void)
          * even for the frames before seat 1's card lands. */
         if (g_np.guest_memcard && !g_np.host_card_sandbox)
             np_enter_host_card_sandbox();
+        np_enter_host_temp_card();
         return;
     }
     if (g_np.guest_sandbox)
@@ -4742,6 +4801,7 @@ void psx_netplay_shutdown(void)
     np_sched_bind(NULL);
     np_leave_guest_sandbox();
     np_leave_host_card_sandbox();
+    np_leave_host_temp_card();
     g_np_host_spectates = 0;
     g_np_port_map_valid = 0;
     {

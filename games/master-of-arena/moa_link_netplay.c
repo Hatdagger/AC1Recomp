@@ -186,6 +186,20 @@ static void moa_camera_copy(uint8_t *buffer, int to_guest)
         }
 }
 
+/* The HUD keeps per-view state inside the viewed player's 928-byte block
+ * while it draws: the lock-on marker's screen offsets (which the camera then
+ * leans toward), gauge animation, blink timers. The simulation only ever
+ * draws player 1, so player 2's copy of that state never advances there, and
+ * what the guest's redraw writes is discarded with the sandbox. Keep it on
+ * this peer instead: every byte of player 2's block the redraw changed is
+ * remembered and put back before the next redraw, unless the simulation has
+ * written that byte since (then the simulation's value wins). */
+#define MOA_PLAYER_BYTES 928u
+static uint8_t moa_hud[MOA_PLAYER_BYTES], moa_hud_kept[MOA_PLAYER_BYTES],
+               moa_hud_seen[MOA_PLAYER_BYTES];
+static uint8_t moa_hud_next[MOA_PLAYER_BYTES], moa_hud_kept_next[MOA_PLAYER_BYTES],
+               moa_hud_seen_next[MOA_PLAYER_BYTES];
+
 typedef struct MoaCall {
     struct CPUState *cpu;
     uint32_t sp;
@@ -214,6 +228,20 @@ static int moa_draw_guest_view(struct CPUState *cpu, void *user,
     const uint32_t local = psx_mod_read_word(MOA_LOCAL_PLAYER);
     const uint32_t remote = psx_mod_read_word(MOA_REMOTE_PLAYER);
     const uint32_t viewed = psx_mod_read_word(MOA_VIEWED_PLAYER);
+    /* Player 2's HUD state from this peer's previous redraw. */
+    static uint8_t start[MOA_PLAYER_BYTES];
+    for (uint32_t i = 0; i < MOA_PLAYER_BYTES; i++) {
+        const uint8_t now = psx_mod_read_byte(remote + i);
+        moa_hud_seen_next[i] = now;
+        moa_hud_next[i] = moa_hud[i];
+        moa_hud_kept_next[i] = 0;
+        start[i] = now;
+        if (moa_camera_valid && moa_hud_kept[i] && now == moa_hud_seen[i]) {
+            moa_hud_kept_next[i] = 1;
+            start[i] = moa_hud[i];
+            if (start[i] != now) psx_mod_write_byte(remote + i, start[i]);
+        }
+    }
     psx_mod_write_word(MOA_LOCAL_PLAYER, remote);
     psx_mod_write_word(MOA_REMOTE_PLAYER, local);
     psx_mod_write_word(MOA_VIEWED_PLAYER, viewed == local ? remote : local);
@@ -231,6 +259,13 @@ static int moa_draw_guest_view(struct CPUState *cpu, void *user,
      * other one so it draws the area the next flip shows. */
     psx_mod_write_word(MOA_GFX, psx_mod_read_word(MOA_GFX) ^ 1u);
     (void)moa_call(&call, MOA_LINK_RENDER, camera);
+    for (uint32_t i = 0; i < MOA_PLAYER_BYTES; i++) {
+        const uint8_t after = psx_mod_read_byte(remote + i);
+        if (after != start[i]) {
+            moa_hud_next[i] = after;
+            moa_hud_kept_next[i] = 1;
+        }
+    }
     return !call.broken;
 }
 
@@ -440,6 +475,11 @@ static void moa_link_render_entry(struct CPUState *cpu, uint32_t address)
     if (ok) {
         for (unsigned i = 0; i < sizeof moa_camera; i++)
             moa_camera[i] = moa_camera_next[i];
+        for (unsigned i = 0; i < MOA_PLAYER_BYTES; i++) {
+            moa_hud[i] = moa_hud_next[i];
+            moa_hud_kept[i] = moa_hud_kept_next[i];
+            moa_hud_seen[i] = moa_hud_seen_next[i];
+        }
         moa_camera_valid = 1;
         psx_mod_counter_add("moa.link.guest_view", 1);
         if (!said_ok) {

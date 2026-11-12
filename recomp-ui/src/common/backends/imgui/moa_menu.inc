@@ -467,7 +467,18 @@ static void draw_settings_page(LauncherModel* m, const Gfx& g, const Input& in) 
 
 /* ---- mods page --------------------------------------------------------------- */
 
-static std::string new_mods_dir() { return asset("mods/new"); }
+/* The drop folder for new mod packages: mods/new beside the game, or under
+ * the mods folder a release names (PSX_MODS_DIR, see launcher/moa_shell.c). */
+static std::string new_mods_dir() {
+    const char* named = std::getenv("PSX_MODS_DIR");
+    if (named && named[0]) {
+        std::string dir(named);
+        for (char& c : dir) if (c == '\\') c = '/';
+        if (dir.back() != '/') dir.push_back('/');
+        return dir + "new";
+    }
+    return asset("mods/new");
+}
 
 static const char* archive_extension(const LauncherModel* m) {
     return (m->mods && m->mods->archive_extension && m->mods->archive_extension[0])

@@ -143,6 +143,23 @@ if(TARGET psx-master-of-arena)
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_link_netplay.c")
 endif()
 
+# Windows release front door: "Armored Core Moa.exe" starts the game from
+# RecompData/ and points it at the player's Memory Card/ and Mods/ folders
+# (launcher/moa_shell.c; scripts/package_moa_windows.sh lays the folder out).
+if(WIN32)
+    add_executable(psx-moa-shell WIN32 launcher/moa_shell.c)
+    set_target_properties(psx-moa-shell PROPERTIES OUTPUT_NAME "Armored Core Moa")
+    if(MINGW)
+        target_link_options(psx-moa-shell PRIVATE -municode -static)
+    endif()
+    if(CMAKE_RC_COMPILER AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/psxrecomp.ico")
+        set(_moa_shell_rc "${CMAKE_CURRENT_BINARY_DIR}/psx-moa-shell_app_icon.rc")
+        file(WRITE "${_moa_shell_rc}"
+             "IDI_ICON1 ICON \"${CMAKE_CURRENT_SOURCE_DIR}/assets/psxrecomp.ico\"\n")
+        target_sources(psx-moa-shell PRIVATE "${_moa_shell_rc}")
+    endif()
+endif()
+
 # Hub launcher: game picker, per-game disc and shared settings.
 set(AC_IMGUI "${CMAKE_CURRENT_SOURCE_DIR}/recomp-ui/src/third_party/imgui")
 add_executable(psx-launcher

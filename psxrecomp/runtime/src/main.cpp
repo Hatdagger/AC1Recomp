@@ -18324,8 +18324,14 @@ int main(int argc, char** argv) {
      * psx_mod_set_* callbacks — is inert until this runs. */
     {
         std::string mod_error;
+        /* A release laid out for the player keeps mods outside the game's
+         * own folder; whatever starts the game names that folder. */
+        std::filesystem::path mods_root = exe_dir_from_argv(argv[0]) / "mods";
+        if (const char* named = std::getenv("PSX_MODS_DIR")) {
+            if (named[0]) mods_root = std::filesystem::path(named);
+        }
         if (!PSXRecompV4::mod_runtime_initialize(
-                exe_dir_from_argv(argv[0]) / "mods", game_id,
+                mods_root, game_id,
                 game_entry_pc, text_guard_exe_path, &mod_error)) {
             std::fprintf(stderr, "psxrecomp: mods unavailable: %s\n",
                          mod_error.c_str());

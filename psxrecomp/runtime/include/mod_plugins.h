@@ -69,6 +69,14 @@ int psx_game_register_netplay_function_entry(
     uint32_t address, PSXModFunctionEntryCallback callback);
 int psx_game_register_netplay_function_filter(
     uint32_t address, PSXModFunctionFilterCallback filter);
+/* The same for an offline feature of the game itself (a mode the stock game
+ * does not have). These run only while no netplay session is active, so a
+ * match stays stock; the game gates them on its own state (a launch option,
+ * the engine in memory). Same contract as the netplay forms. */
+int psx_game_register_offline_function_entry(
+    uint32_t address, PSXModFunctionEntryCallback callback);
+int psx_game_register_offline_function_filter(
+    uint32_t address, PSXModFunctionFilterCallback filter);
 /* Complete a guest function from its trusted entry callback after supplying
  * its full result. Valid only for that callback's CPU. Publishes pc=$ra and
  * prevents the original body from executing. Nested callbacks have separate

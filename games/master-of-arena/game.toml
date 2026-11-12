@@ -45,6 +45,20 @@ seeds = "games/master-of-arena/seeds/ghidra_funcs.txt"
 out_dir = "games/master-of-arena/generated"
 strict = true
 
+# Function entries the game's own hooks attach to (moa_link_netplay.c,
+# moa_ai_battle.c). Disc-loaded code that is compiled calls the hook check
+# only at the entries listed here; interpreted code checks every entry. All
+# engines load at the same address, so each hook verifies the code in memory.
+mod_function_entry_funcs = [
+    # menu
+    "0x800B0CB4", "0x800B2D7C",
+    # link versus engine (netplay)
+    "0x80051F3C", "0x80055428", "0x80055578", "0x80067FE4", "0x80053FE4",
+    "0x80053808", "0x80053498", "0x80052C80", "0x80052EE4", "0x800532FC",
+    # arena engine (AI Battle)
+    "0x80055768", "0x8008DC98", "0x8008D4AC",
+]
+
 [runtime]
 window_title = "Armored Core: Master of Arena Recompiled"
 memcard_dir = "saves"

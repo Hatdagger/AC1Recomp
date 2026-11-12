@@ -299,9 +299,18 @@ std::vector<ActiveFunctionEntryHook>& game_netplay_entry_hooks() {
     return value;
 }
 
+/* The game's own hooks for an offline feature (see
+ * psx_game_register_offline_function_entry). Kept apart from the netplay
+ * table: these never run in a netplay session. */
+std::vector<ActiveFunctionEntryHook>& game_offline_entry_hooks() {
+    static std::vector<ActiveFunctionEntryHook> value;
+    return value;
+}
+
 void update_function_entry_count() {
     g_psx_mod_function_entry_hooks = (uint32_t)(
-        active_function_entry_hooks().size() + game_netplay_entry_hooks().size());
+        active_function_entry_hooks().size() + game_netplay_entry_hooks().size() +
+        game_offline_entry_hooks().size());
 }
 
 void clear_function_entry_hooks() {
@@ -3162,12 +3171,36 @@ extern "C" int psx_mod_function_entry(CPUState* cpu, uint32_t address) {
     return game_netplay_function_entry(cpu, address);
 }
 
+static int register_game_hook(std::vector<PSXRecompV4::ActiveFunctionEntryHook>& table,
+                              uint32_t address,
+                              PSXModFunctionEntryCallback callback,
+                              PSXModFunctionFilterCallback filter);
+
 static int register_game_netplay_hook(uint32_t address,
                                       PSXModFunctionEntryCallback callback,
                                       PSXModFunctionFilterCallback filter) {
+    return register_game_hook(PSXRecompV4::game_netplay_entry_hooks(), address,
+                              callback, filter);
+}
+
+extern "C" int psx_game_register_offline_function_entry(
+    uint32_t address, PSXModFunctionEntryCallback callback) {
+    return callback ? register_game_hook(PSXRecompV4::game_offline_entry_hooks(),
+                                         address, callback, nullptr) : 0;
+}
+
+extern "C" int psx_game_register_offline_function_filter(
+    uint32_t address, PSXModFunctionFilterCallback filter) {
+    return filter ? register_game_hook(PSXRecompV4::game_offline_entry_hooks(),
+                                       address, nullptr, filter) : 0;
+}
+
+static int register_game_hook(std::vector<PSXRecompV4::ActiveFunctionEntryHook>& table,
+                              uint32_t address,
+                              PSXModFunctionEntryCallback callback,
+                              PSXModFunctionFilterCallback filter) {
     using namespace PSXRecompV4;
     if (!address || (!callback && !filter)) return 0;
-    auto& table = game_netplay_entry_hooks();
     const uint32_t key = function_entry_key(address);
     for (const auto& hook : table)
         if (hook.key == key && hook.callback == callback && hook.filter == filter) return 1;
@@ -3194,6 +3227,23 @@ extern "C" int psx_game_register_netplay_function_filter(
  * offline too, to test a title's netplay path without opening a session. */
 static int game_netplay_function_entry(CPUState* cpu, uint32_t address) {
     using namespace PSXRecompV4;
+    if (!psx_netplay_active()) {
+        /* Offline feature hooks of the game itself: never in a session. */
+        const auto& offline = game_offline_entry_hooks();
+        if (!offline.empty()) {
+            const uint32_t okey = function_entry_key(address);
+            auto oit = std::lower_bound(
+                offline.begin(), offline.end(), okey,
+                [](const ActiveFunctionEntryHook& hook, uint32_t k) { return hook.key < k; });
+            for (; oit != offline.end() && oit->key == okey; ++oit) {
+                if (oit->callback) oit->callback(cpu, address);
+                if (oit->filter && oit->filter(cpu, address)) {
+                    cpu->pc = cpu->gpr[31];
+                    return 1;
+                }
+            }
+        }
+    }
     const auto& table = game_netplay_entry_hooks();
     if (table.empty()) return 0;
     if (!psx_netplay_active()) {

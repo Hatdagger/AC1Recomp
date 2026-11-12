@@ -224,7 +224,7 @@ static void move_cursor(Page page, int count, const Input& in, int visible) {
 
 /* ---- main page ------------------------------------------------------------- */
 
-enum MainEntry { MAIN_START = 0, MAIN_NETWORK, MAIN_SETTINGS, MAIN_MODS, MAIN_EXIT };
+enum MainEntry { MAIN_START = 0, MAIN_NETWORK, MAIN_AI_BATTLE, MAIN_SETTINGS, MAIN_MODS, MAIN_EXIT };
 
 static int enabled_mod_count(const LauncherModel* m, int* total_out) {
     int on = 0, total = 0;
@@ -258,9 +258,19 @@ static void start_game(LauncherModel* m) {
     }
 }
 
+/* AI Battle is a launch option the game reads (games/master-of-arena/
+ * moa_ai_battle.c): the versus menu then fields two computer-flown ACs. */
+static void set_ai_battle(bool on) {
+#ifdef _WIN32
+    _putenv_s("PSX_MOA_AI_BATTLE", on ? "1" : "0");
+#else
+    setenv("PSX_MOA_AI_BATTLE", on ? "1" : "0", 1);
+#endif
+}
+
 static void draw_main(LauncherModel* m, const Gfx& g, const Input& in) {
     struct Entry { MainEntry id; const char* label; const char* info; };
-    Entry entries[5];
+    Entry entries[6];
     int count = 0;
     entries[count++] = { MAIN_START, m->in_session ? "RESUME GAME" : "START GAME",
         m->in_session ? "Return to the game in progress."
@@ -270,6 +280,10 @@ static void draw_main(LauncherModel* m, const Gfx& g, const Input& in) {
         entries[count++] = { MAIN_NETWORK, "NETWORK PLAY",
             "Versus over LAN or online, two players. The host is player 1; "
             "the guest is player 2 and brings their own memory card." };
+    if (!m->in_session)
+        entries[count++] = { MAIN_AI_BATTLE, "AI BATTLE (TEST)",
+            "Watch two computer-flown ACs fight. At the title pick VS Mode, "
+            "then VS START: two arena opponents are drawn from your disc." };
     entries[count++] = { MAIN_SETTINGS, "SETTINGS",
         "Display, sound and controls." };
     if (m->mods)
@@ -339,7 +353,9 @@ static void draw_main(LauncherModel* m, const Gfx& g, const Input& in) {
     if (activate < 0) return;
     cur = activate;
     switch (entries[activate].id) {
-        case MAIN_START:    start_game(m); break;
+        case MAIN_START:    if (!m->in_session) set_ai_battle(false);
+                            start_game(m); break;
+        case MAIN_AI_BATTLE: set_ai_battle(true); start_game(m); break;
         case MAIN_NETWORK:  launcher_model_set_view(m, LNG_VIEW_NETPLAY_MODE); break;
         case MAIN_SETTINGS: launcher_model_set_view(m, LNG_VIEW_SETTINGS); break;
         case MAIN_MODS:     launcher_model_set_view(m, LNG_VIEW_MODS); break;

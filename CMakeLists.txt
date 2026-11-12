@@ -140,7 +140,9 @@ if(TARGET psx-master-of-arena)
         RECOMP_LAUNCHER_MOA_MENU=1)
     # Netplay runs the link versus engine in place of the cable.
     target_sources(psx-master-of-arena PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_link_netplay.c")
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_link_netplay.c"
+        # AI Battle: the arena opponent AI flies both ACs (offline only).
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_ai_battle.c")
 endif()
 
 # Windows release front door: "Armored Core Moa.exe" starts the game from

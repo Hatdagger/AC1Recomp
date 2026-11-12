@@ -24,8 +24,6 @@
 #include <stdint.h>
 
 #define MOA_MODE_BYTE      0x8003EA2Au  /* engine the exe launches next */
-#define MOA_ROLE_MASTER    0x8003EA90u
-#define MOA_ROLE_DECIDED   0x8003EA91u
 #define MOA_LINK           0x80043C70u
 #define MOA_RECV           (MOA_LINK + 932u)
 #define MOA_SEND           (MOA_LINK + 944u)
@@ -42,6 +40,7 @@
 #define MOA_LINK_FRAME     0x8007E4C8u  /* link engine: per-frame packet */
 #define MOA_RA_FRAME_WAIT  0x8007E4F4u
 #define MOA_RA_PAUSE_END   0x8007D780u
+#define MOA_RA_ROLE_WAIT   0x8005567Cu
 
 static int moa_code_is(uint32_t address, uint32_t w0, uint32_t w1)
 {
@@ -66,14 +65,13 @@ static void moa_menu_versus_entry(struct CPUState *cpu, uint32_t address)
     psx_mod_counter_add("moa.link.menu_launch", 1);
 }
 
-/* Roles: skip the cable negotiation; this simulation is the master, so the
- * local player is the player-1 block and the remote one the player-2 block. */
+/* First link code of a match. The role negotiation itself still runs (its
+ * "already decided" flag also means "common textures already loaded", so it
+ * must stay clear on the first match); moa_link_wait_entry answers it. */
 static void moa_link_roles_entry(struct CPUState *cpu, uint32_t address)
 {
     (void)cpu; (void)address;
     if (!moa_link_engine_loaded()) return;
-    psx_mod_write_byte(MOA_ROLE_MASTER, 1);
-    psx_mod_write_byte(MOA_ROLE_DECIDED, 1);
     /* The engine still calls read() and write() on its two "sio:" handles.
      * The serial driver's write waits for the other console to acknowledge
      * each packet on the DSR line and gives up after 300 ticks, which ends
@@ -110,6 +108,12 @@ static void moa_link_wait_entry(struct CPUState *cpu, uint32_t address)
         psx_mod_write_byte(MOA_RECV + 6u, psx_mod_read_byte(MOA_SEND + 6u));
         psx_mod_write_half(MOA_RECV + 2u, psx_mod_read_half(MOA_REMOTE_PAD));
         psx_mod_write_half(MOA_REMOTE_PAD, pad2_now);
+    } else if (ra == MOA_RA_ROLE_WAIT) {
+        /* Role negotiation: we offered 'M'aster, the other side 'S'lave. The
+         * local player is then the player-1 block, the remote the player-2
+         * block, as the versus menu filled them. */
+        psx_mod_write_byte(MOA_SEND + 1u, 77);
+        psx_mod_write_byte(MOA_RECV + 1u, 83);
     } else if (ra == MOA_RA_PAUSE_END) {
         /* Leaving pause: the engine strips Start from both saved pads so the
          * press that closed the menu does not reopen it. */

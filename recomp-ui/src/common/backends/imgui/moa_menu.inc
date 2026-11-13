@@ -26,7 +26,8 @@ namespace moa_menu {
 
 enum Page {
     PAGE_MAIN = 0, PAGE_SETTINGS, PAGE_MODS,
-    PAGE_NET_MODE, PAGE_NET_ROOMS, PAGE_LOBBY, PAGE_AI, PAGE_EXTRAS, PAGE_UPDATES, PAGE__COUNT
+    PAGE_NET_MODE, PAGE_NET_ROOMS, PAGE_LOBBY, PAGE_AI, PAGE_EXTRAS, PAGE_UPDATES,
+    PAGE_AI_CARDS, PAGE_AI_EDIT, PAGE_AI_ADV, PAGE__COUNT
 };
 
 struct State {
@@ -249,7 +250,6 @@ static std::string g_ai_folder;
 static int g_ai_pick[2] = { -1, -1 };          /* index into g_ai_cards; -1 random */
 static std::string g_ai_chosen[2];             /* paths, kept across rescans */
 static bool g_ai_manual = false;               /* player 1 flies unit 1 */
-static int  g_ai_style[2] = { 0, 0 };          /* 0 standard, 1 aggressor */
 
 static void set_env(const char* name, const char* value) {
 #ifdef _WIN32
@@ -326,9 +326,13 @@ static void export_ai_cards(LauncherModel* m) {
     note(buf);
 }
 
+static void draw_emblem(const Gfx& g, float x, float y, float size, const moa_card& c);
+#include "moa_menu_ai.inc"
+
 static void open_ai_page(LauncherModel* m) {
     scan_ai_cards(m);
     g_state.ai_page = true;
+    g_ai_sub = AI_SUB_SETUP;
     g_state.cursor[PAGE_AI] = 0;
     g_state.note[0] = '\0';
 }
@@ -368,6 +372,7 @@ static void draw_unit(const Gfx& g, float x, int unit) {
         text(g, x + 16.0f, 216.0f, 13.0f, kHi, "RANDOM");
         text(g, x + 16.0f, 236.0f, 10.0f, kDim, "A CARD FROM THE FOLDER,", 0.0f);
         text(g, x + 16.0f, 250.0f, 10.0f, kDim, "OR AN ARENA OPPONENT", 0.0f);
+        text(g, x + 16.0f, 268.0f, 10.0f, kDim, "(BALANCED AI)", 0.0f);
         return;
     }
     const moa_card& c = g_ai_cards[(size_t)p].card;
@@ -375,20 +380,22 @@ static void draw_unit(const Gfx& g, float x, int unit) {
     text(g, x + 16.0f, 216.0f, 13.0f, kBright, g_ai_cards[(size_t)p].label.c_str());
     text(g, x + 16.0f, 236.0f, 10.0f, kDim, "PILOT");
     text(g, x + 16.0f, 250.0f, 11.0f, kText, upper(c.pilot).c_str());
-    if (c.plus) text(g, x + 16.0f, 268.0f, 10.0f, kHi, "HUMAN PLUS");
+    text(g, x + 16.0f, 268.0f, 10.0f, kHi, ("AI  " + card_ai_label(c)).c_str());
 }
 
 static void draw_ai_page(LauncherModel* m, const Gfx& g, const Input& in) {
-    enum { AI_START = 0, AI_UNIT1, AI_UNIT2, AI_PILOT1, AI_STYLE1, AI_STYLE2, AI_EXPORT, AI_ROWS };
+    if (g_ai_sub == AI_SUB_CARDS) { draw_ai_cards(m, g, in); return; }
+    if (g_ai_sub == AI_SUB_EDIT)  { draw_ai_edit(m, g, in); return; }
+    if (g_ai_sub == AI_SUB_ADV)   { draw_ai_adv(g, in); return; }
+    enum { AI_START = 0, AI_UNIT1, AI_UNIT2, AI_PILOT1, AI_WORKSHOP, AI_EXPORT, AI_ROWS };
     move_cursor(PAGE_AI, AI_ROWS, in, AI_ROWS);
     int& cur = g_state.cursor[PAGE_AI];
 
     header(g, "AI BATTLE", "COMPUTER VERSUS COMPUTER");
     panel(g, 24.0f, 76.0f, 270.0f, 214.0f, "SETUP");
     int activate = -1;
-    const char* labels[AI_ROWS] = { "START BATTLE", "UNIT 1", "UNIT 2",
-                                    "UNIT 1 PILOT", "UNIT 1 STYLE", "UNIT 2 STYLE",
-                                    "EXPORT CARDS FROM MEMORY CARD" };
+    const char* labels[AI_ROWS] = { "START BATTLE", "UNIT 1", "UNIT 2", "UNIT 1 PILOT",
+                                    "CARD WORKSHOP", "EXPORT CARDS FROM MEMORY CARD" };
     for (int i = 0; i < AI_ROWS; ++i) {
         std::string value;
         if (i == AI_UNIT1 || i == AI_UNIT2) {
@@ -396,10 +403,6 @@ static void draw_ai_page(LauncherModel* m, const Gfx& g, const Input& in) {
             value = p < 0 ? std::string("RANDOM") : g_ai_cards[(size_t)p].label;
         } else if (i == AI_PILOT1) {
             value = g_ai_manual ? "YOU" : "COMPUTER";
-        } else if (i == AI_STYLE1) {
-            value = g_ai_manual ? "-" : g_ai_style[0] ? "AGGRESSOR" : "STANDARD";
-        } else if (i == AI_STYLE2) {
-            value = g_ai_style[1] ? "AGGRESSOR" : "STANDARD";
         }
         bool hovered = false;
         if (row(g, 25.0f, 90.0f + kRowH * i, 268.0f, i == cur, true, labels[i],
@@ -419,9 +422,9 @@ static void draw_ai_page(LauncherModel* m, const Gfx& g, const Input& in) {
                       g_ai_cards.size() == 1 ? "" : "S");
         text(g, 38.0f, 322.0f, 11.0f, g_ai_cards.empty() ? kWarn : kHi, buf);
         text(g, 38.0f, 342.0f, 10.0f, kText,
-             "Cards are AC images saved by the Raven Card Builder. Put them in the "
-             "memory card folder:", 560.0f);
-        text(g, 38.0f, 372.0f, 10.0f, kDim,
+             "Cards are AC images saved by the Raven Card Builder. Each card carries its "
+             "AI; set it in the CARD WORKSHOP. Cards live in the memory card folder:", 560.0f);
+        text(g, 38.0f, 384.0f, 10.0f, kDim,
              g_ai_folder.empty() ? "(no memory card folder yet)" : g_ai_folder.c_str(), 560.0f);
     }
     footer(g, "A  SELECT      LEFT / RIGHT  CHANGE      B  BACK      START  BATTLE");
@@ -429,19 +432,19 @@ static void draw_ai_page(LauncherModel* m, const Gfx& g, const Input& in) {
     if (in.back) { g_state.ai_page = false; return; }
     if ((cur == AI_UNIT1 || cur == AI_UNIT2) && (in.left || in.right))
         step_ai_pick(cur - AI_UNIT1, in.left ? -1 : 1);
-    if ((cur == AI_PILOT1 || cur == AI_STYLE1 || cur == AI_STYLE2) && (in.left || in.right)) {
-        if (cur == AI_PILOT1) g_ai_manual = !g_ai_manual;
-        else if (cur == AI_STYLE1 && !g_ai_manual) g_ai_style[0] ^= 1;
-        else if (cur == AI_STYLE2) g_ai_style[1] ^= 1;
-    }
+    if (cur == AI_PILOT1 && (in.left || in.right)) g_ai_manual = !g_ai_manual;
     if (in.confirm) activate = cur;
     if (in.start) activate = AI_START;
     if (activate < 0) return;
     cur = activate;
     if (activate == AI_EXPORT) { export_ai_cards(m); return; }
     if (activate == AI_PILOT1) { g_ai_manual = !g_ai_manual; return; }
-    if (activate == AI_STYLE1) { if (!g_ai_manual) g_ai_style[0] ^= 1; return; }
-    if (activate == AI_STYLE2) { g_ai_style[1] ^= 1; return; }
+    if (activate == AI_WORKSHOP) {
+        g_ai_sub = AI_SUB_CARDS;
+        g_ws_action = -1;
+        g_confirm_delete = false;
+        return;
+    }
     if (activate != AI_START) { step_ai_pick(activate - AI_UNIT1, 1); return; }
     if (g_ai_pick[0] >= 0 && g_ai_pick[0] == g_ai_pick[1]) {
         note("PICK TWO DIFFERENT CARDS");
@@ -451,8 +454,6 @@ static void draw_ai_page(LauncherModel* m, const Gfx& g, const Input& in) {
         set_env(u ? "PSX_MOA_AI_UNIT2" : "PSX_MOA_AI_UNIT1",
                 g_ai_pick[u] >= 0 ? g_ai_cards[(size_t)g_ai_pick[u]].path.c_str() : "");
     set_env("PSX_MOA_AI_P1", g_ai_manual ? "1" : "0");
-    set_env("PSX_MOA_AI_STYLE1", g_ai_style[0] && !g_ai_manual ? "aggressor" : "");
-    set_env("PSX_MOA_AI_STYLE2", g_ai_style[1] ? "aggressor" : "");
     set_ai_battle(true);
     g_state.ai_page = false;
     start_game(m);

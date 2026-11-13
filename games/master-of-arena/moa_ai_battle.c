@@ -401,33 +401,10 @@ static void moa_swap_sets(struct CPUState *cpu)
 /* ---- cards ------------------------------------------------------------------
  *
  * Unit cards (Raven Card Builder images, .png) are read from the folder that
- * holds the player's memory card. Each card borrows the AI of an in-game arena
- * opponent picked by its legs (moa_card_pick_ai); the AI bytes come from the
- * player's own disc.
+ * holds the player's memory card. A card carries its own AI (format 4: preset
+ * or the game's AI editor sliders, plus advanced overrides); a card without
+ * AI, and a random arena opponent, fly the Balanced preset.
  */
-#define MOA_POOL_MAX 256
-
-static uint8_t moa_pool_parts[MOA_POOL_MAX][3];  /* head, arms, legs */
-static uint8_t moa_pool_ai[MOA_POOL_MAX][MOA_AI_RECORD_BYTES];
-static int moa_pool_count = -1;
-
-static void moa_build_pool(void)
-{
-    moa_pool_count = 0;
-    uint8_t record[MOA_RECORD_BYTES], ai[MOA_AI_RECORD_BYTES];
-    for (uint32_t arena = 0; arena < MOA_ARENAS; arena++) {
-        const uint32_t entries = psx_mod_read_byte(MOA_ARENA_ENTRIES + arena);
-        for (uint32_t rank = 0; rank + 1u < entries && moa_pool_count < MOA_POOL_MAX; rank++) {
-            if (!moa_arena_unit(arena, rank, record, ai)) continue;
-            moa_pool_parts[moa_pool_count][0] = record[1];
-            moa_pool_parts[moa_pool_count][1] = record[2];
-            moa_pool_parts[moa_pool_count][2] = record[3];
-            memcpy(moa_pool_ai[moa_pool_count], ai, MOA_AI_RECORD_BYTES);
-            moa_pool_count++;
-        }
-    }
-}
-
 #define MOA_CARDS_MAX 64
 static char *moa_card_paths[MOA_CARDS_MAX];
 static int moa_card_paths_count;
@@ -482,8 +459,7 @@ static int moa_read_card(const char *path, struct moa_card *card)
     return ok;
 }
 
-/* A card as a unit: its record, and the AI of the opponent it is matched to
- * with the card's own Human PLUS level. */
+/* A card as a unit: its record and its own AI record. */
 static int moa_card_unit(const char *path, uint8_t *record, uint8_t *ai)
 {
     static struct moa_card card;
@@ -491,14 +467,9 @@ static int moa_card_unit(const char *path, uint8_t *record, uint8_t *ai)
         psx_mod_counter_add("moa.ai.card_unreadable", 1);
         return 0;
     }
-    if (moa_pool_count < 0) moa_build_pool();
-    const int pick = moa_card_pick_ai(&card, (const uint8_t (*)[3])moa_pool_parts,
-                                      moa_pool_count);
-    if (pick < 0) return 0;
     moa_card_record(&card, record);
-    memcpy(ai, moa_pool_ai[pick], MOA_AI_RECORD_BYTES);
-    ai[0] = card.plus;
-    psx_mod_counter_add("moa.ai.card_unit", 1);
+    moa_card_ai_record(&card, ai);
+    psx_mod_counter_add(card.has_ai ? "moa.ai.card_unit" : "moa.ai.card_unit_balanced", 1);
     return 1;
 }
 
@@ -541,7 +512,11 @@ static int moa_pick_units(uint8_t record[2][MOA_RECORD_BYTES],
             const uint32_t rank = moa_random(entries - 1u);  /* last = player's slot */
             if (arena * 256u + rank == picked) continue;
             have[u] = moa_arena_unit(arena, rank, record[u], ai[u]);
-            if (have[u]) picked = arena * 256u + rank;
+            if (have[u]) {
+                picked = arena * 256u + rank;
+                /* Its build, the Balanced AI with its own Human PLUS level. */
+                moa_ai_build_record(ai[u][0], NULL, NULL, NULL, ai[u]);
+            }
         }
         if (!have[u]) return 0;
     }
@@ -584,24 +559,8 @@ static uint32_t moa_load_frames;
 static uint8_t moa_unit_record[2][MOA_RECORD_BYTES];
 static uint8_t moa_unit_ai[2][MOA_AI_RECORD_BYTES];
 
-/* Playing styles. The opponent AI is a table of 36 tuning bytes; "aggressor"
- * raises the ones that behave as chances of acting (attack, close in, use the
- * ranged and blade weapons) to the top of what any arena rival has, so the
- * unit pushes the lock-on and engages more often. */
-static void moa_apply_style(unsigned unit, uint8_t *ai)
-{
-    const char *name = getenv(unit ? "PSX_MOA_AI_STYLE2" : "PSX_MOA_AI_STYLE1");
-    if (!name || strcmp(name, "aggressor") != 0) return;
-    static const struct { uint8_t index, value; } tune[] = {
-        { 1, 60 }, { 2, 100 }, { 3, 100 }, { 8, 100 }, { 9, 100 }, { 10, 30 } };
-    for (unsigned i = 0; i < sizeof tune / sizeof tune[0]; i++)
-        ai[tune[i].index] = tune[i].value;
-}
-
 static void moa_units_ready(void)
 {
-    moa_apply_style(0, moa_unit_ai[0]);
-    moa_apply_style(1, moa_unit_ai[1]);
     memcpy(moa_side_record, moa_unit_ai[0], MOA_AI_RECORD_BYTES);
     moa_side_record_set = 1;
     for (unsigned i = 0; i < MOA_AI_RECORD_BYTES; i++)

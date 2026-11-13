@@ -1,4 +1,4 @@
-/* Master of Arena: AI Battle cards (Raven Card Builder, formats 2 and 3).
+/* Master of Arena: AI Battle cards (Raven Card Builder, formats 2 to 4).
  *
  * A card is a square picture (640x640 as the builder saves it; any size and
  * PNG or JPEG are read). A colour strip down its left edge carries the build,
@@ -16,8 +16,24 @@
 extern "C" {
 #endif
 
+/* The game's own AI editor (RANKER MK AI, menu 0x8007FB78) has seven rows:
+ * REBEL POINT (the Human PLUS level: the card's `plus`) and these six. */
+enum moa_ai_slider {
+    MOA_AI_SHOOT = 0, MOA_AI_BLADE, MOA_AI_LOCK, MOA_AI_AVOID, MOA_AI_FLY,
+    MOA_AI_RANGE,                         /* 0 = SHORT, 50 = MID, 100 = LONG */
+    MOA_AI_SLIDERS
+};
+
+enum moa_ai_preset {
+    MOA_AI_PRESET_CUSTOM = 0, MOA_AI_PRESET_BALANCED, MOA_AI_PRESET_AGGRESSOR,
+    MOA_AI_PRESET_SNIPER, MOA_AI_PRESET_DUELIST, MOA_AI_PRESET_EVASIVE,
+    MOA_AI_PRESETS
+};
+
+#define MOA_AI_RECORD_SIZE 36
+
 struct moa_card {
-    uint8_t format;          /* 2 or 3 */
+    uint8_t format;          /* 2, 3 or 4 */
     /* Arena record order: core, head, arms, legs, hand weapon, blade,
      * back left, back right, FCS, generator, options lo, options hi, booster. */
     uint8_t rec[13];
@@ -32,6 +48,12 @@ struct moa_card {
     char ac[17];
     uint16_t palette[16];    /* game emblem colours, 15-bit BGR */
     uint8_t emblem[64 * 64]; /* game emblem, palette index per pixel */
+    /* AI (format 4). Without it the unit flies the Balanced preset. */
+    uint8_t has_ai;
+    uint8_t ai_preset;                    /* MOA_AI_PRESET_*; CUSTOM = own sliders */
+    uint8_t ai_slider[MOA_AI_SLIDERS];    /* 0..100, see enum moa_ai_slider */
+    uint8_t ai_set[36];                   /* 1 = advanced override for that byte */
+    uint8_t ai_raw[36];                   /* the override values */
 };
 
 /* Decode a card from an image file's bytes. 1 = ok; 0 = not a card / damaged. */
@@ -40,17 +62,29 @@ int moa_card_decode(const uint8_t *file, size_t bytes, struct moa_card *out);
 /* The 64-byte arena AC record the game uses for an opponent. */
 void moa_card_record(const struct moa_card *card, uint8_t record[64]);
 
-/* CRC-32 (zlib polynomial) of the 13 build bytes: seeds the AI draw so the
- * same card always borrows the same AI. */
-uint32_t moa_card_seed(const struct moa_card *card);
+/* ---- AI ---- */
 
-/* AI draw. `pool` lists the in-game opponents as (head, arms, legs) triples in
- * arena-then-rank order; returns the index of the opponent whose AI the card
- * borrows, or -1 for an empty pool. Same legs +3, same arms +3, same head +3,
- * on top of one ticket; candidates are the opponents on the card's legs and
- * on the nearest similar legs when those are few. */
-int moa_card_pick_ai(const struct moa_card *card, const uint8_t (*pool)[3],
-                     int pool_count);
+/* Preset names ("BALANCED", ...; CUSTOM for 0) and slider values. */
+const char *moa_ai_preset_name(int preset);
+void moa_ai_preset_sliders(int preset, uint8_t out[MOA_AI_SLIDERS]);
+
+/* Human PLUS level <-> REBEL POINT step: 0..3 as the game's editor (level
+ * 0 / 2 / 5 / 7), plus step 4 = the builder's full level 9. */
+int moa_ai_rebel_step(uint8_t plus);
+uint8_t moa_ai_rebel_level(int step);
+
+/* The 36-byte AI record the arena engine reads (0x8004AC80): the game's
+ * default record, the sliders applied exactly as the game's editor does,
+ * then the advanced overrides; byte 0 = the card's Human PLUS level. A card
+ * without AI gets the Balanced preset. */
+void moa_card_ai_record(const struct moa_card *card, uint8_t record[MOA_AI_RECORD_SIZE]);
+
+/* The same from bare values (sliders may be NULL = Balanced). */
+void moa_ai_build_record(uint8_t plus, const uint8_t *sliders, const uint8_t *set,
+                         const uint8_t *raw, uint8_t record[MOA_AI_RECORD_SIZE]);
+
+/* Give a card AI: a preset (sliders from the preset, overrides cleared). */
+void moa_card_set_preset(struct moa_card *card, int preset);
 
 /* ---- writing cards ---- */
 
@@ -60,7 +94,7 @@ int moa_card_pick_ai(const struct moa_card *card, const uint8_t (*pool)[3],
  * when the save has none). 1 = ok. */
 int moa_card_from_save(const uint8_t *block, size_t bytes, struct moa_card *out);
 
-/* Draw a card (format 3, as the builder saves it) and write it as PNG. */
+/* Draw a card (format 4, or 3 when it carries no AI) and write it as PNG. */
 int moa_card_write_png(const struct moa_card *card, const char *path);
 
 /* Every scenario save on a memory card image (.mcd, 128 KB) becomes a card

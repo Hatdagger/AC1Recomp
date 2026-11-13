@@ -6,6 +6,23 @@ your own copy of Armored Core: Master of Arena (USA).**
 This is a test release. Please report problems in this repository's Issues
 (what you did, what you saw, Windows or Linux/Steam Deck).
 
+## What's new in 0.5.0
+
+- **AI Battle → Card Workshop:** your AI cards in one list. Edit a card's AI,
+  duplicate it or delete it (with a confirmation), all from the controller.
+- **Cards carry their own AI now.** Pick a preset (Balanced, Aggressor,
+  Sniper, Duelist, Evasive) or go CUSTOM with the game's own Ranker AI sliders:
+  REBEL POINT, SHOOT, BLADE, LOCK, AVOID, FLY and RANGE TYPE. The sliders set
+  the AI exactly the way the game's Ranker MK AI editor does. An ADVANCED page
+  lets you set each of the 36 AI bytes directly.
+- AI no longer comes from arena opponents with the same legs. Cards without AI
+  settings (older cards) and random arena opponents fly the Balanced preset.
+- The STANDARD / AGGRESSOR style switch is gone; use the card's AI instead.
+- Saving a card redraws its image (card format 4). The web card builder does
+  not read format 4 yet.
+- REBEL POINT is the Human PLUS level. At 0, the load and energy limits apply,
+  and a build over them won't start the match.
+
 ## What's new in 0.4.2
 
 - **Fix: Project Phantasma missions now show up** in the mission list (and
@@ -52,8 +69,8 @@ disc 2 plays from the single disc.
   images made with the
   [Raven Card Builder](https://hatdagger.github.io/ACMOA-AI-CARDBUILDER/)
   (or exported from your own memory card save in the launcher), and go in the
-  `Memory Card` folder. Each card borrows the AI of an arena opponent with the
-  same legs.
+  `Memory Card` folder. Each card carries its own AI (preset or the game's
+  Ranker AI sliders), set in AI Battle → Card Workshop.
 - **Extras → Install data from Project Phantasma:** if you also own Project
   Phantasma (USA), its 49 opponents are added as a tenth Ex Arena with their
   own ranking, and **(new in 0.4.0) its missions**: the next Phantasma mission

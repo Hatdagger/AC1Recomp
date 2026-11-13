@@ -20,7 +20,7 @@
 #define CARD_Y_SW   8
 #define CARD_Y_DATA (CARD_Y_SW + 16 * CARD_SW + 8)
 #define CARD_ROWS   ((CARD_N - CARD_Y_DATA) / CARD_CELL)
-#define CARD_MAXCOLS 4
+#define CARD_MAXCOLS 6   /* format 3 cards use 2..4; AI overrides can need 6 */
 #define CARD_EX     72
 #define CARD_EY     64
 #define CARD_PMAX   64
@@ -107,7 +107,7 @@ static int card_unpack(const uint8_t *p, int count, struct moa_card *u, int *has
     if (crc16_ccitt(body, body_bytes) != (uint16_t)((p[n - 1] << 8) | p[n])) return 0;
     struct bit_reader r = { body, body_bytes, 0, 0 };
     const unsigned fmt = get_bits(&r, 4);
-    if (fmt != 2 && fmt != 3) return 0;
+    if (fmt < 2 || fmt > 4) return 0;
     u->format = (uint8_t)fmt;
     for (int i = 0; i < 13; i++) u->rec[i] = (uint8_t)get_bits(&r, 8);
     *has_paint = 0;
@@ -134,6 +134,20 @@ static int card_unpack(const uint8_t *p, int count, struct moa_card *u, int *has
     u->pilot[l0] = 0;
     for (unsigned i = 0; i < l1; i++) u->ac[i] = (char)get_bits(&r, 7);
     u->ac[l1] = 0;
+    if (fmt == 4 && get_bits(&r, 1)) {
+        u->has_ai = 1;
+        u->ai_preset = (uint8_t)get_bits(&r, 3);
+        if (u->ai_preset >= MOA_AI_PRESETS) u->ai_preset = MOA_AI_PRESET_CUSTOM;
+        for (int i = 0; i < MOA_AI_SLIDERS; i++) {
+            const unsigned v = get_bits(&r, 7);
+            u->ai_slider[i] = (uint8_t)(v > 100 ? 100 : v);
+        }
+        if (get_bits(&r, 1)) {
+            for (int i = 0; i < MOA_AI_RECORD_SIZE; i++) u->ai_set[i] = (uint8_t)get_bits(&r, 1);
+            for (int i = 0; i < MOA_AI_RECORD_SIZE; i++)
+                if (u->ai_set[i]) u->ai_raw[i] = (uint8_t)get_bits(&r, 8);
+        }
+    }
     return !r.bad;
 }
 
@@ -271,57 +285,100 @@ void moa_card_record(const struct moa_card *card, uint8_t record[64])
     memcpy(record + 16, card->paint, 48);
 }
 
-uint32_t moa_card_seed(const struct moa_card *card)
-{
-    uint32_t c = 0xFFFFFFFFu;
-    for (int i = 0; i < 13; i++) {
-        c ^= card->rec[i];
-        for (int k = 0; k < 8; k++) c = (c & 1u) ? (c >> 1) ^ 0xEDB88320u : c >> 1;
-    }
-    return ~c;
-}
-
-/* Legs that few in-game opponents use, and the nearest similar legs (same
- * type, closest weight and armour) whose opponents join the draw. Indexed by
- * leg part id; computed from the part tables (AI Battle matching notes). */
-static const struct { uint8_t legs; uint8_t near[2]; uint8_t count; } moa_leg_near[] = {
-    { 0, { 6 }, 1 }, { 2, { 13 }, 1 }, { 3, { 0, 4 }, 2 }, { 9, { 13 }, 1 },
-    { 10, { 0 }, 1 }, { 14, { 18 }, 1 }, { 20, { 16 }, 1 }, { 24, { 23 }, 1 },
-    { 27, { 28 }, 1 }, { 32, { 30 }, 1 },
+/* ---- AI ------------------------------------------------------------------------
+ *
+ * The record the arena engine reads (36 bytes at 0x8004AC80) and the way the
+ * game's own AI editor (RANKER MK AI, menu 0x8007FB78) writes its sliders into
+ * it. Bytes the editor leaves alone keep the default record's values; the
+ * advanced page can override any byte.
+ */
+static const uint8_t moa_ai_default[MOA_AI_RECORD_SIZE] = {
+    0, 50, 50, 50, 0, 0, 0, 0, 80, 50, 55, 51, 12, 51, 50, 0,
+    0xE8, 0x03, 0x88, 0x13,                          /* 1000, 5000 */
+    50, 25, 50, 25, 50, 25, 50, 25, 50, 25,
+    50, 50, 50, 50, 50, 50,
 };
 
-static int moa_leg_candidate(uint8_t want, uint8_t legs)
+static const struct { const char *name; uint8_t s[MOA_AI_SLIDERS]; } moa_ai_presets[MOA_AI_PRESETS] = {
+    /*                 shoot blade lock avoid fly range */
+    { "CUSTOM",    {  50,  50,  50,  50,  50,  50 } },
+    { "BALANCED",  {  50,  50,  50,  50,  50,  50 } },
+    { "AGGRESSOR", {  90,  85,  95,  85,  80,  30 } },
+    { "SNIPER",    {  95,  10,  95,  50,  30,  90 } },
+    { "DUELIST",   {  40, 100,  70,  60,  70,   0 } },
+    { "EVASIVE",   {  60,  30,  60, 100,  90,  70 } },
+};
+
+const char *moa_ai_preset_name(int preset)
 {
-    if (legs == want) return 1;
-    for (size_t i = 0; i < sizeof moa_leg_near / sizeof moa_leg_near[0]; i++)
-        if (moa_leg_near[i].legs == want)
-            for (int k = 0; k < moa_leg_near[i].count; k++)
-                if (moa_leg_near[i].near[k] == legs) return 1;
-    return 0;
+    return (preset >= 0 && preset < MOA_AI_PRESETS) ? moa_ai_presets[preset].name : "CUSTOM";
 }
 
-int moa_card_pick_ai(const struct moa_card *card, const uint8_t (*pool)[3],
-                     int pool_count)
+void moa_ai_preset_sliders(int preset, uint8_t out[MOA_AI_SLIDERS])
 {
-    const uint8_t head = card->rec[1], arms = card->rec[2], legs = card->rec[3];
-    /* Nobody on these or similar legs (a damaged card): everyone draws. */
-    int everyone = 1;
-    for (int i = 0; i < pool_count; i++)
-        if (moa_leg_candidate(legs, pool[i][2])) { everyone = 0; break; }
-    uint32_t total = 0;
-    for (int pass = 0; pass < 2; pass++) {
-        uint32_t r = pass ? moa_card_seed(card) % total : 0;
-        for (int i = 0; i < pool_count; i++) {
-            if (!everyone && !moa_leg_candidate(legs, pool[i][2])) continue;
-            const uint32_t w = 1u + 3u * (pool[i][2] == legs) + 3u * (pool[i][1] == arms) +
-                               3u * (pool[i][0] == head);
-            if (!pass) { total += w; continue; }
-            if (r < w) return i;
-            r -= w;
-        }
-        if (!total) return -1;
+    if (preset <= 0 || preset >= MOA_AI_PRESETS) preset = MOA_AI_PRESET_BALANCED;
+    memcpy(out, moa_ai_presets[preset].s, MOA_AI_SLIDERS);
+}
+
+int moa_ai_rebel_step(uint8_t plus)
+{
+    /* menu 0x8007FAD8 for 0..3; step 4 = the builder's full level 9 */
+    return plus == 0 ? 0 : plus < 4 ? 1 : plus < 6 ? 2 : plus < 9 ? 3 : 4;
+}
+
+uint8_t moa_ai_rebel_level(int step)
+{
+    static const uint8_t level[5] = { 0, 2, 5, 7, 9 };       /* menu 0x8007FB78 + full */
+    return level[step < 0 ? 0 : step > 4 ? 4 : step];
+}
+
+void moa_ai_build_record(uint8_t plus, const uint8_t *sliders, const uint8_t *set,
+                         const uint8_t *raw, uint8_t a[MOA_AI_RECORD_SIZE])
+{
+    uint8_t s[MOA_AI_SLIDERS];
+    if (sliders) memcpy(s, sliders, sizeof s);
+    else moa_ai_preset_sliders(MOA_AI_PRESET_BALANCED, s);
+    for (int i = 0; i < MOA_AI_SLIDERS; i++) if (s[i] > 100) s[i] = 100;
+    memcpy(a, moa_ai_default, MOA_AI_RECORD_SIZE);
+    const int shoot = s[MOA_AI_SHOOT], blade = s[MOA_AI_BLADE], lock = s[MOA_AI_LOCK];
+    const int avoid = s[MOA_AI_AVOID], fly = s[MOA_AI_FLY], range = s[MOA_AI_RANGE];
+    /* As the editor writes them (menu 0x8007FBC4..0x8007FCC8). */
+    a[13] = (uint8_t)(shoot + 1);
+    a[9] = (uint8_t)blade;
+    a[10] = (uint8_t)(105 - blade);
+    a[11] = (uint8_t)(lock == 100 ? 0 : lock + 1);
+    a[12] = (uint8_t)((100 - lock) / 4);
+    a[14] = (uint8_t)avoid;
+    a[1] = (uint8_t)(100 - fly);
+    a[2] = (uint8_t)(100 - fly);
+    a[3] = (uint8_t)fly;
+    a[20] = (uint8_t)((range + 100 - fly) / 2);
+    a[22] = (uint8_t)((fly + 100 - range) / 2);
+    a[24] = (uint8_t)range;
+    a[28] = (uint8_t)(100 - range);
+    if (set && raw)
+        for (int i = 1; i < MOA_AI_RECORD_SIZE; i++)
+            if (set[i]) a[i] = raw[i];
+    a[0] = plus;
+}
+
+void moa_card_ai_record(const struct moa_card *c, uint8_t record[MOA_AI_RECORD_SIZE])
+{
+    if (!c->has_ai) {
+        moa_ai_build_record(c->plus, NULL, NULL, NULL, record);
+        return;
     }
-    return -1;
+    moa_ai_build_record(c->plus, c->ai_slider, c->ai_set, c->ai_raw, record);
+}
+
+void moa_card_set_preset(struct moa_card *c, int preset)
+{
+    c->has_ai = 1;
+    c->ai_preset = (uint8_t)((preset > 0 && preset < MOA_AI_PRESETS) ? preset
+                                                                     : MOA_AI_PRESET_BALANCED);
+    moa_ai_preset_sliders(c->ai_preset, c->ai_slider);
+    memset(c->ai_set, 0, sizeof c->ai_set);
+    memset(c->ai_raw, 0, sizeof c->ai_raw);
 }
 
 /* ---- writing cards ------------------------------------------------------------ */
@@ -447,19 +504,19 @@ int moa_card_from_save(const uint8_t *b, size_t bytes, struct moa_card *c)
 
 /* ---- format 3 payload (builder: pack) ---- */
 
-struct bit_writer { uint8_t b[128]; int pos; };
+struct bit_writer { uint8_t b[160]; int pos; };
 
 static void put_bits(struct bit_writer *w, unsigned v, int n)
 {
     for (int i = n - 1; i >= 0; i--, w->pos++)
-        if (w->pos < 128 * 8 && ((v >> i) & 1u)) w->b[w->pos >> 3] |= (uint8_t)(0x80 >> (w->pos & 7));
+        if (w->pos < 160 * 8 && ((v >> i) & 1u)) w->b[w->pos >> 3] |= (uint8_t)(0x80 >> (w->pos & 7));
 }
 
-static int card_pack(const struct moa_card *c, uint8_t out[128])
+static int card_pack(const struct moa_card *c, uint8_t out[164])
 {
     struct bit_writer w;
     memset(&w, 0, sizeof w);
-    put_bits(&w, 3, 4);
+    put_bits(&w, c->has_ai ? 4u : 3u, 4);
     for (int i = 0; i < 13; i++) put_bits(&w, c->rec[i], 8);
     put_bits(&w, c->flag & 1, 1);
     put_bits(&w, 0, 4);                        /* pattern: custom paint */
@@ -478,6 +535,20 @@ static int card_pack(const struct moa_card *c, uint8_t out[128])
             const unsigned ch = (unsigned char)names[k][i];
             put_bits(&w, (ch >= 32 && ch < 127) ? ch : 63, 7);
         }
+    if (c->has_ai) {                           /* format 4 */
+        put_bits(&w, 1, 1);
+        put_bits(&w, c->ai_preset < MOA_AI_PRESETS ? c->ai_preset : 0u, 3);
+        for (int i = 0; i < MOA_AI_SLIDERS; i++)
+            put_bits(&w, c->ai_slider[i] > 100 ? 100u : c->ai_slider[i], 7);
+        int adv = 0;
+        for (int i = 1; i < MOA_AI_RECORD_SIZE; i++) if (c->ai_set[i]) adv = 1;
+        put_bits(&w, (unsigned)adv, 1);
+        if (adv) {
+            for (int i = 0; i < MOA_AI_RECORD_SIZE; i++) put_bits(&w, i && c->ai_set[i], 1);
+            for (int i = 1; i < MOA_AI_RECORD_SIZE; i++)
+                if (c->ai_set[i]) put_bits(&w, c->ai_raw[i], 8);
+        }
+    }
     const int body = (w.pos + 7) / 8;
     const uint16_t crc = crc16_ccitt(w.b, body);
     out[0] = (uint8_t)(body + 2);
@@ -552,7 +623,7 @@ static void png_sink_write(void *ctx, void *data, int size)
 
 int moa_card_write_png(const struct moa_card *c, const char *path)
 {
-    uint8_t payload[132];
+    uint8_t payload[164];
     const int n = card_pack(c, payload);
     int cols = 2;
     while (cols < CARD_MAXCOLS && n > card_cap(cols)) cols++;
@@ -560,6 +631,9 @@ int moa_card_write_png(const struct moa_card *c, const char *path)
     struct canvas cv = { (uint8_t *)malloc((size_t)CARD_N * CARD_N * 3) };
     if (!cv.px) return 0;
     fill(&cv, 0, 0, CARD_N, CARD_N, 6, 9, 13);
+    /* frame (under the strip: a six-column strip reaches x = 48) */
+    fill(&cv, 40, 24, 576, 1, 47, 74, 85); fill(&cv, 40, 615, 576, 1, 47, 74, 85);
+    fill(&cv, 40, 24, 1, 592, 47, 74, 85); fill(&cv, 615, 24, 1, 592, 47, 74, 85);
     const int W = cols * CARD_CELL;
     fill(&cv, 0, 0, W, CARD_Y_SW, 255, 255, 255);
     int rgb[16][3];
@@ -579,9 +653,6 @@ int moa_card_write_png(const struct moa_card *c, const char *path)
              v & 4 ? CARD_INK_ON : CARD_INK_OFF, v & 2 ? CARD_INK_ON : CARD_INK_OFF,
              v & 1 ? CARD_INK_ON : CARD_INK_OFF);
     }
-    /* frame */
-    fill(&cv, 40, 24, 576, 1, 47, 74, 85); fill(&cv, 40, 615, 576, 1, 47, 74, 85);
-    fill(&cv, 40, 24, 1, 592, 47, 74, 85); fill(&cv, 615, 24, 1, 592, 47, 74, 85);
     /* emblem: 64x64 at 8x */
     for (int y = 0; y < 64; y++)
         for (int x = 0; x < 64; x++) {

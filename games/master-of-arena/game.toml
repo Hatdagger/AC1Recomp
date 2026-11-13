@@ -60,6 +60,22 @@ mod_function_entry_funcs = [
     "0x80055768", "0x8008DC98", "0x8008D4AC",
 ]
 
+# Instruction hooks of the game's plugins (psxrecomp/runtime/src/
+# mod_builtin_moa_*.c). Compiled disc-loaded code calls the instruction hook
+# check only at the addresses listed here (interpreted code checks them all),
+# so every hook address must be in this list or it never runs once its code
+# is compiled.
+mod_instruction_sites = [
+    # single disc
+    "0x800C4D50",
+    # Project Phantasma arena (menu)
+    "0x800BB93C", "0x800C01E8", "0x800C0460", "0x800BD5B8", "0x800BB9F4",
+    "0x800BBEE8", "0x800BA8AC",
+    # Project Phantasma missions: mission screen (menu), mission loads (engine)
+    "0x8009417C", "0x800943AC",
+    "0x800556B8", "0x800556D4", "0x80055874", "0x80055894",
+]
+
 [runtime]
 window_title = "Armored Core: Master of Arena Recompiled"
 memcard_dir = "saves"

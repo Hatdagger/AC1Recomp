@@ -6,6 +6,15 @@ your own copy of Armored Core: Master of Arena (USA).**
 This is a test release. Please report problems in this repository's Issues
 (what you did, what you saw, Windows or Linux/Steam Deck).
 
+## What's new in 0.4.2
+
+- **Fix: Project Phantasma missions now show up** in the mission list (and
+  Master of Arena's missions get their "M:" prefix). On PCs that compile the
+  game's code for speed, the missions' hooks were skipped, so nothing changed
+  in the list even with the missions switched on. The first start after
+  updating may take a little longer while the game's code is compiled again.
+- The Raven Card Builder link now opens the web page.
+
 ## What's new in 0.4.1
 
 - **Extras → Reinstall additional content:** removes the installed Project
@@ -41,7 +50,7 @@ disc 2 plays from the single disc.
   battle, settings, mods and extras, all from a gamepad.
 - **AI Battle:** pick two AC cards and watch the computer fly both. Cards are
   images made with the
-  [Raven Card Builder](https://github.com/Hatdagger/ACMOA-AI-CARDBUILDER)
+  [Raven Card Builder](https://hatdagger.github.io/ACMOA-AI-CARDBUILDER/)
   (or exported from your own memory card save in the launcher), and go in the
   `Memory Card` folder. Each card borrows the AI of an arena opponent with the
   same legs.

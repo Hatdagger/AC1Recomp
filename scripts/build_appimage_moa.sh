@@ -137,6 +137,10 @@ fi
 if [ -n "\${APPIMAGE:-}" ]; then
     PSX_DISC_SEARCH_DIR=\$(dirname -- "\$APPIMAGE")
     export PSX_DISC_SEARCH_DIR
+    # The game's update page replaces this file; it cannot see APPIMAGE (unset
+    # below), so the path travels under this name.
+    MOA_APPIMAGE="\$APPIMAGE"
+    export MOA_APPIMAGE
 fi
 export LD_LIBRARY_PATH="\$APPDIR/usr/lib\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
 unset APPIMAGE

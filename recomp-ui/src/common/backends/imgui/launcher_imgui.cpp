@@ -29,6 +29,11 @@
 
 #include "launcher_sdlcompat.h"   // pulls the right SDL header + event shim
 
+#if defined(RECOMP_LAUNCHER_MOA_MENU) && RECOMP_LAUNCHER_MOA_MENU
+/* Before the menu's anonymous namespace: a C++ header included inside it would
+ * declare its functions there. */
+#include "../../../../../games/master-of-arena/moa_update.h"
+#endif
 #include "imgui.h"
 #include "launcher_nav.h"
 #if defined(LNG_SDL3)

@@ -20,12 +20,13 @@
 
 #include "../../../../../games/master-of-arena/moa_card.h"
 #include "../../../../../games/master-of-arena/moa_phantasma.h"
+#include "../../../../../games/master-of-arena/moa_update.h"
 
 namespace moa_menu {
 
 enum Page {
     PAGE_MAIN = 0, PAGE_SETTINGS, PAGE_MODS,
-    PAGE_NET_MODE, PAGE_NET_ROOMS, PAGE_LOBBY, PAGE_AI, PAGE_EXTRAS, PAGE__COUNT
+    PAGE_NET_MODE, PAGE_NET_ROOMS, PAGE_LOBBY, PAGE_AI, PAGE_EXTRAS, PAGE_UPDATES, PAGE__COUNT
 };
 
 struct State {
@@ -48,6 +49,7 @@ struct State {
     std::vector<std::string> new_packages;   /* files waiting in mods/new */
     bool   ai_page = false;            /* the AI Battle page is up */
     bool   extras_page = false;        /* the Extras page is up */
+    bool   updates_page = false;       /* the Updates page is up */
     char   note[200] = {0};
     double note_until = 0.0;
 };
@@ -603,9 +605,92 @@ static void draw_extras_page(LauncherModel* m, const Gfx& g, const Input& in) {
     if (in.confirm || clicked) choose_phantasma(m);
 }
 
+/* ---- Updates page ----------------------------------------------------------------
+ *
+ * Opt-in: nothing is looked up or downloaded until a button here is pressed
+ * (games/master-of-arena/moa_update.cpp does the work on its own thread).
+ * Only the program's own files are replaced; memory cards, mods, disc images
+ * and settings are left alone.
+ */
+static bool update_live(const moa_update::Snapshot& s) {
+    using moa_update::State;
+    return s.state == State::Available || s.state == State::Downloading ||
+           s.state == State::Applying;
+}
+
+static void open_updates_page() {
+    g_state.updates_page = true;
+    g_state.cursor[PAGE_UPDATES] = 0;
+    g_state.note[0] = '\0';
+}
+
+static void draw_updates_page(const Gfx& g, const Input& in) {
+    using moa_update::State;
+    const moa_update::Snapshot s = moa_update::snapshot();
+    const bool busy = s.state == State::Checking || s.state == State::Downloading ||
+                      s.state == State::Applying;
+    std::string why;
+    const bool can = moa_update::supported(&why);
+    const bool can_apply = can && s.state == State::Available;
+
+    move_cursor(PAGE_UPDATES, 2, in, 2);
+    int& cur = g_state.cursor[PAGE_UPDATES];
+    header(g, "UPDATES", "NOTHING IS DOWNLOADED UNTIL YOU ASK");
+    panel(g, 24.0f, 76.0f, 592.0f, 64.0f, "SELECT");
+    bool hov[2] = { false, false };
+    const bool click0 = row(g, 25.0f, 90.0f, 590.0f, cur == 0, !busy,
+                            "CHECK FOR UPDATE", "", false, false, &hov[0]);
+    const bool click1 = row(g, 25.0f, 90.0f + kRowH, 590.0f, cur == 1, can_apply && !busy,
+                            "DOWNLOAD AND APPLY UPDATE", "", false, false, &hov[1]);
+    for (int i = 0; i < 2; ++i)
+        if (hov[i] && (ImGui::GetIO().MouseDelta.x != 0.0f || ImGui::GetIO().MouseDelta.y != 0.0f))
+            cur = i;
+
+    panel(g, 24.0f, 156.0f, 592.0f, 260.0f, "VERSION");
+    text(g, 38.0f, 172.0f, 11.0f, kDim, "INSTALLED");
+    text(g, 170.0f, 172.0f, 11.0f, kText, s.current == "dev" ? "DEVELOPMENT BUILD" : s.current.c_str());
+    text(g, 38.0f, 191.0f, 11.0f, kDim, "NEWEST");
+    text(g, 170.0f, 191.0f, 11.0f, s.latest.empty() ? kDim : kText,
+         s.latest.empty() ? "NOT CHECKED YET" : s.latest.c_str());
+    if (!s.message.empty()) {
+        const ImU32 c = s.state == State::Failed ? kWarn
+                      : (s.state == State::Available) ? kHi
+                      : (s.state == State::UpToDate || s.state == State::Done) ? kOn : kText;
+        text(g, 38.0f, 214.0f, 11.0f, c, s.message.c_str(), 560.0f);
+    }
+    if (s.state == State::Downloading) {
+        const float w = 540.0f;
+        const float f = s.total ? std::min(1.0f, (float)((double)s.done / (double)s.total)) : 0.0f;
+        g.dl->AddRect(at(g, 38.0f, 236.0f), at(g, 38.0f + w, 248.0f), kLine);
+        g.dl->AddRectFilled(at(g, 39.0f, 237.0f), at(g, 39.0f + (w - 2.0f) * f, 247.0f), kHi);
+        char b[80];
+        std::snprintf(b, sizeof b, "%.1f / %.1f MB", s.done / 1048576.0, s.total / 1048576.0);
+        text(g, 38.0f, 253.0f, 10.0f, kDim, b);
+    } else if (s.state == State::Applying) {
+        text(g, 38.0f, 236.0f, 10.0f, kWarn, "DO NOT CLOSE THE GAME WHILE THIS RUNS.");
+    }
+    if (!can) text(g, 38.0f, 282.0f, 11.0f, kWarn, why.c_str(), 560.0f);
+    text(g, 38.0f, 308.0f, 11.0f, kText,
+         "An update replaces only the game's own program files. Your memory "
+         "cards, installed mods, disc images and settings are not touched. The "
+         "new version starts the next time you open the game. Checking and "
+         "downloading use the internet and go to GitHub only when you press a "
+         "button here.", 560.0f);
+    footer(g, "A / ENTER  SELECT      B / ESC  BACK");
+
+    if (in.back) { g_state.updates_page = false; return; }
+    if (busy) return;
+    if (click0) cur = 0;
+    if (click1) cur = 1;
+    if (in.confirm || click0 || click1) {
+        if (cur == 0) moa_update::check();
+        else if (can_apply) moa_update::download_and_apply();
+    }
+}
+
 /* ---- main page ------------------------------------------------------------- */
 
-enum MainEntry { MAIN_START = 0, MAIN_NETWORK, MAIN_AI_BATTLE, MAIN_EXTRAS, MAIN_SETTINGS, MAIN_MODS, MAIN_EXIT };
+enum MainEntry { MAIN_START = 0, MAIN_NETWORK, MAIN_AI_BATTLE, MAIN_EXTRAS, MAIN_SETTINGS, MAIN_MODS, MAIN_UPDATES, MAIN_EXIT };
 
 static int enabled_mod_count(const LauncherModel* m, int* total_out) {
     int on = 0, total = 0;
@@ -651,7 +736,7 @@ static void set_ai_battle(bool on) {
 
 static void draw_main(LauncherModel* m, const Gfx& g, const Input& in) {
     struct Entry { MainEntry id; const char* label; const char* info; };
-    Entry entries[7];
+    Entry entries[8];
     int count = 0;
     entries[count++] = { MAIN_START, m->in_session ? "RESUME GAME" : "START GAME",
         m->in_session ? "Return to the game in progress."
@@ -674,6 +759,10 @@ static void draw_main(LauncherModel* m, const Gfx& g, const Input& in) {
     if (m->mods)
         entries[count++] = { MAIN_MODS, "MODS",
             "Switch installed mods on or off, and install new ones." };
+    if (!m->in_session)
+        entries[count++] = { MAIN_UPDATES, "UPDATES",
+            "Look for a newer version and install it when you choose. Nothing "
+            "happens by itself, and your saves, mods and discs are not touched." };
     entries[count++] = { MAIN_EXIT, m->in_session ? "QUIT GAME" : "EXIT",
         m->in_session ? "Close the game." : "Close the launcher." };
 
@@ -683,10 +772,13 @@ static void draw_main(LauncherModel* m, const Gfx& g, const Input& in) {
     header(g, "MASTER OF ARENA", "SYSTEM MENU");
     panel(g, 24.0f, 76.0f, 270.0f, 340.0f, "SELECT");
     int activate = -1;
+    const moa_update::Snapshot upd = moa_update::snapshot();
     for (int i = 0; i < count; ++i) {
         bool hovered = false;
         if (row(g, 25.0f, 90.0f + kRowH * i, 268.0f, i == cur, true,
-                entries[i].label, nullptr, false, false, &hovered))
+                entries[i].label,
+                entries[i].id == MAIN_UPDATES && update_live(upd) ? "NEW" : nullptr,
+                false, false, &hovered))
             activate = i;
         if (hovered && (ImGui::GetIO().MouseDelta.x != 0.0f ||
                         ImGui::GetIO().MouseDelta.y != 0.0f))
@@ -727,6 +819,15 @@ static void draw_main(LauncherModel* m, const Gfx& g, const Input& in) {
                       upper(launcher_model_aspect_label(m)).c_str(),
                       upper(launcher_model_fullscreen_label(m)).c_str());
         text(g, 424.0f, y, 11.0f, kText, buf);
+        y += 19.0f;
+        if (update_live(upd)) {
+            text(g, 324.0f, y, 11.0f, kDim, "UPDATE");
+            std::snprintf(buf, sizeof buf, "AVAILABLE  v%s", upd.latest.c_str());
+            text(g, 424.0f, y, 11.0f, kHi, buf);
+        } else if (upd.state == moa_update::State::Done) {
+            text(g, 324.0f, y, 11.0f, kDim, "UPDATE");
+            text(g, 424.0f, y, 11.0f, kOn, "INSTALLED. RESTART");
+        }
     }
 
     panel(g, 310.0f, 242.0f, 306.0f, 174.0f, "INFO");
@@ -742,6 +843,7 @@ static void draw_main(LauncherModel* m, const Gfx& g, const Input& in) {
                             start_game(m); break;
         case MAIN_AI_BATTLE: open_ai_page(m); break;
         case MAIN_EXTRAS:   open_extras_page(m); break;
+        case MAIN_UPDATES:  open_updates_page(); break;
         case MAIN_NETWORK:  launcher_model_set_view(m, LNG_VIEW_NETPLAY_MODE); break;
         case MAIN_SETTINGS: launcher_model_set_view(m, LNG_VIEW_SETTINGS); break;
         case MAIN_MODS:     launcher_model_set_view(m, LNG_VIEW_MODS); break;
@@ -1135,7 +1237,7 @@ static void draw_mods_page(LauncherModel* m, const Gfx& g, const Input& in) {
 
 /* True when this menu, not the stock page, draws the current view. */
 static bool owns_view(const LauncherModel* m) {
-    if (m->view != LNG_VIEW_DASHBOARD) g_state.ai_page = g_state.extras_page = false;
+    if (m->view != LNG_VIEW_DASHBOARD) g_state.ai_page = g_state.extras_page = g_state.updates_page = false;
     if (m->view == LNG_VIEW_DASHBOARD) {
         g_state.classic_settings = false;
         g_state.classic_mods = false;
@@ -1190,6 +1292,7 @@ static void draw(LauncherModel* m, const LauncherTheme& th) {
         default:
             if (g_state.ai_page && !m->in_session) draw_ai_page(m, g, in);
             else if (g_state.extras_page && !m->in_session) draw_extras_page(m, g, in);
+            else if (g_state.updates_page && !m->in_session) draw_updates_page(g, in);
             else draw_main(m, g, in);
             break;
     }

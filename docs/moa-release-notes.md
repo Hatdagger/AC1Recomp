@@ -36,6 +36,16 @@ disc 2 plays from the single disc.
   in the same folder as your Master of Arena disc; if it is not there you pick
   the file yourself. The arena is built on your computer from your own discs;
   nothing from them is included in or sent by this download.
+- **Updates:** a new entry below Mods. *Check for update* asks GitHub for the
+  newest release; *Download and apply update* installs it, only when you press
+  it. Nothing is checked or downloaded by itself. When a newer version is found
+  the main menu's status panel shows "Update available". The download is
+  verified against the release's checksum. Only the game's own files are
+  replaced: memory cards, mods, disc images and settings are not touched. On
+  Linux the AppImage is replaced in place and the old one is kept beside it as
+  `<name>.previous`. It uses the system's `curl` (SteamOS and Windows 10 and
+  later include it). Versions before 0.3.1 have no Updates entry, so update
+  to 0.3.1 by hand once.
 
 ## Folders
 

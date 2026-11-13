@@ -146,7 +146,14 @@ if(TARGET psx-master-of-arena)
         # AI Battle cards (Raven Card Builder images) -> builds.
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_card.c"
         # Extras: the Project Phantasma arena, built from the player's discs.
-        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_phantasma.c")
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_phantasma.c"
+        # Updates: look for a newer release and install it when asked.
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_update.cpp")
+    # The release this build is (MOA_VERSION holds the number; a release's
+    # tag must be moa-v plus the same number, which the build workflow checks).
+    file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/MOA_VERSION" _moa_version LIMIT_COUNT 1)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/MOA_VERSION")
+    target_compile_definitions(psx-master-of-arena PRIVATE MOA_VERSION="${_moa_version}")
 endif()
 
 # Windows release front door: "Armored Core Moa.exe" starts the game from

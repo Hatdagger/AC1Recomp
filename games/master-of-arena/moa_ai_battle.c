@@ -531,7 +531,10 @@ static void moa_enter_unit(unsigned player, const uint8_t *r, const uint8_t *ai)
 {
     /* Arena record order -> the garage's: core, booster, head, arms, blade,
      * hand weapon, back left, back right, generator, FCS, (none), legs. */
-    const uint8_t parts[12] = { r[0], r[12], r[1], r[2], r[5], r[4],
+    /* Caterpillar legs (27 and up) have their own drive: no booster, even
+     * on a card made before the builder enforced it. */
+    const uint8_t booster = r[3] >= 27u && r[3] != 0xFFu ? 0xFFu : r[12];
+    const uint8_t parts[12] = { r[0], booster, r[1], r[2], r[5], r[4],
                                 r[6], r[7], r[9], r[8], 0xFFu, r[3] };
     for (unsigned i = 0; i < 12; i++)
         psx_mod_write_byte(MOA_VS_PARTS + 12u * player + i, parts[i]);

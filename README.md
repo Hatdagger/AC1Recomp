@@ -77,9 +77,6 @@ Pick two ACs and watch the computer fly both, using the game's own arena AI.
 - **Or export your own ACs:** the launcher can turn the ACs in your memory card
   saves into cards.
 - Put cards in the **Memory Card** folder and they show up in AI Battle.
-- **How a card fights:** it borrows the AI of an arena opponent that uses the
-  same legs (matching arms or head make that pilot more likely), so the same
-  card always fights the same way.
 
 ---
 

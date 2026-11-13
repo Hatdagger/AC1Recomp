@@ -307,6 +307,39 @@ static void moa_enter_unit(unsigned player, const uint8_t *r, const uint8_t *ai)
         psx_mod_write_byte(MOA_VS_PLUS + 8u * player + i, plus[i]);
 }
 
+/* Paint is baked into colour tables in video memory, one set per player.
+ * Player 1's set is the menu's working set; the game swaps the two sets to
+ * work on player 2's. The paint routine recolours the working set from the
+ * garage's current colours. */
+#define MOA_GARAGE_PAINT    0x80036FBCu  /* current AC: 48 colour bytes */
+#define MOA_PAINT_APPLY     0x80082530u  /* garage colours -> working colour tables */
+#define MOA_SIG_PAINT_APPLY 0x27BDFFD0u
+#define MOA_AC_SWAP         0x800C0E7Cu  /* swap the two players' AC graphics */
+#define MOA_SIG_AC_SWAP     0x27BDFFC0u
+
+static void moa_paint_units(struct CPUState *cpu, const uint8_t *paint1,
+                            const uint8_t *paint2)
+{
+    if (psx_mod_read_word(MOA_PAINT_APPLY) != MOA_SIG_PAINT_APPLY ||
+        psx_mod_read_word(MOA_AC_SWAP) != MOA_SIG_AC_SWAP)
+        return;
+    const uint32_t ra = cpu->gpr[31];
+    uint8_t keep[MOA_PAINT_BYTES];
+    for (unsigned i = 0; i < MOA_PAINT_BYTES; i++)
+        keep[i] = psx_mod_read_byte(MOA_GARAGE_PAINT + i);
+    for (unsigned i = 0; i < MOA_PAINT_BYTES; i++)
+        psx_mod_write_byte(MOA_GARAGE_PAINT + i, paint1[i]);
+    (void)psx_mod_call_guest(cpu, MOA_PAINT_APPLY, ra, 0, 0, 0, 0);
+    (void)psx_mod_call_guest(cpu, MOA_AC_SWAP, ra, 0, 0, 0, 0);
+    for (unsigned i = 0; i < MOA_PAINT_BYTES; i++)
+        psx_mod_write_byte(MOA_GARAGE_PAINT + i, paint2[i]);
+    (void)psx_mod_call_guest(cpu, MOA_PAINT_APPLY, ra, 0, 0, 0, 0);
+    (void)psx_mod_call_guest(cpu, MOA_AC_SWAP, ra, 0, 0, 0, 0);
+    for (unsigned i = 0; i < MOA_PAINT_BYTES; i++)
+        psx_mod_write_byte(MOA_GARAGE_PAINT + i, keep[i]);
+    psx_mod_counter_add("moa.ai.painted", 1);
+}
+
 static uint32_t moa_random(uint32_t below)
 {
     static uint32_t state;
@@ -317,7 +350,6 @@ static uint32_t moa_random(uint32_t below)
 
 static void moa_vs_start_entry(struct CPUState *cpu, uint32_t address)
 {
-    (void)cpu;
     moa_ai_enabled = -1;                       /* read the option per match */
     if (!moa_ai_battle_on() || psx_mod_read_word(address) != MOA_SIG_VS_START)
         return;
@@ -343,6 +375,7 @@ static void moa_vs_start_entry(struct CPUState *cpu, uint32_t address)
     }
     moa_enter_unit(0, record[0], ai[0]);
     moa_enter_unit(1, record[1], ai[1]);
+    moa_paint_units(cpu, record[0] + 16u, record[1] + 16u);
     memcpy(moa_side_record, ai[0], MOA_AI_RECORD_BYTES);
     moa_side_record_set = 1;
     for (unsigned i = 0; i < MOA_AI_RECORD_BYTES; i++)

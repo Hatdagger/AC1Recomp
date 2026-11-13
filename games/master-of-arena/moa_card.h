@@ -52,6 +52,22 @@ uint32_t moa_card_seed(const struct moa_card *card);
 int moa_card_pick_ai(const struct moa_card *card, const uint8_t (*pool)[3],
                      int pool_count);
 
+/* ---- writing cards ---- */
+
+/* A card from one Master of Arena scenario save (product BASLUS-01030, one
+ * 8 KB block, as stored on the memory card). The AC, its paint, optional parts,
+ * Human PLUS level, pilot and AC names and the player's emblem (a default one
+ * when the save has none). 1 = ok. */
+int moa_card_from_save(const uint8_t *block, size_t bytes, struct moa_card *out);
+
+/* Draw a card (format 3, as the builder saves it) and write it as PNG. */
+int moa_card_write_png(const struct moa_card *card, const char *path);
+
+/* Every scenario save on a memory card image (.mcd, 128 KB) becomes a card
+ * file in `out_dir`, named after the AC (never overwriting a file). Returns how
+ * many cards were written, or -1 when the memory card could not be read. */
+int moa_card_export_memcard(const char *mcd_path, const char *out_dir);
+
 #ifdef __cplusplus
 }
 #endif

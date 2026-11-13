@@ -238,6 +238,7 @@ static void start_game(LauncherModel* m);
 struct AiCard {
     std::string path;
     moa_card card;
+    std::string label;                          /* AC name, else the file's name */
 };
 static std::vector<AiCard> g_ai_cards;
 static std::string g_ai_folder;
@@ -290,14 +291,33 @@ static void scan_ai_cards(const LauncherModel* m) {
         std::fclose(f);
         AiCard c;
         c.path = path;
-        if (!data.empty() && moa_card_decode(data.data(), data.size(), &c.card))
+        if (!data.empty() && moa_card_decode(data.data(), data.size(), &c.card)) {
+            c.label = upper(c.card.ac[0] ? c.card.ac
+                                         : std::filesystem::path(path).stem().string().c_str());
             g_ai_cards.push_back(std::move(c));
+        }
     }
     for (int u = 0; u < 2; ++u) {
         g_ai_pick[u] = -1;
         for (size_t i = 0; i < g_ai_cards.size(); ++i)
             if (g_ai_cards[i].path == g_ai_chosen[u]) g_ai_pick[u] = (int)i;
     }
+}
+
+/* Every scenario save on memory card 1 becomes a card in the card folder. */
+static void export_ai_cards(LauncherModel* m) {
+    const std::string folder = ai_card_folder(m);
+    const char* card = m->s.memcard_path[0];
+    const std::string mcd = (card && card[0]) ? std::string(card)
+                                              : (std::filesystem::path(folder) / "card1.mcd").string();
+    if (folder.empty()) { note("NO MEMORY CARD FOLDER YET"); return; }
+    const int n = moa_card_export_memcard(mcd.c_str(), folder.c_str());
+    char buf[96];
+    if (n < 0) std::snprintf(buf, sizeof buf, "MEMORY CARD 1 COULD NOT BE READ");
+    else if (n == 0) std::snprintf(buf, sizeof buf, "NO NEW CARDS (NO SCENARIO SAVE ON CARD 1?)");
+    else std::snprintf(buf, sizeof buf, "EXPORTED %d CARD%s", n, n == 1 ? "" : "S");
+    scan_ai_cards(m);
+    note(buf);
 }
 
 static void open_ai_page(LauncherModel* m) {
@@ -346,26 +366,27 @@ static void draw_unit(const Gfx& g, float x, int unit) {
     }
     const moa_card& c = g_ai_cards[(size_t)p].card;
     draw_emblem(g, x + 16.0f, 92.0f, 113.0f, c);
-    text(g, x + 16.0f, 216.0f, 13.0f, kBright, upper(c.ac).c_str());
+    text(g, x + 16.0f, 216.0f, 13.0f, kBright, g_ai_cards[(size_t)p].label.c_str());
     text(g, x + 16.0f, 236.0f, 10.0f, kDim, "PILOT");
     text(g, x + 16.0f, 250.0f, 11.0f, kText, upper(c.pilot).c_str());
     if (c.plus) text(g, x + 16.0f, 268.0f, 10.0f, kHi, "HUMAN PLUS");
 }
 
 static void draw_ai_page(LauncherModel* m, const Gfx& g, const Input& in) {
-    enum { AI_START = 0, AI_UNIT1, AI_UNIT2, AI_ROWS };
+    enum { AI_START = 0, AI_UNIT1, AI_UNIT2, AI_EXPORT, AI_ROWS };
     move_cursor(PAGE_AI, AI_ROWS, in, AI_ROWS);
     int& cur = g_state.cursor[PAGE_AI];
 
     header(g, "AI BATTLE", "COMPUTER VERSUS COMPUTER");
     panel(g, 24.0f, 76.0f, 270.0f, 214.0f, "SETUP");
     int activate = -1;
-    const char* labels[AI_ROWS] = { "START BATTLE", "UNIT 1", "UNIT 2" };
+    const char* labels[AI_ROWS] = { "START BATTLE", "UNIT 1", "UNIT 2",
+                                    "EXPORT CARDS FROM MEMORY CARD" };
     for (int i = 0; i < AI_ROWS; ++i) {
         std::string value;
-        if (i != AI_START) {
+        if (i == AI_UNIT1 || i == AI_UNIT2) {
             const int p = g_ai_pick[i - AI_UNIT1];
-            value = p < 0 ? std::string("RANDOM") : upper(g_ai_cards[(size_t)p].card.ac);
+            value = p < 0 ? std::string("RANDOM") : g_ai_cards[(size_t)p].label;
         }
         bool hovered = false;
         if (row(g, 25.0f, 90.0f + kRowH * i, 268.0f, i == cur, true, labels[i],
@@ -393,12 +414,13 @@ static void draw_ai_page(LauncherModel* m, const Gfx& g, const Input& in) {
     footer(g, "A  SELECT      LEFT / RIGHT  CHANGE UNIT      B  BACK      START  BATTLE");
 
     if (in.back) { g_state.ai_page = false; return; }
-    if (cur != AI_START && (in.left || in.right))
+    if ((cur == AI_UNIT1 || cur == AI_UNIT2) && (in.left || in.right))
         step_ai_pick(cur - AI_UNIT1, in.left ? -1 : 1);
     if (in.confirm) activate = cur;
     if (in.start) activate = AI_START;
     if (activate < 0) return;
     cur = activate;
+    if (activate == AI_EXPORT) { export_ai_cards(m); return; }
     if (activate != AI_START) { step_ai_pick(activate - AI_UNIT1, 1); return; }
     if (g_ai_pick[0] >= 0 && g_ai_pick[0] == g_ai_pick[1]) {
         note("PICK TWO DIFFERENT CARDS");

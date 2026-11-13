@@ -2,8 +2,12 @@
 #include "moa_card.h"
 
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+
+#include "moa_card_font.h"
 
 /* stb_image is compiled into the runtime (psx_window_icon.cpp: PNG + JPEG). */
 #define STBI_NO_STDIO
@@ -318,4 +322,307 @@ int moa_card_pick_ai(const struct moa_card *card, const uint8_t (*pool)[3],
         if (!total) return -1;
     }
     return -1;
+}
+
+/* ---- writing cards ------------------------------------------------------------ */
+
+/* stb_image_write is compiled into the launcher (launcher_debug.c). */
+int stbi_write_png_to_func(void (*func)(void *, void *, int), void *context,
+                           int w, int h, int comp, const void *data, int stride);
+
+#define CARD_INK_ON  200                       /* data inks, as the builder draws them */
+#define CARD_INK_OFF 56
+
+/* Scenario save layout (one block; offsets from the block's start, as the
+ * game's save writer at menu 0x80071938 lays it out). */
+#define SAVE_PARTS    0x1B8                    /* 12 part ids, garage order */
+#define SAVE_PATTERN  0x1C4
+#define SAVE_VARIANT  0x1C5
+#define SAVE_OPTIONS  0x1C6                    /* u16 optional-parts mask */
+#define SAVE_PILOT    0x1CC                    /* 18 bytes, '>' ends */
+#define SAVE_ACNAME   0x1DE
+#define SAVE_PAINT    0x250                    /* 48 colour values */
+#define SAVE_EMBLEM   0x480                    /* 64x64, 4 bits per pixel */
+#define SAVE_CLUT     0xC80                    /* 16 x 15-bit colours */
+#define SAVE_PLUS     0xDEC                    /* Human PLUS state; [0] = level */
+
+static void save_name(const uint8_t *src, char out[17])
+{
+    int n = 0;
+    for (int i = 0; i < 18 && n < 16; i++) {
+        const uint8_t c = src[i];
+        if (c == 0 || c == '>') break;
+        out[n++] = (c >= 32 && c < 127) ? (char)c : '?';
+    }
+    while (n > 0 && out[n - 1] == ' ') n--;
+    out[n] = 0;
+}
+
+/* The builder's default emblem: an orange ring and a red arrow on dark slate. */
+static void default_emblem(struct moa_card *c)
+{
+    static const uint8_t rgb[4][3] = {
+        { 16, 22, 28 }, { 240, 160, 32 }, { 226, 91, 58 }, { 255, 244, 220 } };
+    memset(c->palette, 0, sizeof c->palette);
+    for (int i = 0; i < 4; i++) c->palette[i] = c15(rgb[i][0], rgb[i][1], rgb[i][2]);
+    for (int y = 0; y < 64; y++)
+        for (int x = 0; x < 64; x++) {
+            const double dx = x + 0.5 - 32, dy = y + 0.5 - 32, r = sqrt(dx * dx + dy * dy);
+            uint8_t v = 0;
+            if (r > 20 && r < 26) v = 1;
+            /* arrow: apex (32,10), base corners (50,48) and (14,48), notch (32,40) */
+            const double fx = x + 0.5, fy = y + 0.5;
+            if (fy >= 10 && fy <= 48) {
+                const double half = (fy - 10) * 18.0 / 38.0;
+                const double notch = fy > 40 ? (fy - 40) * 18.0 / 8.0 : -1;
+                if (fabs(fx - 32) <= half && !(notch >= 0 && fabs(fx - 32) < notch)) v = 2;
+            }
+            if (fx >= 30 && fx <= 34 && fy >= 24 && fy <= 36) v = 3;
+            c->emblem[y * 64 + x] = v;
+        }
+}
+
+int moa_card_from_save(const uint8_t *b, size_t bytes, struct moa_card *c)
+{
+    memset(c, 0, sizeof *c);
+    if (!b || bytes < 0x2000 || b[0] != 'S' || b[1] != 'C') return 0;
+    const uint8_t *g = b + SAVE_PARTS;      /* core, booster, head, arms, blade,
+                                               hand, back L, back R, generator,
+                                               FCS, -, legs */
+    if (g[0] == 0xFF || g[2] == 0xFF || g[3] == 0xFF || g[11] == 0xFF) return 0;
+    c->format = 3;
+    const uint8_t rec[13] = { g[0], g[2], g[3], g[11], g[5], g[4], g[6], g[7], g[9], g[8],
+                              b[SAVE_OPTIONS], b[SAVE_OPTIONS + 1], g[1] };
+    memcpy(c->rec, rec, 13);
+    c->pattern = 0;
+    c->variant = b[SAVE_VARIANT] & 3;
+    c->plus = b[SAVE_PLUS] > 15 ? 15 : b[SAVE_PLUS];
+    for (int i = 0; i < 48; i++) c->paint[i] = b[SAVE_PAINT + i] > 127 ? 127 : b[SAVE_PAINT + i];
+    save_name(b + SAVE_PILOT, c->pilot);
+    save_name(b + SAVE_ACNAME, c->ac);
+    int drawn = 0;
+    for (int i = 0; i < 2048; i++) drawn |= b[SAVE_EMBLEM + i];
+    if (drawn) {
+        for (int i = 0; i < 16; i++)
+            c->palette[i] = (uint16_t)((b[SAVE_CLUT + 2 * i] | (b[SAVE_CLUT + 2 * i + 1] << 8)) & 0x7FFF);
+        for (int i = 0; i < 2048; i++) {
+            c->emblem[2 * i] = b[SAVE_EMBLEM + i] & 15;
+            c->emblem[2 * i + 1] = b[SAVE_EMBLEM + i] >> 4;
+        }
+    } else {
+        default_emblem(c);
+    }
+    return 1;
+}
+
+/* ---- format 3 payload (builder: pack) ---- */
+
+struct bit_writer { uint8_t b[128]; int pos; };
+
+static void put_bits(struct bit_writer *w, unsigned v, int n)
+{
+    for (int i = n - 1; i >= 0; i--, w->pos++)
+        if (w->pos < 128 * 8 && ((v >> i) & 1u)) w->b[w->pos >> 3] |= (uint8_t)(0x80 >> (w->pos & 7));
+}
+
+static int card_pack(const struct moa_card *c, uint8_t out[128])
+{
+    struct bit_writer w;
+    memset(&w, 0, sizeof w);
+    put_bits(&w, 3, 4);
+    for (int i = 0; i < 13; i++) put_bits(&w, c->rec[i], 8);
+    put_bits(&w, c->flag & 1, 1);
+    put_bits(&w, 0, 4);                        /* pattern: custom paint */
+    put_bits(&w, c->variant & 3, 2);
+    put_bits(&w, c->plus & 15, 4);
+    int uni = 1;
+    for (int i = 12; i < 48; i++) if (c->paint[i] != c->paint[i % 12]) uni = 0;
+    put_bits(&w, (unsigned)uni, 1);
+    for (int i = 0; i < (uni ? 12 : 48); i++) put_bits(&w, c->paint[i] & 127, 7);
+    const char *names[2] = { c->pilot, c->ac };
+    int len[2];
+    for (int k = 0; k < 2; k++) { len[k] = (int)strlen(names[k]); if (len[k] > 16) len[k] = 16; }
+    for (int k = 0; k < 2; k++) put_bits(&w, (unsigned)len[k], 5);
+    for (int k = 0; k < 2; k++)
+        for (int i = 0; i < len[k]; i++) {
+            const unsigned ch = (unsigned char)names[k][i];
+            put_bits(&w, (ch >= 32 && ch < 127) ? ch : 63, 7);
+        }
+    const int body = (w.pos + 7) / 8;
+    const uint16_t crc = crc16_ccitt(w.b, body);
+    out[0] = (uint8_t)(body + 2);
+    memcpy(out + 1, w.b, (size_t)body);
+    out[1 + body] = (uint8_t)(crc >> 8);
+    out[2 + body] = (uint8_t)crc;
+    return body + 3;
+}
+
+/* ---- drawing ---- */
+
+struct canvas { uint8_t *px; };
+
+static void fill(struct canvas *cv, int x, int y, int w, int h, int r, int g, int b)
+{
+    for (int j = y; j < y + h; j++)
+        for (int i = x; i < x + w; i++) {
+            if (i < 0 || j < 0 || i >= CARD_N || j >= CARD_N) continue;
+            uint8_t *p = cv->px + ((size_t)j * CARD_N + i) * 3;
+            p[0] = (uint8_t)r; p[1] = (uint8_t)g; p[2] = (uint8_t)b;
+        }
+}
+
+static int text_width(const char *s)
+{
+    int w = 0;
+    for (; *s; s++) {
+        const int ch = (unsigned char)*s;
+        w += (ch >= 32 && ch < 127) ? moa_font_width[ch - 32] + 1 : 8;
+    }
+    return w;
+}
+
+/* Upper-case text; `y` is the vertical middle, as the builder sets it. */
+static void draw_text(struct canvas *cv, int x, int y, const char *s, int r, int g, int b)
+{
+    const int top = y - MOA_FONT_H / 2;
+    for (; *s; s++) {
+        int ch = (unsigned char)*s;
+        if (ch >= 'a' && ch <= 'z') ch -= 32;
+        if (ch < 32 || ch >= 127) ch = '?';
+        const uint16_t *rows = moa_font_rows[ch - 32];
+        for (int j = 0; j < MOA_FONT_H; j++)
+            for (int i = 0; i < 16; i++)
+                if (rows[j] >> i & 1u) fill(cv, x + i, top + j, 1, 1, r, g, b);
+        x += moa_font_width[ch - 32] + 1;
+    }
+}
+
+static void upper_copy(char *dst, const char *src)
+{
+    for (; *src; src++, dst++) *dst = (*src >= 'a' && *src <= 'z') ? (char)(*src - 32) : *src;
+    *dst = 0;
+}
+
+struct png_sink { uint8_t *data; size_t size, cap; int failed; };
+
+static void png_sink_write(void *ctx, void *data, int size)
+{
+    struct png_sink *s = (struct png_sink *)ctx;
+    if (s->failed || size <= 0) return;
+    if (s->size + (size_t)size > s->cap) {
+        size_t cap = s->cap ? s->cap * 2 : 65536;
+        while (cap < s->size + (size_t)size) cap *= 2;
+        uint8_t *d = (uint8_t *)realloc(s->data, cap);
+        if (!d) { s->failed = 1; return; }
+        s->data = d; s->cap = cap;
+    }
+    memcpy(s->data + s->size, data, (size_t)size);
+    s->size += (size_t)size;
+}
+
+int moa_card_write_png(const struct moa_card *c, const char *path)
+{
+    uint8_t payload[132];
+    const int n = card_pack(c, payload);
+    int cols = 2;
+    while (cols < CARD_MAXCOLS && n > card_cap(cols)) cols++;
+    if (n > card_cap(cols)) return 0;
+    struct canvas cv = { (uint8_t *)malloc((size_t)CARD_N * CARD_N * 3) };
+    if (!cv.px) return 0;
+    fill(&cv, 0, 0, CARD_N, CARD_N, 6, 9, 13);
+    const int W = cols * CARD_CELL;
+    fill(&cv, 0, 0, W, CARD_Y_SW, 255, 255, 255);
+    int rgb[16][3];
+    for (int i = 0; i < 16; i++) {
+        c15_rgb(c->palette[i], rgb[i]);
+        fill(&cv, 0, CARD_Y_SW + i * CARD_SW, W, CARD_SW, rgb[i][0], rgb[i][1], rgb[i][2]);
+    }
+    fill(&cv, 0, CARD_Y_SW + 16 * CARD_SW, W, 4, 255, 255, 255);
+    const int bits = n * 8, cells = (bits + 2) / 3;
+    for (int k = 0; k < cells; k++) {
+        int v = 0;
+        for (int j = 0; j < 3; j++) {
+            const int bit = k * 3 + j;
+            v = (v << 1) | (bit < bits ? (payload[bit >> 3] >> (7 - (bit & 7))) & 1 : 0);
+        }
+        fill(&cv, (k % cols) * CARD_CELL, CARD_Y_DATA + (k / cols) * CARD_CELL, CARD_CELL, CARD_CELL,
+             v & 4 ? CARD_INK_ON : CARD_INK_OFF, v & 2 ? CARD_INK_ON : CARD_INK_OFF,
+             v & 1 ? CARD_INK_ON : CARD_INK_OFF);
+    }
+    /* frame */
+    fill(&cv, 40, 24, 576, 1, 47, 74, 85); fill(&cv, 40, 615, 576, 1, 47, 74, 85);
+    fill(&cv, 40, 24, 1, 592, 47, 74, 85); fill(&cv, 615, 24, 1, 592, 47, 74, 85);
+    /* emblem: 64x64 at 8x */
+    for (int y = 0; y < 64; y++)
+        for (int x = 0; x < 64; x++) {
+            const int *p = rgb[c->emblem[y * 64 + x] & 15];
+            fill(&cv, CARD_EX + x * 8, CARD_EY + y * 8, 8, 8, p[0], p[1], p[2]);
+        }
+    char up[20];
+    upper_copy(up, c->ac);
+    draw_text(&cv, CARD_EX, 44, up, 185, 212, 207);
+    upper_copy(up, c->pilot);
+    draw_text(&cv, CARD_EX + 512 - text_width(up), 44, up, 95, 127, 128);
+    draw_text(&cv, CARD_EX, 598, "MASTER OF ARENA  /  AI BATTLE ENTRY", 95, 127, 128);
+
+    struct png_sink sink = { 0 };
+    const int ok = stbi_write_png_to_func(png_sink_write, &sink, CARD_N, CARD_N, 3, cv.px,
+                                          CARD_N * 3);
+    free(cv.px);
+    int written = 0;
+    if (ok && !sink.failed && sink.size) {
+        FILE *f = fopen(path, "wb");
+        if (f) {
+            written = fwrite(sink.data, 1, sink.size, f) == sink.size;
+            if (fclose(f) != 0) written = 0;
+            if (!written) remove(path);
+        }
+    }
+    free(sink.data);
+    return written;
+}
+
+static int file_exists(const char *path)
+{
+    struct stat st;
+    return stat(path, &st) == 0;
+}
+
+int moa_card_export_memcard(const char *mcd_path, const char *out_dir)
+{
+    FILE *f = fopen(mcd_path, "rb");
+    if (!f) return -1;
+    uint8_t *mc = (uint8_t *)malloc(131072);
+    const size_t got = mc ? fread(mc, 1, 131072, f) : 0;
+    fclose(f);
+    if (got != 131072 || mc[0] != 'M' || mc[1] != 'C') { free(mc); return -1; }
+    int written = 0;
+    static struct moa_card card;
+    for (int i = 1; i < 16; i++) {
+        const uint8_t *fr = mc + i * 128;
+        const uint32_t state = fr[0] | (fr[1] << 8) | (fr[2] << 16) | ((uint32_t)fr[3] << 24);
+        if (state != 0x51) continue;           /* first block of a save */
+        if (memcmp(fr + 10, "BASLUS-01030", 12) != 0) continue;
+        if (!moa_card_from_save(mc + i * 8192, 8192, &card)) continue;
+        char base[40];
+        const char *name = card.ac[0] ? card.ac : (card.pilot[0] ? card.pilot : "raven");
+        int n = 0;
+        for (const char *p = name; *p && n < 32; p++) {
+            const char ch = *p;
+            if ((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9')) base[n++] = ch;
+            else if (ch >= 'A' && ch <= 'Z') base[n++] = (char)(ch - 'A' + 'a');
+            else if (n && base[n - 1] != '-') base[n++] = '-';
+        }
+        while (n && base[n - 1] == '-') n--;
+        if (!n) { memcpy(base, "raven", 5); n = 5; }
+        base[n] = 0;
+        char path[1200];
+        snprintf(path, sizeof path, "%s/%s-card.png", out_dir, base);
+        for (int k = 2; file_exists(path) && k < 100; k++)
+            snprintf(path, sizeof path, "%s/%s-card-%d.png", out_dir, base, k);
+        if (file_exists(path)) continue;
+        if (moa_card_write_png(&card, path)) written++;
+    }
+    free(mc);
+    return written;
 }

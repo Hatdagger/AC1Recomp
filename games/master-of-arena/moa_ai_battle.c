@@ -233,6 +233,7 @@ static int moa_ai_frame_filter(struct CPUState *cpu, uint32_t address)
 #define MOA_VS_PLUS         0x8004A7D0u  /* 8 bytes of Human PLUS state per player */
 #define MOA_VS_PAINT        0x8004B730u  /* 48 colour bytes per player */
 #define MOA_PAINT_BYTES      48u
+#define MOA_VS_OPTIONS      0x8003EAC0u  /* 16-bit optional-parts mask per player */
 #define MOA_RECORD_BYTES    64u
 #define MOA_MENU_TIM_PATH   "GG/MS/MENU_TIM.T"
 
@@ -301,6 +302,8 @@ static void moa_enter_unit(unsigned player, const uint8_t *r, const uint8_t *ai)
      * the garage's sliders show them. */
     for (unsigned i = 0; i < MOA_PAINT_BYTES; i++)
         psx_mod_write_byte(MOA_VS_PAINT + MOA_PAINT_BYTES * player + i, r[16u + i]);
+    /* Optional parts: one bit per part, in the option table's order. */
+    psx_mod_write_half(MOA_VS_OPTIONS + 2u * player, (uint16_t)(r[10] | (r[11] << 8)));
     /* Human PLUS level from the AI record; arena builds may be overweight. */
     const uint8_t plus[8] = { ai[0], 0, 1, 0, 0, 0, 0, 0 };
     for (unsigned i = 0; i < 8; i++)

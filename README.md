@@ -71,7 +71,7 @@ Pick two ACs and watch the computer fly both, using the game's own arena AI.
   stored in a colour strip down its left edge. They're easy to share as
   ordinary images.
 - **Make cards** with the
-  **[Raven Card Builder](https://github.com/Hatdagger/ACMOA-AI-CARDBUILDER)**,
+  **[Raven Card Builder](https://hatdagger.github.io/ACMOA-AI-CARDBUILDER/)**,
   a page that runs in any web browser. Pick parts from sorted lists, check the
   stats and the game's own build rules, and turn any picture into the emblem.
 - **Or export your own ACs:** the launcher can turn the ACs in your memory card

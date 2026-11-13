@@ -19,12 +19,13 @@
  */
 
 #include "../../../../../games/master-of-arena/moa_card.h"
+#include "../../../../../games/master-of-arena/moa_phantasma.h"
 
 namespace moa_menu {
 
 enum Page {
     PAGE_MAIN = 0, PAGE_SETTINGS, PAGE_MODS,
-    PAGE_NET_MODE, PAGE_NET_ROOMS, PAGE_LOBBY, PAGE_AI, PAGE__COUNT
+    PAGE_NET_MODE, PAGE_NET_ROOMS, PAGE_LOBBY, PAGE_AI, PAGE_EXTRAS, PAGE__COUNT
 };
 
 struct State {
@@ -46,6 +47,7 @@ struct State {
     double next_scan = 0.0;
     std::vector<std::string> new_packages;   /* files waiting in mods/new */
     bool   ai_page = false;            /* the AI Battle page is up */
+    bool   extras_page = false;        /* the Extras page is up */
     char   note[200] = {0};
     double note_until = 0.0;
 };
@@ -434,9 +436,176 @@ static void draw_ai_page(LauncherModel* m, const Gfx& g, const Input& in) {
     start_game(m);
 }
 
+/* ---- extras page ------------------------------------------------------------- */
+
+/* The arena package built from the player's own discs (games/master-of-arena/
+ * moa_phantasma.c). */
+static std::string new_mods_dir();
+static const char* const kPhantasmaPackage = "community.moa.phantasma-arena";
+static std::string g_pp_found;     /* the Phantasma disc found beside the game disc */
+static std::string g_pp_status;    /* the last result, shown on the page */
+static bool        g_pp_failed = false;
+
+static std::string game_disc(const LauncherModel* m) {
+    const char* p = launcher_model_effective_rom_path(m);
+    if (!p || !p[0]) p = launcher_model_rom_path(m);
+    return p ? p : "";
+}
+
+/* A Project Phantasma disc image in the folder of the Master of Arena disc. */
+static std::string find_phantasma_disc(const LauncherModel* m) {
+    namespace fs = std::filesystem;
+    const std::string moa = game_disc(m);
+    if (moa.empty()) return "";
+    std::error_code ec;
+    const fs::path dir = fs::u8path(moa).parent_path();
+    std::vector<std::string> cues, images;
+    for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+        std::error_code fec;
+        if (!it->is_regular_file(fec)) continue;
+        const std::string path = it->path().u8string();
+        if (path == moa) continue;
+        const std::string ext = upper(it->path().extension().u8string().c_str());
+        if (ext == ".CUE") cues.push_back(path);
+        else if (ext == ".BIN" || ext == ".ISO") images.push_back(path);
+    }
+    std::sort(cues.begin(), cues.end());
+    std::sort(images.begin(), images.end());
+    for (const std::string& p : cues)   if (moa_phantasma_is_disc(p.c_str())) return p;
+    for (const std::string& p : images) if (moa_phantasma_is_disc(p.c_str())) return p;
+    return "";
+}
+
+static bool phantasma_installed(const LauncherModel* m) {
+    const RecompLauncherCModProvider* mods = m->mods;
+    if (!mods || !mods->package_count || !mods->package_get) return false;
+    const int n = mods->package_count(mods->ctx);
+    for (int i = 0; i < n; ++i) {
+        RecompLauncherCModPackage p;
+        std::memset(&p, 0, sizeof p);
+        if (mods->package_get(mods->ctx, i, &p) && std::strcmp(p.id, kPhantasmaPackage) == 0)
+            return true;
+    }
+    return false;
+}
+
+static void open_extras_page(LauncherModel* m) {
+    g_state.extras_page = true;
+    g_state.cursor[PAGE_EXTRAS] = 0;
+    g_state.note[0] = '\0';
+    g_pp_found = find_phantasma_disc(m);
+    g_pp_status.clear();
+    g_pp_failed = false;
+}
+
+/* Build the arena from the two discs, install it and switch it on. */
+static void install_phantasma(LauncherModel* m, const std::string& phantasma) {
+    namespace fs = std::filesystem;
+    const RecompLauncherCModProvider* mods = m->mods;
+    const std::string moa = game_disc(m);
+    g_pp_failed = true;
+    if (!mods || !mods->install_archive) { g_pp_status = "MODS ARE NOT AVAILABLE IN THIS BUILD"; return; }
+    if (moa.empty()) { g_pp_status = "SELECT YOUR MASTER OF ARENA DISC FIRST"; return; }
+    std::error_code ec;
+    const fs::path dir = fs::u8path(new_mods_dir());
+    fs::create_directories(dir, ec);
+    const fs::path file = dir / "MoA-PhantasmaArena-1.1.0.psxmod";
+    char error[240] = {0};
+    if (!moa_phantasma_build(moa.c_str(), phantasma.c_str(), file.u8string().c_str(),
+                             error, sizeof error)) {
+        std::error_code rec;
+        fs::remove(file, rec);
+        g_pp_status = upper(error[0] ? error : "THE ARENA COULD NOT BE BUILT.");
+        return;
+    }
+    const bool installed = mods->install_archive(mods->ctx, file.u8string().c_str()) != 0;
+    if (!installed) mod_note_error(m);
+    /* The package holds data from the player's discs: it stays inside the
+     * game's own mods folder and is not left lying in mods/new. */
+    std::error_code rec;
+    fs::remove(file, rec);
+    if (!installed) { g_pp_status = upper(m->mod_status); return; }
+    if (mods->feature_count && mods->feature_get && mods->feature_enable) {
+        const int n = mods->feature_count(mods->ctx);
+        for (int i = 0; i < n; ++i) {
+            RecompLauncherCModFeature f;
+            std::memset(&f, 0, sizeof f);
+            if (mods->feature_get(mods->ctx, i, &f) &&
+                std::strcmp(f.package_id, kPhantasmaPackage) == 0)
+                mods->feature_enable(mods->ctx, f.package_id, f.id, 1);
+        }
+    }
+    g_pp_failed = false;
+    g_pp_status = "INSTALLED AND SWITCHED ON. IT IS THE TENTH EX ARENA.";
+}
+
+static void choose_phantasma(LauncherModel* m) {
+    if (phantasma_installed(m)) {
+        g_pp_failed = false;
+        g_pp_status = "ALREADY INSTALLED. SWITCH IT ON OR OFF UNDER MODS.";
+        return;
+    }
+    if (!g_pp_found.empty()) {   /* beside the game disc: nothing to pick */
+        install_phantasma(m, g_pp_found);
+        return;
+    }
+    ui_pick_file(m, "Select the Project Phantasma disc", {"*.cue", "*.bin", "*.iso"},
+                 "Disc image", [m](const char* path) {
+        if (!path) return;
+        if (!moa_phantasma_is_disc(path)) {
+            g_pp_failed = true;
+            g_pp_status = "THAT IS NOT THE PROJECT PHANTASMA (USA) DISC";
+            return;
+        }
+        install_phantasma(m, path);
+    });
+}
+
+static void draw_extras_page(LauncherModel* m, const Gfx& g, const Input& in) {
+    move_cursor(PAGE_EXTRAS, 1, in, 1);
+    int& cur = g_state.cursor[PAGE_EXTRAS];
+    header(g, "EXTRAS", "BUILT FROM DISCS YOU OWN");
+    panel(g, 24.0f, 76.0f, 592.0f, 60.0f, "SELECT");
+    bool hovered = false;
+    const bool installed = phantasma_installed(m);
+    const bool clicked = row(g, 25.0f, 90.0f, 590.0f, true,
+                             true, "INSTALL DATA FROM PROJECT PHANTASMA",
+                             installed ? "INSTALLED" : "", false, false, &hovered);
+    (void)cur;
+
+    panel(g, 24.0f, 152.0f, 592.0f, 264.0f, "PROJECT PHANTASMA ARENA");
+    text(g, 38.0f, 168.0f, 11.0f, kText,
+         "Adds the 49 opponents of Armored Core: Project Phantasma as a tenth "
+         "Ex Arena, with their own ranking. It is built here, on this computer, "
+         "from your own Project Phantasma (USA) disc. Nothing from the disc is "
+         "copied anywhere else.", 560.0f);
+    text(g, 38.0f, 232.0f, 11.0f, kDim, "PHANTASMA DISC");
+    if (installed) {
+        text(g, 170.0f, 232.0f, 11.0f, kOn, "NOT NEEDED: ALREADY INSTALLED");
+    } else if (!g_pp_found.empty()) {
+        text(g, 170.0f, 232.0f, 11.0f, kOn, "FOUND NEXT TO YOUR GAME DISC");
+        text(g, 38.0f, 250.0f, 10.0f, kDim,
+             std::filesystem::u8path(g_pp_found).filename().u8string().c_str(), 560.0f);
+    } else {
+        text(g, 170.0f, 232.0f, 11.0f, kWarn, "NOT FOUND");
+        text(g, 38.0f, 250.0f, 10.0f, kText,
+             "Put the Project Phantasma disc image (.cue and .bin) in the same "
+             "folder as your Master of Arena disc and reopen this page, or "
+             "choose the file yourself: you will be asked when you select the "
+             "option. The file window belongs to the system and needs a mouse "
+             "or keyboard.", 560.0f);
+    }
+    if (!g_pp_status.empty())
+        text(g, 38.0f, 340.0f, 11.0f, g_pp_failed ? kWarn : kHi, g_pp_status.c_str(), 560.0f);
+    footer(g, "A / ENTER  INSTALL      B / ESC  BACK");
+
+    if (in.back) { g_state.extras_page = false; return; }
+    if (in.confirm || clicked) choose_phantasma(m);
+}
+
 /* ---- main page ------------------------------------------------------------- */
 
-enum MainEntry { MAIN_START = 0, MAIN_NETWORK, MAIN_AI_BATTLE, MAIN_SETTINGS, MAIN_MODS, MAIN_EXIT };
+enum MainEntry { MAIN_START = 0, MAIN_NETWORK, MAIN_AI_BATTLE, MAIN_EXTRAS, MAIN_SETTINGS, MAIN_MODS, MAIN_EXIT };
 
 static int enabled_mod_count(const LauncherModel* m, int* total_out) {
     int on = 0, total = 0;
@@ -482,7 +651,7 @@ static void set_ai_battle(bool on) {
 
 static void draw_main(LauncherModel* m, const Gfx& g, const Input& in) {
     struct Entry { MainEntry id; const char* label; const char* info; };
-    Entry entries[6];
+    Entry entries[7];
     int count = 0;
     entries[count++] = { MAIN_START, m->in_session ? "RESUME GAME" : "START GAME",
         m->in_session ? "Return to the game in progress."
@@ -496,6 +665,10 @@ static void draw_main(LauncherModel* m, const Gfx& g, const Input& in) {
         entries[count++] = { MAIN_AI_BATTLE, "AI BATTLE",
             "Watch two computer-flown ACs fight. Choose the two units from the "
             "AC cards in your memory card folder." };
+    if (!m->in_session && m->mods)
+        entries[count++] = { MAIN_EXTRAS, "EXTRAS",
+            "Extra content built from discs you own, such as the Project "
+            "Phantasma arena." };
     entries[count++] = { MAIN_SETTINGS, "SETTINGS",
         "Display, sound and controls." };
     if (m->mods)
@@ -568,6 +741,7 @@ static void draw_main(LauncherModel* m, const Gfx& g, const Input& in) {
         case MAIN_START:    if (!m->in_session) set_ai_battle(false);
                             start_game(m); break;
         case MAIN_AI_BATTLE: open_ai_page(m); break;
+        case MAIN_EXTRAS:   open_extras_page(m); break;
         case MAIN_NETWORK:  launcher_model_set_view(m, LNG_VIEW_NETPLAY_MODE); break;
         case MAIN_SETTINGS: launcher_model_set_view(m, LNG_VIEW_SETTINGS); break;
         case MAIN_MODS:     launcher_model_set_view(m, LNG_VIEW_MODS); break;
@@ -961,7 +1135,7 @@ static void draw_mods_page(LauncherModel* m, const Gfx& g, const Input& in) {
 
 /* True when this menu, not the stock page, draws the current view. */
 static bool owns_view(const LauncherModel* m) {
-    if (m->view != LNG_VIEW_DASHBOARD) g_state.ai_page = false;
+    if (m->view != LNG_VIEW_DASHBOARD) g_state.ai_page = g_state.extras_page = false;
     if (m->view == LNG_VIEW_DASHBOARD) {
         g_state.classic_settings = false;
         g_state.classic_mods = false;
@@ -1015,6 +1189,7 @@ static void draw(LauncherModel* m, const LauncherTheme& th) {
         case LNG_VIEW_LOBBY:        draw_lobby_page(m, th, g, in); break;
         default:
             if (g_state.ai_page && !m->in_session) draw_ai_page(m, g, in);
+            else if (g_state.extras_page && !m->in_session) draw_extras_page(m, g, in);
             else draw_main(m, g, in);
             break;
     }

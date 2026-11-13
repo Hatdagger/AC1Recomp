@@ -144,7 +144,9 @@ if(TARGET psx-master-of-arena)
         # AI Battle: the arena opponent AI flies both ACs (offline only).
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_ai_battle.c"
         # AI Battle cards (Raven Card Builder images) -> builds.
-        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_card.c")
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_card.c"
+        # Extras: the Project Phantasma arena, built from the player's discs.
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_phantasma.c")
 endif()
 
 # Windows release front door: "Armored Core Moa.exe" starts the game from

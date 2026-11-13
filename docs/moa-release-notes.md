@@ -31,8 +31,11 @@ disc 2 plays from the single disc.
   `Memory Card` folder. Each card borrows the AI of an arena opponent with the
   same legs.
 - **Extras → Install data from Project Phantasma:** if you also own Project
-  Phantasma (USA), its 50-opponent arena is added as a tenth Ex Arena. The
-  launcher looks for the Phantasma disc next to your Master of Arena disc.
+  Phantasma (USA), its 49 opponents are added as a tenth Ex Arena with their
+  own ranking. The launcher looks for the Phantasma disc image (`.cue` + `.bin`)
+  in the same folder as your Master of Arena disc; if it is not there you pick
+  the file yourself. The arena is built on your computer from your own discs;
+  nothing from them is included in or sent by this download.
 
 ## Folders
 

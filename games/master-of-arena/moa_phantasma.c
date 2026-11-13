@@ -13,6 +13,7 @@
 
 #include "psx_sha256.h"
 
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -428,6 +429,110 @@ static int write_archive(const char *path, const char *const names[2],
     w32(f, end - central); w32(f, central); w16(f, 0);
     const int ok = fflush(f) == 0 && ferror(f) == 0;
     fclose(f);
+    return ok;
+}
+
+/* ---- the mission pack ---------------------------------------------------------------- */
+
+/* The 17 Project Phantasma missions, ported to Master of Arena's mission engine. Four
+ * blocks a mission (textures, common battle data with the mission's messages, mission
+ * code, map), each sealed like an archive entry. The recipe says, for every block, which
+ * bytes to copy from which disc entry and which XOR corrections to apply on top (the
+ * port: relocated code, Master of Arena struct offsets, message control codes). */
+#include <zlib.h>
+#include "moa_phantasma_missions.inc"
+
+#define PPM_BLOCKS      68u
+#define PPM_PACK_SECTORS 10455u
+
+/* A T archive: u16 count, then count+1 u16 start sectors. */
+struct tarc {
+    const uint8_t *data;
+    uint32_t size, count;
+};
+
+static int tarc_load(struct tarc *t, const uint8_t *data, uint32_t size) {
+    t->data = data;
+    t->size = size;
+    if (!data || size < SECTOR) return 0;
+    t->count = (uint32_t)(data[0] | data[1] << 8);
+    if (2u + 2u * (t->count + 1u) > SECTOR) return 0;
+    return 1;
+}
+
+static const uint8_t *tarc_entry(const struct tarc *t, unsigned k, uint32_t *bytes) {
+    if (k >= t->count) return NULL;
+    const uint32_t a = (uint32_t)(t->data[2 + 2 * k] | t->data[3 + 2 * k] << 8);
+    const uint32_t b = (uint32_t)(t->data[4 + 2 * k] | t->data[5 + 2 * k] << 8);
+    if (b < a || (uint64_t)b * SECTOR > t->size) return NULL;
+    *bytes = (b - a) * SECTOR;
+    return t->data + (size_t)a * SECTOR;
+}
+
+/* Build the pack (PPM_PACK_SECTORS sectors) into `pack`. */
+static int build_missions(const struct tarc src[3], uint8_t *pack, char *err, unsigned errn) {
+    uint8_t *r = (uint8_t *)malloc(PPM_RECIPE_RAW);
+    if (!r) { snprintf(err, errn, "Out of memory."); return 0; }
+    uLongf rn = PPM_RECIPE_RAW;
+    int ok = 0;
+    if (uncompress(r, &rn, k_ppm_recipe, sizeof k_ppm_recipe) != Z_OK || rn != PPM_RECIPE_RAW ||
+        memcmp(r, "PPM1", 4) != 0 || le32(r + 4) != PPM_BLOCKS) {
+        snprintf(err, errn, "The mission recipe is damaged.");
+        goto out;
+    }
+    {
+        const uint8_t *p = r + 8, *end = r + rn;
+        size_t at = 0;
+        for (unsigned b = 0; b < PPM_BLOCKS; ++b) {
+            if (end - p < 10) goto bad;
+            const uint32_t bytes = le32(p) * SECTOR;
+            const unsigned nseg = (unsigned)(p[4] | p[5] << 8);
+            const uint32_t nrun = le32(p + 6);
+            p += 10;
+            if (at + bytes > (size_t)PPM_PACK_SECTORS * SECTOR || bytes < 4) goto bad;
+            uint8_t *blk = pack + at;
+            memset(blk, 0, bytes);
+            for (unsigned s = 0; s < nseg; ++s, p += 15) {
+                if (end - p < 15) goto bad;
+                const uint32_t dst = le32(p), src_off = le32(p + 7), len = le32(p + 11);
+                const unsigned arc = p[4], ent = (unsigned)(p[5] | p[6] << 8);
+                uint32_t have = 0;
+                const uint8_t *e = arc < 3 ? tarc_entry(&src[arc], ent, &have) : NULL;
+                if (!e || (uint64_t)src_off + len > have || (uint64_t)dst + len > bytes) goto bad;
+                memcpy(blk + dst, e + src_off, len);
+            }
+            for (uint32_t k = 0; k < nrun; ++k) {
+                if (end - p < 6) goto bad;
+                const uint32_t off = le32(p);
+                const unsigned len = (unsigned)(p[4] | p[5] << 8);
+                p += 6;
+                if (end - p < (ptrdiff_t)len || (uint64_t)off + len > bytes) goto bad;
+                for (unsigned i = 0; i < len; ++i) blk[off + i] ^= p[i];
+                p += len;
+            }
+            seal(blk, bytes);
+            at += bytes;
+        }
+        if (at != (size_t)PPM_PACK_SECTORS * SECTOR || p != end) goto bad;
+    }
+    {   /* Exactly the pack the missions were tested with. */
+        uint8_t hash[32];
+        char hex[65];
+        psx_sha256_compute(pack, (size_t)PPM_PACK_SECTORS * SECTOR, hash);
+        for (int i = 0; i < 32; ++i) snprintf(hex + 2 * i, 3, "%02x", hash[i]);
+        if (strcmp(hex, PPM_PACK_SHA256) != 0) {
+            snprintf(err, errn, "This Project Phantasma or Master of Arena disc is not the one "
+                                "the missions were made for (US discs).");
+            goto out;
+        }
+    }
+    ok = 1;
+    goto out;
+bad:
+    snprintf(err, errn, "This Project Phantasma or Master of Arena disc is not the one the "
+                        "missions were made for (US discs).");
+out:
+    free(r);
     return ok;
 }
 

@@ -18,11 +18,13 @@
  * moa_menu_open_folder(), and what moa_menu_net.inc lists.
  */
 
+#include "../../../../../games/master-of-arena/moa_card.h"
+
 namespace moa_menu {
 
 enum Page {
     PAGE_MAIN = 0, PAGE_SETTINGS, PAGE_MODS,
-    PAGE_NET_MODE, PAGE_NET_ROOMS, PAGE_LOBBY, PAGE__COUNT
+    PAGE_NET_MODE, PAGE_NET_ROOMS, PAGE_LOBBY, PAGE_AI, PAGE__COUNT
 };
 
 struct State {
@@ -43,6 +45,7 @@ struct State {
     int    last_view = -1;
     double next_scan = 0.0;
     std::vector<std::string> new_packages;   /* files waiting in mods/new */
+    bool   ai_page = false;            /* the AI Battle page is up */
     char   note[200] = {0};
     double note_until = 0.0;
 };
@@ -222,6 +225,193 @@ static void move_cursor(Page page, int count, const Input& in, int visible) {
     if (t < 0) t = 0;
 }
 
+/* ---- AI Battle page ------------------------------------------------------------
+ *
+ * Two units, each one of the AC cards (Raven Card Builder images) in the
+ * memory card's folder, or RANDOM. The choice reaches the game as
+ * PSX_MOA_AI_UNIT1 / PSX_MOA_AI_UNIT2 (a card's path; empty = random), read by
+ * games/master-of-arena/moa_ai_battle.c at VS START.
+ */
+static void set_ai_battle(bool on);
+static void start_game(LauncherModel* m);
+
+struct AiCard {
+    std::string path;
+    moa_card card;
+};
+static std::vector<AiCard> g_ai_cards;
+static std::string g_ai_folder;
+static int g_ai_pick[2] = { -1, -1 };          /* index into g_ai_cards; -1 random */
+static std::string g_ai_chosen[2];             /* paths, kept across rescans */
+
+static void set_env(const char* name, const char* value) {
+#ifdef _WIN32
+    _putenv_s(name, value);
+#else
+    setenv(name, value, 1);
+#endif
+}
+
+/* The game reads cards from the folder that holds memory card 1. */
+static std::string ai_card_folder(const LauncherModel* m) {
+    const char* card = m->s.memcard_path[0];
+    if (card && card[0]) {
+        const std::filesystem::path p = std::filesystem::path(card).parent_path();
+        if (!p.empty()) return p.string();
+    }
+    const char* home = std::getenv("PSX_MEMCARD_HOME");
+    return home ? std::string(home) : std::string();
+}
+
+static void scan_ai_cards(const LauncherModel* m) {
+    g_ai_cards.clear();
+    g_ai_folder = ai_card_folder(m);
+    std::error_code ec;
+    if (g_ai_folder.empty() || !std::filesystem::is_directory(g_ai_folder, ec)) return;
+    std::vector<std::string> paths;
+    for (const auto& e : std::filesystem::directory_iterator(g_ai_folder, ec)) {
+        if (!e.is_regular_file(ec)) continue;
+        std::string ext = e.path().extension().string();
+        for (char& c : ext) c = (char)std::tolower((unsigned char)c);
+        if (ext == ".png") paths.push_back(e.path().string());
+    }
+    std::sort(paths.begin(), paths.end());
+    for (const std::string& path : paths) {
+        std::FILE* f = std::fopen(path.c_str(), "rb");
+        if (!f) continue;
+        std::vector<uint8_t> data;
+        if (std::fseek(f, 0, SEEK_END) == 0) {
+            const long n = std::ftell(f);
+            if (n > 0 && n < 32L * 1024 * 1024 && std::fseek(f, 0, SEEK_SET) == 0) {
+                data.resize((size_t)n);
+                if (std::fread(data.data(), 1, data.size(), f) != data.size()) data.clear();
+            }
+        }
+        std::fclose(f);
+        AiCard c;
+        c.path = path;
+        if (!data.empty() && moa_card_decode(data.data(), data.size(), &c.card))
+            g_ai_cards.push_back(std::move(c));
+    }
+    for (int u = 0; u < 2; ++u) {
+        g_ai_pick[u] = -1;
+        for (size_t i = 0; i < g_ai_cards.size(); ++i)
+            if (g_ai_cards[i].path == g_ai_chosen[u]) g_ai_pick[u] = (int)i;
+    }
+}
+
+static void open_ai_page(LauncherModel* m) {
+    scan_ai_cards(m);
+    g_state.ai_page = true;
+    g_state.cursor[PAGE_AI] = 0;
+    g_state.note[0] = '\0';
+}
+
+static void step_ai_pick(int unit, int dir) {
+    const int n = (int)g_ai_cards.size();
+    int& p = g_ai_pick[unit];
+    p += dir;                                   /* -1 .. n-1, wrapping */
+    if (p < -1) p = n - 1;
+    if (p >= n) p = -1;
+    g_ai_chosen[unit] = p >= 0 ? g_ai_cards[(size_t)p].path : std::string();
+}
+
+/* The card's 64x64 game emblem, one rectangle per pixel. */
+static void draw_emblem(const Gfx& g, float x, float y, float size, const moa_card& c) {
+    const float px = size / 64.0f;
+    for (int j = 0; j < 64; ++j)
+        for (int i = 0; i < 64; ++i) {
+            const uint16_t v = c.palette[c.emblem[j * 64 + i] & 15];
+            const ImU32 col = IM_COL32((v & 31) * 255 / 31, ((v >> 5) & 31) * 255 / 31,
+                                       ((v >> 10) & 31) * 255 / 31, 255);
+            g.dl->AddRectFilled(at(g, x + i * px, y + j * px),
+                                at(g, x + (i + 1) * px, y + (j + 1) * px), col);
+        }
+    g.dl->AddRect(at(g, x, y), at(g, x + size, y + size), kLine);
+}
+
+static void draw_unit(const Gfx& g, float x, int unit) {
+    char cap[16];
+    std::snprintf(cap, sizeof cap, "UNIT %d", unit + 1);
+    panel(g, x, 76.0f, 145.0f, 214.0f, cap);
+    const int p = g_ai_pick[unit];
+    if (p < 0) {
+        g.dl->AddRect(at(g, x + 16.0f, 92.0f), at(g, x + 129.0f, 205.0f), kLine);
+        const float tw = text_width(g, 30.0f, "?");
+        text(g, x + 72.5f - tw * 0.5f, 132.0f, 30.0f, kDim, "?");
+        text(g, x + 16.0f, 216.0f, 13.0f, kHi, "RANDOM");
+        text(g, x + 16.0f, 236.0f, 10.0f, kDim, "A CARD FROM THE FOLDER,", 0.0f);
+        text(g, x + 16.0f, 250.0f, 10.0f, kDim, "OR AN ARENA OPPONENT", 0.0f);
+        return;
+    }
+    const moa_card& c = g_ai_cards[(size_t)p].card;
+    draw_emblem(g, x + 16.0f, 92.0f, 113.0f, c);
+    text(g, x + 16.0f, 216.0f, 13.0f, kBright, upper(c.ac).c_str());
+    text(g, x + 16.0f, 236.0f, 10.0f, kDim, "PILOT");
+    text(g, x + 16.0f, 250.0f, 11.0f, kText, upper(c.pilot).c_str());
+    if (c.plus) text(g, x + 16.0f, 268.0f, 10.0f, kHi, "HUMAN PLUS");
+}
+
+static void draw_ai_page(LauncherModel* m, const Gfx& g, const Input& in) {
+    enum { AI_START = 0, AI_UNIT1, AI_UNIT2, AI_ROWS };
+    move_cursor(PAGE_AI, AI_ROWS, in, AI_ROWS);
+    int& cur = g_state.cursor[PAGE_AI];
+
+    header(g, "AI BATTLE", "COMPUTER VERSUS COMPUTER");
+    panel(g, 24.0f, 76.0f, 270.0f, 214.0f, "SETUP");
+    int activate = -1;
+    const char* labels[AI_ROWS] = { "START BATTLE", "UNIT 1", "UNIT 2" };
+    for (int i = 0; i < AI_ROWS; ++i) {
+        std::string value;
+        if (i != AI_START) {
+            const int p = g_ai_pick[i - AI_UNIT1];
+            value = p < 0 ? std::string("RANDOM") : upper(g_ai_cards[(size_t)p].card.ac);
+        }
+        bool hovered = false;
+        if (row(g, 25.0f, 90.0f + kRowH * i, 268.0f, i == cur, true, labels[i],
+                value.c_str(), false, false, &hovered))
+            activate = i;
+        if (hovered && (ImGui::GetIO().MouseDelta.x != 0.0f ||
+                        ImGui::GetIO().MouseDelta.y != 0.0f))
+            cur = i;
+    }
+    draw_unit(g, 310.0f, 0);
+    draw_unit(g, 471.0f, 1);
+
+    panel(g, 24.0f, 306.0f, 592.0f, 110.0f, "CARDS");
+    {
+        char buf[300];
+        std::snprintf(buf, sizeof buf, "%d CARD%s FOUND", (int)g_ai_cards.size(),
+                      g_ai_cards.size() == 1 ? "" : "S");
+        text(g, 38.0f, 322.0f, 11.0f, g_ai_cards.empty() ? kWarn : kHi, buf);
+        text(g, 38.0f, 342.0f, 10.0f, kText,
+             "Cards are AC images saved by the Raven Card Builder. Put them in the "
+             "memory card folder:", 560.0f);
+        text(g, 38.0f, 372.0f, 10.0f, kDim,
+             g_ai_folder.empty() ? "(no memory card folder yet)" : g_ai_folder.c_str(), 560.0f);
+    }
+    footer(g, "A  SELECT      LEFT / RIGHT  CHANGE UNIT      B  BACK      START  BATTLE");
+
+    if (in.back) { g_state.ai_page = false; return; }
+    if (cur != AI_START && (in.left || in.right))
+        step_ai_pick(cur - AI_UNIT1, in.left ? -1 : 1);
+    if (in.confirm) activate = cur;
+    if (in.start) activate = AI_START;
+    if (activate < 0) return;
+    cur = activate;
+    if (activate != AI_START) { step_ai_pick(activate - AI_UNIT1, 1); return; }
+    if (g_ai_pick[0] >= 0 && g_ai_pick[0] == g_ai_pick[1]) {
+        note("PICK TWO DIFFERENT CARDS");
+        return;
+    }
+    for (int u = 0; u < 2; ++u)
+        set_env(u ? "PSX_MOA_AI_UNIT2" : "PSX_MOA_AI_UNIT1",
+                g_ai_pick[u] >= 0 ? g_ai_cards[(size_t)g_ai_pick[u]].path.c_str() : "");
+    set_ai_battle(true);
+    g_state.ai_page = false;
+    start_game(m);
+}
+
 /* ---- main page ------------------------------------------------------------- */
 
 enum MainEntry { MAIN_START = 0, MAIN_NETWORK, MAIN_AI_BATTLE, MAIN_SETTINGS, MAIN_MODS, MAIN_EXIT };
@@ -281,9 +471,9 @@ static void draw_main(LauncherModel* m, const Gfx& g, const Input& in) {
             "Versus over LAN or online, two players. The host is player 1; "
             "the guest is player 2 and brings their own memory card." };
     if (!m->in_session)
-        entries[count++] = { MAIN_AI_BATTLE, "AI BATTLE (TEST)",
-            "Watch two computer-flown ACs fight. The game opens on the versus "
-            "menu: VS START draws two arena opponents from your disc." };
+        entries[count++] = { MAIN_AI_BATTLE, "AI BATTLE",
+            "Watch two computer-flown ACs fight. Choose the two units from the "
+            "AC cards in your memory card folder." };
     entries[count++] = { MAIN_SETTINGS, "SETTINGS",
         "Display, sound and controls." };
     if (m->mods)
@@ -355,7 +545,7 @@ static void draw_main(LauncherModel* m, const Gfx& g, const Input& in) {
     switch (entries[activate].id) {
         case MAIN_START:    if (!m->in_session) set_ai_battle(false);
                             start_game(m); break;
-        case MAIN_AI_BATTLE: set_ai_battle(true); start_game(m); break;
+        case MAIN_AI_BATTLE: open_ai_page(m); break;
         case MAIN_NETWORK:  launcher_model_set_view(m, LNG_VIEW_NETPLAY_MODE); break;
         case MAIN_SETTINGS: launcher_model_set_view(m, LNG_VIEW_SETTINGS); break;
         case MAIN_MODS:     launcher_model_set_view(m, LNG_VIEW_MODS); break;
@@ -749,6 +939,7 @@ static void draw_mods_page(LauncherModel* m, const Gfx& g, const Input& in) {
 
 /* True when this menu, not the stock page, draws the current view. */
 static bool owns_view(const LauncherModel* m) {
+    if (m->view != LNG_VIEW_DASHBOARD) g_state.ai_page = false;
     if (m->view == LNG_VIEW_DASHBOARD) {
         g_state.classic_settings = false;
         g_state.classic_mods = false;
@@ -800,7 +991,10 @@ static void draw(LauncherModel* m, const LauncherTheme& th) {
         case LNG_VIEW_NETPLAY_MODE: draw_net_mode(m, g, in); break;
         case LNG_VIEW_NETPLAY:      draw_net_rooms(m, g, in); break;
         case LNG_VIEW_LOBBY:        draw_lobby_page(m, th, g, in); break;
-        default:                draw_main(m, g, in); break;
+        default:
+            if (g_state.ai_page && !m->in_session) draw_ai_page(m, g, in);
+            else draw_main(m, g, in);
+            break;
     }
     g.dl->PopClipRect();
 }

@@ -481,36 +481,48 @@ static int moa_card_unit(const char *path, uint8_t *record, uint8_t *ai)
     return 1;
 }
 
-/* Two units: cards first (in random order, never the same file twice), then
- * random arena opponents for whatever is missing. */
+/* Two units. A unit the launcher chose (PSX_MOA_AI_UNIT1 / PSX_MOA_AI_UNIT2:
+ * a card's path) is that card; a random one is another card from the folder
+ * (never one already in the match), else a random arena opponent. */
 static int moa_pick_units(uint8_t record[2][MOA_RECORD_BYTES],
                           uint8_t ai[2][MOA_AI_RECORD_BYTES])
 {
     moa_scan_cards();
+    const char *chosen[2] = { getenv("PSX_MOA_AI_UNIT1"), getenv("PSX_MOA_AI_UNIT2") };
+    int have[2] = { 0, 0 };
     int used[2] = { -1, -1 };
-    unsigned have = 0;
-    for (unsigned tries = 0; have < 2 && tries < 4u * MOA_CARDS_MAX && moa_card_paths_count; tries++) {
-        const int k = (int)moa_random((uint32_t)moa_card_paths_count);
-        if (k == used[0] || (moa_card_paths_count == 1 && tries > 0)) {
-            if (moa_card_paths_count == 1) break;
-            continue;
+    for (unsigned u = 0; u < 2; u++) {
+        if (!chosen[u] || !chosen[u][0]) continue;
+        have[u] = moa_card_unit(chosen[u], record[u], ai[u]);
+        for (int k = 0; k < moa_card_paths_count; k++)
+            if (strcmp(moa_card_paths[k], chosen[u]) == 0) used[u] = k;
+        if (!have[u]) psx_mod_counter_add("moa.ai.chosen_card_unreadable", 1);
+    }
+    for (unsigned u = 0; u < 2; u++) {
+        if (have[u]) continue;
+        int free_cards = 0;
+        for (int k = 0; k < moa_card_paths_count; k++)
+            if (k != used[0] && k != used[1]) free_cards++;
+        for (unsigned tries = 0; tries < 4u * MOA_CARDS_MAX && free_cards > 0 && !have[u]; tries++) {
+            const int k = (int)moa_random((uint32_t)moa_card_paths_count);
+            if (k == used[0] || k == used[1]) continue;
+            used[u] = k;                       /* tried, readable or not */
+            free_cards--;
+            have[u] = moa_card_unit(moa_card_paths[k], record[u], ai[u]);
         }
-        if (moa_card_unit(moa_card_paths[k], record[have], ai[have])) used[have++] = k;
     }
     uint32_t picked = 0xFFFFFFFFu;
-    while (have < 2) {
-        int ok = 0;
-        for (unsigned tries = 0; tries < 64 && !ok; tries++) {
+    for (unsigned u = 0; u < 2; u++) {
+        for (unsigned tries = 0; tries < 64 && !have[u]; tries++) {
             const uint32_t arena = moa_random(MOA_ARENAS);
             const uint32_t entries = psx_mod_read_byte(MOA_ARENA_ENTRIES + arena);
             if (entries < 2u) continue;
             const uint32_t rank = moa_random(entries - 1u);  /* last = player's slot */
             if (arena * 256u + rank == picked) continue;
-            ok = moa_arena_unit(arena, rank, record[have], ai[have]);
-            if (ok) picked = arena * 256u + rank;
+            have[u] = moa_arena_unit(arena, rank, record[u], ai[u]);
+            if (have[u]) picked = arena * 256u + rank;
         }
-        if (!ok) return 0;
-        have++;
+        if (!have[u]) return 0;
     }
     return 1;
 }

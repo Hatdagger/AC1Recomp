@@ -18279,6 +18279,14 @@ int main(int argc, char** argv) {
      * the launcher can introspect the real card files. The same default is used
      * by the runtime below. */
     if (memcard_dir.empty()) memcard_dir = default_memcard_dir(argv[0]);
+    /* Plugins and launcher pages that keep files beside the memory card (MoA
+     * AI Battle cards) find the folder here; set again once the session's
+     * card paths are final. */
+#ifdef _WIN32
+    _putenv_s("PSX_MEMCARD_HOME", memcard_dir.string().c_str());
+#else
+    setenv("PSX_MEMCARD_HOME", memcard_dir.string().c_str(), 1);
+#endif
 
     /* The game's OWN native OPTION settings (game_options.toml, next to
      * game.toml) — persisted across launches, kept separate from game.toml

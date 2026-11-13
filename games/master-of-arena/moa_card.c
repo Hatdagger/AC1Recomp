@@ -402,6 +402,7 @@ int stbi_write_png_to_func(void (*func)(void *, void *, int), void *context,
 #define SAVE_EMBLEM   0x480                    /* 64x64, 4 bits per pixel */
 #define SAVE_CLUT     0xC80                    /* 16 x 15-bit colours */
 #define SAVE_PLUS     0xDEC                    /* Human PLUS state; [0] = level */
+#define SAVE_VALID    0xE58                    /* 1 = a save the loader accepts */
 
 /* Names are Shift-JIS, two bytes a character (the name editor offers full-width
  * letters, digits, kana and symbols), eight characters at most, ended by '>'
@@ -614,6 +615,125 @@ int moa_card_emblem_from_image(struct moa_card *c, const uint8_t *file, size_t b
         c->emblem[i] = (uint8_t)best;
     }
     return 1;
+}
+
+
+/* ---- cards as Master of Arena saves (AI Battle loads them in the game) -------- */
+
+static void save_put_name(uint8_t *dst, const char *src)
+{
+    /* 18 bytes: up to 8 two-byte characters, the rest '>' (as the game's
+     * name editor leaves it). */
+    memset(dst, '>', 18);
+    int n = 0;
+    for (const char *p = src; *p && n < 8; p++, n++) {
+        const unsigned char ch = (unsigned char)*p;
+        uint8_t hi = 0x81, lo = 0x40;                       /* space */
+        if (ch >= 'A' && ch <= 'Z') { hi = 0x82; lo = (uint8_t)(0x60 + ch - 'A'); }
+        else if (ch >= 'a' && ch <= 'z') { hi = 0x82; lo = (uint8_t)(0x81 + ch - 'a'); }
+        else if (ch >= '0' && ch <= '9') { hi = 0x82; lo = (uint8_t)(0x4F + ch - '0'); }
+        else {
+            static const char sym[] = ",.:;?!-/~|'\"()[]+=<$%#&*@";
+            static const uint8_t code[] = { 0x43, 0x44, 0x46, 0x47, 0x48, 0x49, 0x5B, 0x5E, 0x60,
+                                            0x62, 0x66, 0x68, 0x69, 0x6A, 0x6D, 0x6E, 0x7B, 0x81,
+                                            0x83, 0x90, 0x93, 0x94, 0x95, 0x96, 0x97 };
+            const char *at = strchr(sym, (int)ch);
+            if (at && ch) lo = code[at - sym];
+        }
+        dst[2 * n] = hi;
+        dst[2 * n + 1] = lo;
+    }
+}
+
+void moa_card_to_save(const struct moa_card *c, uint8_t b[MOA_SAVE_BLOCK])
+{
+    memset(b, 0, MOA_SAVE_BLOCK);
+    /* PS1 save header: magic, one static icon frame, one block, title. */
+    b[0] = 'S'; b[1] = 'C'; b[2] = 0x11; b[3] = 1;
+    {
+        uint8_t title[64];
+        memset(title, 0, sizeof title);
+        save_put_name(title, "AI BATTLE");
+        for (int i = 0; i < 18 && title[i] != '>'; i++) b[4 + i] = title[i];
+    }
+    for (int i = 0; i < 16; i++) b[0x60 + 2 * i + 1] = (uint8_t)(i ? 0x7C : 0x00);  /* icon CLUT */
+    for (int i = 0; i < 128; i++) b[0x80 + i] = 0x11;                              /* plain icon */
+    const uint8_t *r = c->rec;
+    const uint8_t booster = (r[3] >= 27 && r[3] != 0xFF) ? 0xFF : r[12];
+    const uint8_t parts[12] = { r[0], booster, r[1], r[2], r[5], r[4],
+                                r[6], r[7], r[9], r[8], 0xFF, r[3] };
+    memcpy(b + SAVE_PARTS, parts, 12);
+    b[SAVE_PATTERN] = 0;
+    b[SAVE_VARIANT] = c->variant & 3;
+    b[SAVE_OPTIONS] = r[10];
+    b[SAVE_OPTIONS + 1] = r[11];
+    save_put_name(b + SAVE_ACNAME, c->ac);
+    save_put_name(b + SAVE_PILOT, c->pilot);
+    for (int i = 0; i < 48; i++) b[SAVE_PAINT + i] = c->paint[i] > 64 ? 64 : c->paint[i];
+    for (int i = 0; i < 2048; i++)
+        b[SAVE_EMBLEM + i] = (uint8_t)((c->emblem[2 * i] & 15) | ((c->emblem[2 * i + 1] & 15) << 4));
+    for (int i = 0; i < 16; i++) {
+        b[SAVE_CLUT + 2 * i] = (uint8_t)(c->palette[i] & 255);
+        b[SAVE_CLUT + 2 * i + 1] = (uint8_t)((c->palette[i] >> 8) & 0x7F);
+    }
+    b[SAVE_PLUS] = c->plus;
+    b[SAVE_PLUS + 2] = c->plus ? 1 : 0;        /* the level waives the load limits */
+    b[SAVE_VALID] = 1;
+    /* Checksum the loader checks (menu 0x80070F1C): each byte from +432 over
+     * 3240 bytes, zero-extended and inverted as a 32-bit word (nor), summed;
+     * stored at +384. */
+    uint32_t sum = 0;
+    for (int i = 0; i < 3240; i++) sum += 0xFFFFFFFFu - b[432 + i];
+    b[384] = (uint8_t)sum; b[385] = (uint8_t)(sum >> 8);
+    b[386] = (uint8_t)(sum >> 16); b[387] = (uint8_t)(sum >> 24);
+}
+
+static void mc_frame(uint8_t *fr, uint32_t state, uint32_t size, const char *name)
+{
+    memset(fr, 0, 128);
+    fr[0] = (uint8_t)state; fr[1] = (uint8_t)(state >> 8);
+    fr[2] = (uint8_t)(state >> 16); fr[3] = (uint8_t)(state >> 24);
+    fr[4] = (uint8_t)size; fr[5] = (uint8_t)(size >> 8); fr[6] = (uint8_t)(size >> 16);
+    fr[8] = 0xFF; fr[9] = 0xFF;                /* no next block */
+    if (name) memcpy(fr + 10, name, strlen(name));
+    uint8_t x = 0;
+    for (int i = 0; i < 127; i++) x ^= fr[i];
+    fr[127] = x;
+}
+
+int moa_memcard_write_units(const char *path, const struct moa_card *const units[], int count)
+{
+    if (count < 0 || count > 15) return 0;
+    uint8_t *mc = (uint8_t *)calloc(1, 131072);
+    if (!mc) return 0;
+    mc[0] = 'M'; mc[1] = 'C'; mc[127] = 'M' ^ 'C';
+    for (int i = 1; i < 16; i++) {
+        if (i <= count) {
+            char name[16];
+            snprintf(name, sizeof name, "BASLUS-01030%c", 'A' + (i - 1));
+            mc_frame(mc + i * 128, 0x51, 8192, name);
+            moa_card_to_save(units[i - 1], mc + i * 8192);
+        } else {
+            mc_frame(mc + i * 128, 0xA0, 0, NULL);
+        }
+    }
+    for (int i = 16; i < 36; i++) {            /* broken-sector list: empty */
+        uint8_t *fr = mc + i * 128;
+        memset(fr, 0, 128);
+        memset(fr, 0xFF, 4);
+        fr[8] = 0xFF; fr[9] = 0xFF;
+        uint8_t x = 0;
+        for (int k = 0; k < 127; k++) x ^= fr[k];
+        fr[127] = x;
+    }
+    FILE *f = fopen(path, "wb");
+    int ok = 0;
+    if (f) {
+        ok = fwrite(mc, 1, 131072, f) == 131072;
+        if (fclose(f) != 0) ok = 0;
+    }
+    free(mc);
+    return ok;
 }
 
 /* ---- format 3 payload (builder: pack) ---- */

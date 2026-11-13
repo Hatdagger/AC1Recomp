@@ -77,6 +77,18 @@ int psx_game_register_offline_function_entry(
     uint32_t address, PSXModFunctionEntryCallback callback);
 int psx_game_register_offline_function_filter(
     uint32_t address, PSXModFunctionFilterCallback filter);
+/* Offline only. Ask for uncapped fast forward (presenting every 8th frame)
+ * while a game feature runs unattended, and clear the request when the player
+ * should take over. Ignored under netplay; cleared when a session ends. */
+void psx_mod_request_fast_forward(int on);
+int psx_mod_fast_forward_requested(void);
+/* Offline only. End the session and reopen the launcher (on its dashboard);
+ * starting from the launcher begins a new session. Takes effect at the next
+ * scheduler escape point. */
+void psx_mod_request_return_to_launcher(void);
+/* Statically linked per-frame callback: runs once per guest frame after input
+ * sampling (main.cpp). */
+void mod_register_frame_hook(void (*hook)(void));
 /* Complete a guest function from its trusted entry callback after supplying
  * its full result. Valid only for that callback's CPU. Publishes pc=$ra and
  * prevents the original body from executing. Nested callbacks have separate

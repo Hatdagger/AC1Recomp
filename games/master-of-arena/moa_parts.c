@@ -166,3 +166,48 @@ const char *moa_option_effect(int i)
         "Increases energy weapon power.", "Decreases energy used." };
     return (i >= 0 && i < MOA_OPTIONS) ? k[i] : "";
 }
+
+/* ---- versus map previews ------------------------------------------------------
+ * GG/MS/MENU_TIM.T: u16 entry count, u16 flag, then u16 start sectors. The
+ * SELECT MAP preview of map n is entry n + 8: an 8-bit TIM, 256-colour CLUT,
+ * 104 x 100 (menu 0x800AE0E4 loads it as the map changes). */
+int moa_map_previews_load(const char *disc, struct moa_map_previews *out)
+{
+    memset(out, 0, sizeof *out);
+    uint8_t *head = moa_disc_read_range(disc, "GG/MS/MENU_TIM.T", 0, 4096, NULL);
+    if (!head) return 0;
+    const unsigned count = rd16(head);
+    uint32_t start[MOA_VS_MAPS + 1];
+    int ok = count > MOA_VS_MAPS + 9 && count < 2040;
+    for (int i = 0; ok && i <= MOA_VS_MAPS; i++) start[i] = rd16(head + 4 + 2 * (9 + i)) * 2048u;
+    free(head);
+    if (!ok) return 0;
+    int got = 0;
+    for (int m = 0; m < MOA_VS_MAPS; m++) {
+        const uint32_t bytes = start[m + 1] > start[m] ? start[m + 1] - start[m] : 0;
+        if (bytes < 12 + 524 + 12 + 52 * 2 * 100) continue;
+        uint8_t *t = moa_disc_read_range(disc, "GG/MS/MENU_TIM.T", start[m], bytes, NULL);
+        if (!t) continue;
+        /* TIM: id 0x10, flags 9 (8-bit, CLUT), CLUT block, image block. */
+        const uint32_t flags = (uint32_t)rd16(t + 4) | ((uint32_t)rd16(t + 6) << 16);
+        const uint32_t clut_len = (uint32_t)rd16(t + 8) | ((uint32_t)rd16(t + 10) << 16);
+        if (t[0] == 0x10 && (flags & 7) == 1 && (flags & 8) && clut_len >= 12 + 512 &&
+            8 + clut_len + 12 <= bytes) {
+            const uint8_t *clut = t + 8 + 12;
+            const uint8_t *img = t + 8 + clut_len;
+            const int w = rd16(img + 8) * 2, h = rd16(img + 10);
+            if (w == MOA_MAP_W && h == MOA_MAP_H && 8 + clut_len + 12 + (uint32_t)(w * h) <= bytes) {
+                const uint8_t *px = img + 12;
+                for (int i = 0; i < w * h; i++) {
+                    const uint16_t c = rd16(clut + 2 * px[i]);
+                    const uint32_t r = (c & 31) * 255 / 31, g = ((c >> 5) & 31) * 255 / 31,
+                                   b = ((c >> 10) & 31) * 255 / 31;
+                    out->rgba[m][i] = r | (g << 8) | (b << 16) | 0xFF000000u;
+                }
+                got++;
+            }
+        }
+        free(t);
+    }
+    return got == MOA_VS_MAPS;
+}

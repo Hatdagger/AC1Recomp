@@ -674,6 +674,20 @@ static bool host_hotkey_input_focused(void) {
 
 static int g_fast_forward_speed = 4;  /* [hotkeys] fast_forward_speed, 2..16 */
 
+/* Fast forward a trusted plugin asks for (MoA AI Battle sets up and plays its
+ * match unattended). Uncapped while set; cleared at every session start. */
+static int g_mod_fast_forward = 0;
+extern "C" void psx_mod_request_fast_forward(int on) { g_mod_fast_forward = on ? 1 : 0; }
+extern "C" int psx_mod_fast_forward_requested(void) { return g_mod_fast_forward; }
+
+/* An offline session a trusted plugin ends: back to the launcher, which opens
+ * on its dashboard, then a new session from whatever is started there. */
+static int g_offline_launcher_return = 0;
+extern "C" void psx_mod_request_return_to_launcher(void) {
+    g_offline_launcher_return = 1;
+    psx_request_return_to_lobby();   /* the same scheduler escape */
+}
+
 static int manual_fast_forward_multiplier(void) {
     static int env_value = -2; /* -2 = unread, -1 = max/unbounded, 0 = not set */
     if (env_value == -2) {
@@ -9809,9 +9823,10 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
         psx_keybinds_host_keys(keys, host_keys);
         const bool kb_turbo = host_hotkey_input_focused() &&
             host_keymap_down(HOST_KEYMAP_TURBO, host_keys, (int)SDL_GetModState());
-        if (kb_turbo || g_manual_turbo_latched ||
+        const bool mod_ff = g_mod_fast_forward && !psx_netplay_active();
+        if (kb_turbo || g_manual_turbo_latched || mod_ff ||
             hotkey_shortcut_down(PSX_ASSIST_BIND_FAST_FORWARD, g_hotkey_pad_fast_forward)) {
-            const int mult = manual_fast_forward_multiplier();
+            const int mult = mod_ff ? -1 : manual_fast_forward_multiplier();
             const int present_every = (mult < 0) ? 8 : (mult <= 2 ? 2 : (mult <= 4 ? 4 : 8));
             manual_turbo_active = true;
             if (!s_manual_ff_active) {
@@ -9819,7 +9834,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
                 apply_present_cadence();  /* vsync would cap fast-forward at the panel rate */
             }
             s_presentation_fast_forward = 1;
-            if (!turbo_was_down && !g_manual_turbo_latched) {
+            if (!turbo_was_down && !g_manual_turbo_latched && !mod_ff) {
                 char msg[40];
                 if (mult < 0)
                     snprintf(msg, sizeof(msg), "Fast forward: max");
@@ -20367,6 +20382,15 @@ session_reboot:
 #endif
         std::string mc1 = memcard1_path.string();
         std::string mc2 = memcard2_path.string();
+        /* A session-only card in slot 2 (MoA AI Battle: the two units' saves),
+         * never written into the player's settings. */
+        {
+            const char *session_card2 = std::getenv("PSX_MEMCARD2_SESSION");
+            if (session_card2 && session_card2[0] && !psx_netplay_active()) {
+                mc2 = session_card2;
+                memcard2_enabled = true;
+            }
+        }
         const MemcardSlotConfig slots[2] = {
             { mc1.empty() ? nullptr : mc1.c_str(), memcard1_enabled ? 1 : 0 },
             { mc2.empty() ? nullptr : mc2.c_str(), memcard2_enabled ? 1 : 0 },
@@ -21334,10 +21358,10 @@ session_reboot:
 
     /* A match whose start failed has no session and must not run the guest.
      * Go back to the room; do not boot the game offline. */
-    if (psx_return_to_lobby_requested() && g_netplay_from_lobby)
+    if (psx_return_to_lobby_requested() && (g_netplay_from_lobby || g_offline_launcher_return))
         goto soft_return_lobby;
     psx_scheduler_run(&cpu);
-    if (psx_return_to_lobby_requested() && g_netplay_from_lobby)
+    if (psx_return_to_lobby_requested() && (g_netplay_from_lobby || g_offline_launcher_return))
         goto soft_return_lobby;
 #endif
 
@@ -21414,7 +21438,12 @@ session_reboot:
 
 soft_return_lobby:
     /* Netplay soft-exit: tear down the match, keep the lobby seat, and reopen
-     * the launcher on the LOBBY room so every peer can rematch. */
+     * the launcher on the LOBBY room so every peer can rematch. An offline
+     * return a plugin asked for (psx_mod_request_return_to_launcher) takes the
+     * same road and opens the launcher on its dashboard. */
+    const bool offline_return = g_offline_launcher_return != 0;
+    g_offline_launcher_return = 0;
+    g_mod_fast_forward = 0;
     teardown_game_session_keep_lobby();
     PSXRecompV4::mod_runtime_end_netplay();
 #if defined(RECOMP_LAUNCHER) && defined(PSX_HAS_LOBBY_CLIENT)
@@ -21432,8 +21461,8 @@ soft_return_lobby:
         /* A human-hosted room survives the match and is where a rematch
          * happens; an automatch room is the server's and cannot. Leave it
          * here, and reopen the launcher on the browser instead. */
-        const int rui_resume_room =
-            ae_np_leave_automatch_room_after_match() ? 0 : 1;
+        const int rui_resume_room = offline_return ? 0 :
+            (ae_np_leave_automatch_room_after_match() ? 0 : 1);
 
         ae_rui_set_sidecar_paths(argv[0]);
         g_lnch_expected_serial = game_id;

@@ -106,6 +106,19 @@ int moa_card_emblem_from_image(struct moa_card *card, const uint8_t *file, size_
  * when the save has none). 1 = ok. */
 int moa_card_from_save(const uint8_t *block, size_t bytes, struct moa_card *out);
 
+/* ---- cards as game saves ---- */
+
+#define MOA_SAVE_BLOCK 8192
+
+/* The card as a Master of Arena scenario save block (BASLUS-01030x): the AC,
+ * paint, optional parts, names, emblem and Human PLUS, with the checksum the
+ * game's DATA LOAD checks. Everything else in the save is left empty. */
+void moa_card_to_save(const struct moa_card *card, uint8_t block[MOA_SAVE_BLOCK]);
+
+/* A memory card image (.mcd, 128 KB) holding `count` cards as saves
+ * BASLUS-01030A, B, ... in that order (the DATA LOAD list's 1, 2, ...). */
+int moa_memcard_write_units(const char *path, const struct moa_card *const units[], int count);
+
 /* Draw a card (format 4, or 3 when it carries no AI) and write it as PNG. */
 int moa_card_write_png(const struct moa_card *card, const char *path);
 

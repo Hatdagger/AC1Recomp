@@ -18,6 +18,7 @@
  * moa_menu_open_folder(), and what moa_menu_net.inc lists.
  */
 
+#include <ctime>
 #include "../../../../../games/master-of-arena/moa_card.h"
 #include "../../../../../games/master-of-arena/moa_phantasma.h"
 #include "../../../../../games/master-of-arena/moa_update.h"
@@ -384,6 +385,96 @@ static void draw_unit(const Gfx& g, float x, int unit) {
     text(g, x + 16.0f, 268.0f, 10.0f, kHi, ("AI  " + card_ai_label(c)).c_str());
 }
 
+/* ---- stage and launch ---- */
+
+/* The versus maps offered: 10 first (the default), then 1, 3, 6, 9, then
+ * RANDOM (one of those). The others hang at match start in testing. */
+static const int kStages[] = { 10, 1, 3, 6, 9, 0 };
+static const int kStageCount = (int)(sizeof kStages / sizeof kStages[0]);
+static int g_ai_stage = 0;
+static moa_map_previews* g_maps = nullptr;
+static int g_maps_state = 0;               /* 0 not read, 1 ok, -1 failed */
+static unsigned g_ai_session = 0;
+
+static std::string stage_label(int i) {
+    if (kStages[i] == 0) return "RANDOM";
+    char b[16];
+    std::snprintf(b, sizeof b, "MAP %d", kStages[i]);
+    return b;
+}
+
+static void draw_stage(const LauncherModel* m, const Gfx& g, float x, float y, int i) {
+    if (g_maps_state == 0) {
+        g_maps = new moa_map_previews;
+        const char* p = launcher_model_effective_rom_path(m);
+        if (!p || !p[0]) p = launcher_model_rom_path(m);
+        g_maps_state = (p && p[0] && moa_map_previews_load(p, g_maps)) ? 1 : -1;
+    }
+    const float w = 104.0f, h = 86.0f;
+    if (kStages[i] == 0 || g_maps_state < 0) {
+        g.dl->AddRect(at(g, x, y), at(g, x + w, y + h), kLine);
+        const std::string label = kStages[i] == 0 ? std::string("?") : stage_label(i);
+        const float tw = text_width(g, 20.0f, label.c_str());
+        text(g, x + (w - tw) * 0.5f, y + h * 0.5f - 12.0f, 20.0f, kDim, label.c_str());
+        return;
+    }
+    /* Every other pixel: 52 x 50 cells. */
+    const uint32_t* px = g_maps->rgba[kStages[i] - 1];
+    const float cw = w / 52.0f, ch = h / 50.0f;
+    for (int yy = 0; yy < 50; ++yy)
+        for (int xx = 0; xx < 52; ++xx) {
+            const uint32_t c = px[(yy * 2) * MOA_MAP_W + xx * 2];
+            g.dl->AddRectFilled(at(g, x + xx * cw, y + yy * ch), at(g, x + (xx + 1) * cw, y + (yy + 1) * ch),
+                                IM_COL32(c & 255, (c >> 8) & 255, (c >> 16) & 255, 255));
+        }
+    g.dl->AddRect(at(g, x, y), at(g, x + w, y + h), kLine);
+}
+
+/* Start the session. Units that are cards go onto a session-only memory card
+ * in slot 2 and the game loads them through its own DATA LOAD (RANDOM picks a
+ * card here when there is one); otherwise the game enters them itself. */
+static void launch_ai_battle(LauncherModel* m) {
+    int pick[2] = { g_ai_pick[0], g_ai_pick[1] };
+    const int n = (int)g_ai_cards.size();
+    for (int u = 0; u < 2; ++u) {
+        if (pick[u] >= 0 || n == 0) continue;
+        for (int tries = 0; tries < 32; ++tries) {
+            const int k = (int)(std::rand() % n);
+            if (k != pick[1 - u] || n == 1) { pick[u] = k; break; }
+        }
+    }
+    bool menu_load = pick[0] >= 0 && pick[1] >= 0;
+    std::string session_card;
+    if (menu_load) {
+        std::error_code ec;
+        const std::filesystem::path dir = std::filesystem::temp_directory_path(ec);
+        session_card = (dir / "moa-ai-battle-card2.mcd").string();
+        const moa_card* units[2] = { &g_ai_cards[(size_t)pick[0]].card, &g_ai_cards[(size_t)pick[1]].card };
+        if (ec || !moa_memcard_write_units(session_card.c_str(), units, 2)) {
+            menu_load = false;
+            session_card.clear();
+        }
+    }
+    for (int u = 0; u < 2; ++u)
+        set_env(u ? "PSX_MOA_AI_UNIT2" : "PSX_MOA_AI_UNIT1",
+                pick[u] >= 0 ? g_ai_cards[(size_t)pick[u]].path.c_str() : "");
+    set_env("PSX_MOA_AI_P1", g_ai_manual ? "1" : "0");
+    set_env("PSX_MOA_AI_LOADMENU", menu_load ? "1" : "0");
+    set_env("PSX_MEMCARD2_SESSION", session_card.c_str());
+    {
+        char b[16];
+        if (kStages[g_ai_stage] == 0) std::snprintf(b, sizeof b, "random");
+        else std::snprintf(b, sizeof b, "%d", kStages[g_ai_stage]);
+        set_env("PSX_MOA_AI_MAP", b);
+        char t[32];
+        std::snprintf(t, sizeof t, "%u-%ld", ++g_ai_session, (long)std::time(nullptr));
+        set_env("PSX_MOA_AI_SESSION", t);
+    }
+    set_ai_battle(true);
+    /* The AI Battle page stays up: the session comes back to it. */
+    start_game(m);
+}
+
 static void draw_ai_page(LauncherModel* m, const Gfx& g, const Input& in) {
     if (g_ai_sub == AI_SUB_CARDS) { draw_ai_cards(m, g, in); return; }
     if (g_ai_sub == AI_SUB_EDIT)  { draw_ai_edit(m, g, in); return; }
@@ -393,19 +484,14 @@ static void draw_ai_page(LauncherModel* m, const Gfx& g, const Input& in) {
     if (g_ai_sub == AI_SUB_OPTS)  { draw_ai_opts(g, in); return; }
     if (g_ai_sub == AI_SUB_PAINT) { draw_ai_paint(g, in); return; }
     if (g_ai_sub == AI_SUB_EMBLEM){ draw_ai_emblem(m, g, in); return; }
-    if (g_ai_sub == AI_SUB_BUILD) { draw_ai_build(m, g, in); return; }
-    if (g_ai_sub == AI_SUB_PICK)  { draw_ai_pick(g, in); return; }
-    if (g_ai_sub == AI_SUB_OPTS)  { draw_ai_opts(g, in); return; }
-    if (g_ai_sub == AI_SUB_PAINT) { draw_ai_paint(g, in); return; }
-    if (g_ai_sub == AI_SUB_EMBLEM){ draw_ai_emblem(m, g, in); return; }
-    enum { AI_START = 0, AI_UNIT1, AI_UNIT2, AI_PILOT1, AI_WORKSHOP, AI_EXPORT, AI_ROWS };
+    enum { AI_START = 0, AI_UNIT1, AI_UNIT2, AI_PILOT1, AI_STAGE, AI_WORKSHOP, AI_EXPORT, AI_ROWS };
     move_cursor(PAGE_AI, AI_ROWS, in, AI_ROWS);
     int& cur = g_state.cursor[PAGE_AI];
 
     header(g, "AI BATTLE", "COMPUTER VERSUS COMPUTER");
     panel(g, 24.0f, 76.0f, 270.0f, 214.0f, "SETUP");
     int activate = -1;
-    const char* labels[AI_ROWS] = { "START BATTLE", "UNIT 1", "UNIT 2", "UNIT 1 PILOT",
+    const char* labels[AI_ROWS] = { "START BATTLE", "UNIT 1", "UNIT 2", "UNIT 1 PILOT", "STAGE",
                                     "CARD WORKSHOP", "EXPORT CARDS FROM MEMORY CARD" };
     for (int i = 0; i < AI_ROWS; ++i) {
         std::string value;
@@ -414,6 +500,8 @@ static void draw_ai_page(LauncherModel* m, const Gfx& g, const Input& in) {
             value = p < 0 ? std::string("RANDOM") : g_ai_cards[(size_t)p].label;
         } else if (i == AI_PILOT1) {
             value = g_ai_manual ? "YOU" : "COMPUTER";
+        } else if (i == AI_STAGE) {
+            value = stage_label(g_ai_stage);
         }
         bool hovered = false;
         if (row(g, 25.0f, 90.0f + kRowH * i, 268.0f, i == cur, true, labels[i],
@@ -426,7 +514,7 @@ static void draw_ai_page(LauncherModel* m, const Gfx& g, const Input& in) {
     draw_unit(g, 310.0f, 0);
     draw_unit(g, 471.0f, 1);
 
-    panel(g, 24.0f, 306.0f, 592.0f, 110.0f, "CARDS");
+    panel(g, 24.0f, 306.0f, 450.0f, 110.0f, "CARDS");
     {
         char buf[300];
         std::snprintf(buf, sizeof buf, "%d CARD%s FOUND", (int)g_ai_cards.size(),
@@ -434,22 +522,27 @@ static void draw_ai_page(LauncherModel* m, const Gfx& g, const Input& in) {
         text(g, 38.0f, 322.0f, 11.0f, g_ai_cards.empty() ? kWarn : kHi, buf);
         text(g, 38.0f, 342.0f, 10.0f, kText,
              "Cards are AC images saved by the Raven Card Builder. Each card carries its "
-             "AI; set it in the CARD WORKSHOP. Cards live in the memory card folder:", 560.0f);
+             "AI; set it in the CARD WORKSHOP. Cards live in the memory card folder:", 420.0f);
         text(g, 38.0f, 384.0f, 10.0f, kDim,
-             g_ai_folder.empty() ? "(no memory card folder yet)" : g_ai_folder.c_str(), 560.0f);
+             g_ai_folder.empty() ? "(no memory card folder yet)" : g_ai_folder.c_str(), 420.0f);
     }
+    panel(g, 490.0f, 306.0f, 126.0f, 110.0f, "STAGE");
+    draw_stage(m, g, 501.0f, 318.0f, g_ai_stage);
     footer(g, "A  SELECT      LEFT / RIGHT  CHANGE      B  BACK      START  BATTLE");
 
     if (in.back) { g_state.ai_page = false; return; }
     if ((cur == AI_UNIT1 || cur == AI_UNIT2) && (in.left || in.right))
         step_ai_pick(cur - AI_UNIT1, in.left ? -1 : 1);
     if (cur == AI_PILOT1 && (in.left || in.right)) g_ai_manual = !g_ai_manual;
+    if (cur == AI_STAGE && (in.left || in.right))
+        g_ai_stage = (g_ai_stage + (in.left ? kStageCount - 1 : 1)) % kStageCount;
     if (in.confirm) activate = cur;
     if (in.start) activate = AI_START;
     if (activate < 0) return;
     cur = activate;
     if (activate == AI_EXPORT) { export_ai_cards(m); return; }
     if (activate == AI_PILOT1) { g_ai_manual = !g_ai_manual; return; }
+    if (activate == AI_STAGE) { g_ai_stage = (g_ai_stage + 1) % kStageCount; return; }
     if (activate == AI_WORKSHOP) {
         g_ai_sub = AI_SUB_CARDS;
         g_ws_action = -1;
@@ -461,13 +554,7 @@ static void draw_ai_page(LauncherModel* m, const Gfx& g, const Input& in) {
         note("PICK TWO DIFFERENT CARDS");
         return;
     }
-    for (int u = 0; u < 2; ++u)
-        set_env(u ? "PSX_MOA_AI_UNIT2" : "PSX_MOA_AI_UNIT1",
-                g_ai_pick[u] >= 0 ? g_ai_cards[(size_t)g_ai_pick[u]].path.c_str() : "");
-    set_env("PSX_MOA_AI_P1", g_ai_manual ? "1" : "0");
-    set_ai_battle(true);
-    g_state.ai_page = false;
-    start_game(m);
+    launch_ai_battle(m);
 }
 
 /* ---- extras page ------------------------------------------------------------- */
@@ -816,8 +903,10 @@ static void start_game(LauncherModel* m) {
 static void set_ai_battle(bool on) {
 #ifdef _WIN32
     _putenv_s("PSX_MOA_AI_BATTLE", on ? "1" : "0");
+    if (!on) { _putenv_s("PSX_MEMCARD2_SESSION", ""); _putenv_s("PSX_MOA_AI_LOADMENU", "0"); }
 #else
     setenv("PSX_MOA_AI_BATTLE", on ? "1" : "0", 1);
+    if (!on) { setenv("PSX_MEMCARD2_SESSION", "", 1); setenv("PSX_MOA_AI_LOADMENU", "0", 1); }
 #endif
 }
 

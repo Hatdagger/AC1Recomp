@@ -70,6 +70,14 @@ struct moa_build_check {
 void moa_build_check(const struct moa_parts *p, const uint8_t rec[13], int plus,
                      struct moa_build_check *out);
 
+/* The versus maps' preview pictures (SELECT MAP), read from the disc's menu
+ * archive. Map n (1..MOA_VS_MAPS) is preview[n - 1], RGBA, 104 x 100. */
+#define MOA_VS_MAPS 10
+#define MOA_MAP_W 104
+#define MOA_MAP_H 100
+struct moa_map_previews { uint32_t rgba[MOA_VS_MAPS][MOA_MAP_W * MOA_MAP_H]; };
+int moa_map_previews_load(const char *disc_path, struct moa_map_previews *out);
+
 /* What each optional part does (builder text). */
 const char *moa_option_effect(int i);
 

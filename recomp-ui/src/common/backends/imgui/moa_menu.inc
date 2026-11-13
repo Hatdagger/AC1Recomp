@@ -478,14 +478,17 @@ static std::string find_phantasma_disc(const LauncherModel* m) {
     return "";
 }
 
+/* Installed with the missions (package 2.0): an arena-only 1.x install is
+ * rebuilt so the missions come along. */
 static bool phantasma_installed(const LauncherModel* m) {
     const RecompLauncherCModProvider* mods = m->mods;
-    if (!mods || !mods->package_count || !mods->package_get) return false;
-    const int n = mods->package_count(mods->ctx);
+    if (!mods || !mods->feature_count || !mods->feature_get) return false;
+    const int n = mods->feature_count(mods->ctx);
     for (int i = 0; i < n; ++i) {
-        RecompLauncherCModPackage p;
-        std::memset(&p, 0, sizeof p);
-        if (mods->package_get(mods->ctx, i, &p) && std::strcmp(p.id, kPhantasmaPackage) == 0)
+        RecompLauncherCModFeature f;
+        std::memset(&f, 0, sizeof f);
+        if (mods->feature_get(mods->ctx, i, &f) && std::strcmp(f.package_id, kPhantasmaPackage) == 0 &&
+            std::strcmp(f.id, "missions") == 0)
             return true;
     }
     return false;
@@ -511,13 +514,13 @@ static void install_phantasma(LauncherModel* m, const std::string& phantasma) {
     std::error_code ec;
     const fs::path dir = fs::u8path(new_mods_dir());
     fs::create_directories(dir, ec);
-    const fs::path file = dir / "MoA-PhantasmaArena-1.1.0.psxmod";
+    const fs::path file = dir / "MoA-Phantasma-2.0.0.psxmod";
     char error[240] = {0};
     if (!moa_phantasma_build(moa.c_str(), phantasma.c_str(), file.u8string().c_str(),
                              error, sizeof error)) {
         std::error_code rec;
         fs::remove(file, rec);
-        g_pp_status = upper(error[0] ? error : "THE ARENA COULD NOT BE BUILT.");
+        g_pp_status = upper(error[0] ? error : "PROJECT PHANTASMA COULD NOT BE BUILT.");
         return;
     }
     const bool installed = mods->install_archive(mods->ctx, file.u8string().c_str()) != 0;
@@ -538,7 +541,7 @@ static void install_phantasma(LauncherModel* m, const std::string& phantasma) {
         }
     }
     g_pp_failed = false;
-    g_pp_status = "INSTALLED AND SWITCHED ON. IT IS THE TENTH EX ARENA.";
+    g_pp_status = "INSTALLED AND SWITCHED ON: TENTH EX ARENA AND PP: MISSIONS.";
 }
 
 static void choose_phantasma(LauncherModel* m) {
@@ -575,22 +578,23 @@ static void draw_extras_page(LauncherModel* m, const Gfx& g, const Input& in) {
                              installed ? "INSTALLED" : "", false, false, &hovered);
     (void)cur;
 
-    panel(g, 24.0f, 152.0f, 592.0f, 264.0f, "PROJECT PHANTASMA ARENA");
+    panel(g, 24.0f, 152.0f, 592.0f, 264.0f, "PROJECT PHANTASMA");
     text(g, 38.0f, 168.0f, 11.0f, kText,
-         "Adds the 49 opponents of Armored Core: Project Phantasma as a tenth "
-         "Ex Arena, with their own ranking. It is built here, on this computer, "
-         "from your own Project Phantasma (USA) disc. Nothing from the disc is "
-         "copied anywhere else.", 560.0f);
-    text(g, 38.0f, 232.0f, 11.0f, kDim, "PHANTASMA DISC");
+         "Adds the 49 arena opponents of Armored Core: Project Phantasma as a "
+         "tenth Ex Arena, and its 17 missions ('PP:', one at a time) at the top of "
+         "the mission list. It is built here, on this computer, from your own "
+         "Project Phantasma (USA) disc. Nothing from the disc is copied anywhere "
+         "else.", 560.0f);
+    text(g, 38.0f, 256.0f, 11.0f, kDim, "PHANTASMA DISC");
     if (installed) {
-        text(g, 170.0f, 232.0f, 11.0f, kOn, "NOT NEEDED: ALREADY INSTALLED");
+        text(g, 170.0f, 256.0f, 11.0f, kOn, "NOT NEEDED: ALREADY INSTALLED");
     } else if (!g_pp_found.empty()) {
-        text(g, 170.0f, 232.0f, 11.0f, kOn, "FOUND NEXT TO YOUR GAME DISC");
-        text(g, 38.0f, 250.0f, 10.0f, kDim,
+        text(g, 170.0f, 256.0f, 11.0f, kOn, "FOUND NEXT TO YOUR GAME DISC");
+        text(g, 38.0f, 274.0f, 10.0f, kDim,
              std::filesystem::u8path(g_pp_found).filename().u8string().c_str(), 560.0f);
     } else {
-        text(g, 170.0f, 232.0f, 11.0f, kWarn, "NOT FOUND");
-        text(g, 38.0f, 250.0f, 10.0f, kText,
+        text(g, 170.0f, 256.0f, 11.0f, kWarn, "NOT FOUND");
+        text(g, 38.0f, 274.0f, 10.0f, kText,
              "Put the Project Phantasma disc image (.cue and .bin) in the same "
              "folder as your Master of Arena disc and reopen this page, or "
              "choose the file yourself: you will be asked when you select the "

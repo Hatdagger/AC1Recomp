@@ -170,6 +170,34 @@ static int disc_find(struct disc *d, const char *path, uint32_t *lba, uint32_t *
     }
 }
 
+/* Disc offset (2048-byte user data) of a file's directory record extent field
+ * (both-endian start sector, then both-endian size), for "GG/MS/MIS.T". */
+static int disc_record_offset(struct disc *d, const char *dir_path, const char *name,
+                              uint32_t *offset) {
+    uint32_t dir = 0, dsize = 0;
+    if (!disc_find(d, dir_path, &dir, &dsize) || dsize == 0 || dsize > 64u * 1024) return 0;
+    const uint32_t secs = (dsize + SECTOR - 1) / SECTOR;
+    uint8_t *buf = (uint8_t *)malloc((size_t)secs * SECTOR);
+    if (!buf) return 0;
+    int found = 0;
+    if (disc_read(d, dir, secs, buf)) {
+        uint32_t i = 0;
+        while (i < dsize) {
+            const uint8_t len = buf[i];
+            if (len == 0) { i = (i / SECTOR + 1) * SECTOR; continue; }
+            if (i + len > dsize) break;
+            if (name_is(buf + i, name)) {
+                *offset = dir * SECTOR + i + 2u;
+                found = 1;
+                break;
+            }
+            i += len;
+        }
+    }
+    free(buf);
+    return found;
+}
+
 static uint8_t *disc_file(struct disc *d, const char *path, uint32_t *size) {
     uint32_t lba, bytes;
     if (!disc_find(d, path, &lba, &bytes) || bytes == 0 || bytes > 64u * 1024 * 1024) return NULL;
@@ -373,9 +401,11 @@ static void text_hex(struct text *t, const uint8_t *p, size_t n) {
     }
 }
 
-static void text_patch(struct text *t, uint32_t offset, const uint8_t *was, const uint8_t *now, size_t n) {
-    char b[64];
-    text_add(t, "\n[[patch]]\nfeature = \"arena\"\ntarget = \"disc_user\"\n");
+static void text_patch_feature(struct text *t, const char *feature, uint32_t offset,
+                               const uint8_t *was, const uint8_t *now, size_t n) {
+    char b[96];
+    snprintf(b, sizeof b, "\n[[patch]]\nfeature = \"%s\"\ntarget = \"disc_user\"\n", feature);
+    text_add(t, b);
     snprintf(b, sizeof b, "offset = %u\n", offset);
     text_add(t, b);
     text_add(t, "expected = \"");
@@ -383,6 +413,10 @@ static void text_patch(struct text *t, uint32_t offset, const uint8_t *was, cons
     text_add(t, "\"\nreplace = \"");
     text_hex(t, now, n);
     text_add(t, "\"\n");
+}
+
+static void text_patch(struct text *t, uint32_t offset, const uint8_t *was, const uint8_t *now, size_t n) {
+    text_patch_feature(t, "arena", offset, was, now, n);
 }
 
 static uint32_t crc32_of(const uint8_t *p, size_t n) {
@@ -401,13 +435,14 @@ static uint32_t crc32_of(const uint8_t *p, size_t n) {
 static void w16(FILE *f, unsigned v) { fputc((int)(v & 255), f); fputc((int)((v >> 8) & 255), f); }
 static void w32(FILE *f, uint32_t v) { w16(f, v & 0xFFFF); w16(f, v >> 16); }
 
-/* A zip with two stored (uncompressed) files. */
-static int write_archive(const char *path, const char *const names[2],
-                         const uint8_t *const data[2], const size_t size[2]) {
+/* A zip with stored (uncompressed) files. */
+#define ARCHIVE_FILES 4
+static int write_archive(const char *path, int count, const char *const names[],
+                         const uint8_t *const data[], const size_t size[]) {
     FILE *f = fopen(path, "wb");
     if (!f) return 0;
-    uint32_t crc[2], where[2], central = 0;
-    for (int i = 0; i < 2; ++i) {
+    uint32_t crc[ARCHIVE_FILES], where[ARCHIVE_FILES], central = 0;
+    for (int i = 0; i < count; ++i) {
         crc[i] = crc32_of(data[i], size[i]);
         where[i] = (uint32_t)ftell(f);
         w32(f, 0x04034B50u); w16(f, 20); w16(f, 0); w16(f, 0); w16(f, 0); w16(f, 0x21);
@@ -417,7 +452,7 @@ static int write_archive(const char *path, const char *const names[2],
         fwrite(data[i], 1, size[i], f);
     }
     central = (uint32_t)ftell(f);
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < count; ++i) {
         w32(f, 0x02014B50u); w16(f, 20); w16(f, 20); w16(f, 0); w16(f, 0); w16(f, 0); w16(f, 0x21);
         w32(f, crc[i]); w32(f, (uint32_t)size[i]); w32(f, (uint32_t)size[i]);
         w16(f, (unsigned)strlen(names[i])); w16(f, 0); w16(f, 0); w16(f, 0); w16(f, 0);
@@ -425,7 +460,7 @@ static int write_archive(const char *path, const char *const names[2],
         fwrite(names[i], 1, strlen(names[i]), f);
     }
     const uint32_t end = (uint32_t)ftell(f);
-    w32(f, 0x06054B50u); w16(f, 0); w16(f, 0); w16(f, 2); w16(f, 2);
+    w32(f, 0x06054B50u); w16(f, 0); w16(f, 0); w16(f, (unsigned)count); w16(f, (unsigned)count);
     w32(f, end - central); w32(f, central); w16(f, 0);
     const int ok = fflush(f) == 0 && ferror(f) == 0;
     fclose(f);
@@ -541,12 +576,14 @@ out:
 static const char k_manifest_head[] =
     "format_version = 5\n"
     "id = \"community.moa.phantasma-arena\"\n"
-    "version = \"1.1.0\"\n"
-    "name = \"Master of Arena: Project Phantasma Arena\"\n"
+    "version = \"2.0.0\"\n"
+    "name = \"Master of Arena: Project Phantasma\"\n"
     "author = \"AC1Recomp community\"\n"
-    "description = \"Adds a tenth Ex Arena, 'Project Phantasma', with the 49 arena opponents of "
-    "Armored Core: Project Phantasma and its own rank starting at 50. Built from your own Master of "
-    "Arena and Project Phantasma discs; requires the moa.phantasma-arena plugin in the game build.\"\n"
+    "description = \"Adds Armored Core: Project Phantasma to Master of Arena: its 49 arena "
+    "opponents as a tenth Ex Arena with their own ranking, and its 17 missions at the top of the "
+    "mission list ('PP:'), unlocked one at a time. Built from your own Master of Arena and Project "
+    "Phantasma discs; requires the moa.phantasma-arena and moa.phantasma-missions plugins in the "
+    "game build.\"\n"
     "resolver = \"declarative\"\n"
     "save_compatibility = \"shared\"\n"
     "\n[[target]]\ngame_id = \"SLUS-01030\"\n"
@@ -556,12 +593,42 @@ static const char k_manifest_head[] =
     "\n[[feature]]\nid = \"arena\"\nname = \"Project Phantasma arena\"\n"
     "description = \"Tenth entry in the Ex Arena list. Turn off to restore the original game.\"\n"
     "group = \"Gameplay\"\ndefault_enabled = false\n"
-    "\n[[plugin]]\nfeature = \"arena\"\nid = \"moa.phantasma-arena\"\n";
+    "\n[[plugin]]\nfeature = \"arena\"\nid = \"moa.phantasma-arena\"\n"
+    "\n[[feature]]\nid = \"missions\"\nname = \"Project Phantasma missions\"\n"
+    "description = \"Phantasma's 17 missions, one at a time, at the top of the mission list. "
+    "Progress is kept in 'Phantasma Missions.txt' beside the memory card.\"\n"
+    "group = \"Gameplay\"\ndefault_enabled = false\n"
+    "\n[[plugin]]\nfeature = \"missions\"\nid = \"moa.phantasma-missions\"\n";
+
+/* Where the mission data goes, inside the disc's padding file _29M.DMY
+ * (sectors 282670-297684): the arena's menu copy, then the mission pack, then
+ * the MIS.T copy. */
+#define PACK_SECTOR       286200u
+#define MIS_SECTOR        296656u
+#define PADDING_END       297685u
+#define MIS_STOCK_BYTES   942080u
+#define MIS_STOCK_ENTRIES 409u
+#define MIS_PP_BYTES      765952u
+
+static void manifest_overlay(struct text *t, const char *feature, uint32_t sector,
+                             const char *file, const uint8_t *data, size_t bytes) {
+    uint8_t hash[32];
+    char line[200];
+    psx_sha256_compute(data, bytes, hash);
+    snprintf(line, sizeof line,
+             "\n[[overlay]]\nfeature = \"%s\"\ntarget = \"disc_user\"\noffset = %llu\n"
+             "file = \"%s\"\nsha256 = \"", feature, (unsigned long long)sector * SECTOR, file);
+    text_add(t, line);
+    for (int i = 0; i < 32; ++i) { snprintf(line, 8, "%02x", hash[i]); text_add(t, line); }
+    text_add(t, "\"\n");
+}
 
 int moa_phantasma_build(const char *moa_disc, const char *pp_disc, const char *out_path,
                         char *error, unsigned error_size) {
     struct disc moa, pp;
     uint8_t *stock = NULL, *ppmenu = NULL, *asset = NULL;
+    uint8_t *pp_rtim = NULL, *pp_fdat = NULL, *moa_fdat = NULL, *pack = NULL;
+    uint8_t *moa_mis = NULL, *pp_mis = NULL, *mis = NULL;
     uint32_t stock_bytes = 0, pp_bytes = 0;
     struct text manifest = {0};
     int ok = 0;
@@ -597,6 +664,37 @@ int moa_phantasma_build(const char *moa_disc, const char *pp_disc, const char *o
     if (!build_block(&ents, asset + STOCK_BYTES, error, error_size)) goto done;
     const size_t asset_bytes = (size_t)(STOCK_SECTORS + BLOCK_SECTORS) * SECTOR;
 
+    /* The missions: the pack, and MIS.T with Phantasma's appended. */
+    {
+        uint32_t n0 = 0, n1 = 0, n2 = 0;
+        pp_rtim = disc_file(&pp, "GG/COM/RTIM.T", &n0);
+        pp_fdat = disc_file(&pp, "GG/COM/FDAT.T", &n1);
+        moa_fdat = disc_file(&moa, "GG/COM/FDAT.T", &n2);
+        struct tarc src[3];
+        if (!tarc_load(&src[0], pp_rtim, n0) || !tarc_load(&src[1], pp_fdat, n1) ||
+            !tarc_load(&src[2], moa_fdat, n2)) {
+            snprintf(error, error_size, "The mission files could not be read from the discs.");
+            goto done;
+        }
+        pack = (uint8_t *)malloc((size_t)PPM_PACK_SECTORS * SECTOR);
+        if (!pack) { snprintf(error, error_size, "Out of memory."); goto done; }
+        if (!build_missions(src, pack, error, error_size)) goto done;
+        uint32_t m1 = 0, m2 = 0;
+        moa_mis = disc_file(&moa, "GG/MS/MIS.T", &m1);
+        pp_mis = disc_file(&pp, "GG/MS/MIS.T", &m2);
+        if (!moa_mis || m1 != MIS_STOCK_BYTES || (moa_mis[0] | moa_mis[1] << 8) != MIS_STOCK_ENTRIES ||
+            !pp_mis || m2 != MIS_PP_BYTES) {
+            snprintf(error, error_size, "The mission briefings could not be read from the discs.");
+            goto done;
+        }
+        if (MIS_SECTOR + (MIS_STOCK_BYTES + MIS_PP_BYTES) / SECTOR > PADDING_END ||
+            PACK_SECTOR + PPM_PACK_SECTORS > MIS_SECTOR) goto wrong_disc;
+        mis = (uint8_t *)malloc(MIS_STOCK_BYTES + MIS_PP_BYTES);
+        if (!mis) { snprintf(error, error_size, "Out of memory."); goto done; }
+        memcpy(mis, moa_mis, MIS_STOCK_BYTES);
+        memcpy(mis + MIS_STOCK_BYTES, pp_mis, MIS_PP_BYTES);
+    }
+
     /* The Master of Arena disc must carry the bytes the patches expect. */
     uint32_t menu_lba = 0, menu_size = 0;
     disc_find(&moa, "GG/MS/MENU_TIM.T", &menu_lba, &menu_size);
@@ -610,19 +708,27 @@ int moa_phantasma_build(const char *moa_disc, const char *pp_disc, const char *o
         put_le32(stock_rec + 8, STOCK_BYTES); put_be32(stock_rec + 12, STOCK_BYTES);
         if (memcmp(dir_was, stock_rec, 16) != 0) goto wrong_disc;
     }
-    text_add(&manifest, k_manifest_head);
+    uint32_t mis_rec = 0, mis_lba = 0, mis_size = 0;
+    uint8_t mis_was[16], mis_now[16];
+    if (!disc_record_offset(&moa, "GG/MS", "MIS.T", &mis_rec) ||
+        !disc_find(&moa, "GG/MS/MIS.T", &mis_lba, &mis_size) ||
+        !read_bytes(&moa, mis_rec, 16, mis_was)) goto wrong_disc;
+    {
+        uint8_t stock_rec[16];
+        put_le32(stock_rec, mis_lba); put_be32(stock_rec + 4, mis_lba);
+        put_le32(stock_rec + 8, MIS_STOCK_BYTES); put_be32(stock_rec + 12, MIS_STOCK_BYTES);
+        if (memcmp(mis_was, stock_rec, 16) != 0) goto wrong_disc;
+    }
+    put_le32(mis_now, MIS_SECTOR); put_be32(mis_now + 4, MIS_SECTOR);
+    put_le32(mis_now + 8, MIS_STOCK_BYTES + MIS_PP_BYTES);
+    put_be32(mis_now + 12, MIS_STOCK_BYTES + MIS_PP_BYTES);
 
-    /* The menu file's copy, in the disc's spare area. */
-    uint8_t hash[32];
-    char line[160];
-    psx_sha256_compute(asset, asset_bytes, hash);
-    snprintf(line, sizeof line,
-             "\n[[overlay]]\nfeature = \"arena\"\ntarget = \"disc_user\"\noffset = %llu\n"
-             "file = \"assets/menu_tim.bin\"\nsha256 = \"",
-             (unsigned long long)COPY_SECTOR * SECTOR);
-    text_add(&manifest, line);
-    for (int i = 0; i < 32; ++i) { snprintf(line, 8, "%02x", hash[i]); text_add(&manifest, line); }
-    text_add(&manifest, "\"\n");
+    text_add(&manifest, k_manifest_head);
+    manifest_overlay(&manifest, "arena", COPY_SECTOR, "assets/menu_tim.bin", asset, asset_bytes);
+    manifest_overlay(&manifest, "missions", PACK_SECTOR, "assets/pack.bin", pack,
+                     (size_t)PPM_PACK_SECTORS * SECTOR);
+    manifest_overlay(&manifest, "missions", MIS_SECTOR, "assets/mis.bin", mis,
+                     MIS_STOCK_BYTES + MIS_PP_BYTES);
 
     text_patch(&manifest, DIR_RECORD_OFFSET, dir_was, dir_now, 16);
 
@@ -642,13 +748,16 @@ int moa_phantasma_build(const char *moa_disc, const char *pp_disc, const char *o
         put_le32(now, le32(was) + delta);
         text_patch(&manifest, CHECKSUM_OFFSET, was, now, 4);
     }
+    text_patch_feature(&manifest, "missions", mis_rec, mis_was, mis_now, 16);
 
     {
-        const char *names[2] = { "manifest.toml", "assets/menu_tim.bin" };
-        const uint8_t *data[2] = { (const uint8_t *)manifest.s, asset };
-        const size_t size[2] = { manifest.n, asset_bytes };
-        if (!write_archive(out_path, names, data, size)) {
-            snprintf(error, error_size, "The arena package could not be written.");
+        const char *names[4] = { "manifest.toml", "assets/menu_tim.bin", "assets/pack.bin",
+                                 "assets/mis.bin" };
+        const uint8_t *data[4] = { (const uint8_t *)manifest.s, asset, pack, mis };
+        const size_t size[4] = { manifest.n, asset_bytes, (size_t)PPM_PACK_SECTORS * SECTOR,
+                                 MIS_STOCK_BYTES + MIS_PP_BYTES };
+        if (!write_archive(out_path, 4, names, data, size)) {
+            snprintf(error, error_size, "The Project Phantasma package could not be written.");
             goto done;
         }
     }
@@ -656,11 +765,18 @@ int moa_phantasma_build(const char *moa_disc, const char *pp_disc, const char *o
     goto done;
 wrong_disc:
     snprintf(error, error_size,
-             "This Master of Arena disc is not the one the arena was made for (US, disc 1).");
+             "This Master of Arena disc is not the one the package was made for (US, disc 1).");
 done:
     free(stock);
     free(ppmenu);
     free(asset);
+    free(pp_rtim);
+    free(pp_fdat);
+    free(moa_fdat);
+    free(pack);
+    free(moa_mis);
+    free(pp_mis);
+    free(mis);
     free(manifest.s);
     disc_close(&moa);
     disc_close(&pp);

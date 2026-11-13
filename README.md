@@ -1,152 +1,125 @@
-# Armored Core (PSX Recompilation)
+# Armored Core: Master of Arena — PC (unofficial build)
 
-A native PC port of all three **Armored Core** games for playstation 1. Generated via static recompilation with enhanced rendering, widescreen support, customizable controls, and in-game settings.
+A native PC version of **Armored Core: Master of Arena** (PS1), with a
+controller-first launcher, online/LAN versus, an AI battle mode and content
+from **Armored Core: Project Phantasma** added into the game.
 
----
+Built on the **[AC1Recomp](https://github.com/NeonLightning/AC1Recomp)**
+static recompilation by NeonLightning. This fork focuses on Master of Arena
+only.
 
-## Building the Project
+**No game data is included.** You need your own copy of the game.
 
-### Prerequisites
-
-#### Linux (Arch Linux / Manjaro)
-```bash
-sudo pacman -S base-devel cmake ninja sdl3 freetype2 harfbuzz libpng zlib openssl vulkan-headers shaderc
-```
-
-#### Linux (Ubuntu / Debian 24.04+)
-```bash
-sudo apt-get update
-sudo apt-get install build-essential cmake ninja-build libsdl3-dev libfreetype-dev libharfbuzz-dev libpng-dev zlib1g-dev libssl-dev libvulkan-dev glslc
-```
-
-### Compiling
-
-The engine runtime and launcher UI are fully vendored in-tree. Configure and build with CMake and Ninja:
-
-```bash
-# Configure release build with Vulkan support
-cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DPSX_ENABLE_VULKAN=ON
-
-# Compile all game executables
-cmake --build build-release --target psx-armored-core psx-project-phantasma psx-master-of-arena psx-launcher -j$(nproc)
-```
-
-The executables are `build-release/AC1`,
-`build-release/ArmoredCoreProjectPhantasma` and
-`build-release/ArmoredCoreMasterOfArena`. Run `./launch.sh` from the project
-root for the graphical launcher (game, disc and shared settings), or launch any executable directly.
-
-Armored Core uses the USA `SCUS-94182` disc.
-
-Armored Core: Master of Arena uses the USA `SLUS-01030` (Disc 1) and
-`SLUS-01081` (Disc 2) profile; pick the disc in its launcher's Disc Selection.
-
-Project Phantasma uses the USA `SLUS-00670` profile. Keep your legally dumped
-disc in the configured local disc path or select it in that title's launcher;
-disc images are not included in the repository.
-
-### Creating an End-User Release Package
-
-Build and package the game as a standalone ZIP with:
-
-```bash
-scripts/build_release.sh
-```
-
-The ZIP is written to `dist/` and contains the game executable and required
-runtime files, not CMake/Ninja metadata or compiler object files. To choose a
-build directory, artifact tag, or recompiler build directory:
-
-```bash
-scripts/build_release.sh build-release linux-x64 psxrecomp/recompiler/build
-```
-
-To build a Linux x86_64 AppImage instead, run:
-
-```bash
-scripts/build_appimage.sh
-```
-
-The AppImage is written to `dist/armored-core-recomp-<version>-linux-x64.AppImage`.
-It downloads the pinned AppImage packaging tools on first use and caches them
-under `${XDG_CACHE_HOME:-~/.cache}/recomp-appimage-tools`. User settings, disc
-selection, memory cards, and saves live under `${XDG_DATA_HOME:-~/.local/share}/armored-core-recomp`;
-existing writable data is carried forward when the packaged runtime changes.
-The bundled OpenBIOS image and license are included; a retail PS1 BIOS dump is
-not included and must be supplied by the user if selected.
+**[Download the latest release](https://github.com/Hatdagger/AC1Recomp/releases)**
+(Windows `.zip`, Linux / Steam Deck `.AppImage`)
 
 ---
 
-## In-Game Settings Overlay
+## 1. Put your disc next to the game
 
-During gameplay, press the **Xbox (Guide) button** on a controller or the **Escape** key on a keyboard to open the in-game settings overlay. The game pauses while the overlay is open.
+- **Required:** *Armored Core: Master of Arena* (USA) **Disc 1** as `.cue` + `.bin`.
+- Put the disc image in the **same folder** as `Armored Core Moa.exe` (or the
+  AppImage). It is found automatically, so there's nothing to select.
+- **Optional:** *Armored Core: Project Phantasma* (USA), in the same folder,
+  adds the Phantasma arena and missions (see below).
 
-- **Navigation**:
-  - **D-Pad / Left Stick** or **Arrow Keys**: Navigate rows and adjust values.
-  - **A Button** or **Enter / Space**: Activate folders, toggle options, or confirm actions.
-  - **B Button** or **Escape**: Go back or close the overlay.
-  - **Guide Button**: Toggle overlay open/close.
+### One disc for everything
 
-### Overlay Options
+You only need Disc 1. Everything that normally needs Disc 2 (Ex Arena,
+Ranker MK and so on) plays straight from Disc 1, with no disc swapping.
 
-#### Display
-- **View mode**: Toggle between **16:9 Widescreen** (native-wide 1:1 camera extension) and **4:3 Standard**.
-- **Fullscreen**: Switch between **Windowed**, **Borderless** desktop fullscreen, and **Exclusive** fullscreen.
-- **Window scale**: Adjust window client resolution in integer steps (1x to 8x native height) in windowed mode.
-- **VSync**: Choose between **Off** (lowest input latency), **On** (tear-free), and **Adaptive**.
-- **Scanlines**: Enable CRT scanline post-processing filter.
-- **Scanline strength**: Adjust CRT scanline intensity from 0% to 100%.
-- **Frame interpolation**: Smooth motion frame blending.
+![The leftover DISC CHANGE icon](docs/readme/unified-disc.png)
 
-#### Graphics
-- **Resolution scale**: Internal rendering resolution from 1x native up to 8x.
-- **Antialiasing**: Smooth present filtering across the frame.
-- **Texture filtering**: Choose between **Nearest** (authentic pixelated) and **Linear** (smoothed).
-- **FMV filtering**: Select scaling algorithm for full-motion video playback (**Nearest**, **Bilinear**, **Sharp**, **Bicubic**).
-- **Screen filter**: Post-processing CRT display simulation presets (**Raw**, **CRT**, **Composite**, **Trinitron**).
-- **Geometry precision**: PGXP sub-pixel vertex precision to eliminate 3D polygon jitter.
-- **Perspective texturing**: PGXP perspective-correct texture mapping to prevent polygon warping.
-- **Skip FMVs**: Automatically bypass pre-rendered video cutscenes on load.
-
-#### Audio
-- **Audio**: Toggle master sound output on or off.
-- **Volume**: Adjust in-game mixer volume (0% to 100%).
-- **SPU high quality**: Enable floating-point audio mixing shadow.
-
-#### Input
-- **Dual analog mode**: Toggle modern twin-stick movement for digital PS1 controls:
-  - **Left Stick**: Forward/Back (D-Pad Up/Down) and Strafe (L1/R1).
-  - **Right Stick**: Aim Up/Down (L2/R2) and Turn (D-Pad Left/Right).
-- **Duplicate face on shoulders**: (Available when Dual analog mode is active) Duplicates physical face buttons to shoulder buttons for modern twin-stick combat:
-  - **L1**: Triangle (Switch weapon)
-  - **R1**: Cross (Boost)
-  - **L2**: Circle (Energy blade)
-  - **R2**: Square (Fire primary weapon)
-
-#### System
-- **Resume game**: Unpause and return to gameplay.
-- **State slot**: Select save-state slot (1–12).
-- **Save state**: Save immediate game snapshot to selected slot.
-- **Load state**: Load snapshot from selected slot.
-- **Fast boot**: Skip the PlayStation BIOS sequence and jump directly into the game.
-- **HLE BIOS**: Toggle high-level BIOS kernel service interception.
-- **Rewind feature**: Toggle memory rewind snapshot capture.
-- **Restart game**: Save active settings and restart with the current disc and launch options.
-- **Return to launcher**: Save active settings and reopen the graphical launcher.
-- **Quit game**: Close the application.
+The game still shows its old **DISC CHANGE** icon and may still say
+*"Insert DISC 2"*. **Ignore it:** press X and carry on. All the content is
+there.
 
 ---
 
-## Launcher Configuration
+## 2. Launcher
 
-When starting the application without skipping the launcher, the GUI offers additional configuration tabs:
+<!-- Launcher screenshot goes here: docs/readme/launcher.png -->
 
-- **Display Panel**: Select the graphics renderer, aspect ratio, internal resolution, VSync, scanlines, frame interpolation, Skip FMVs, geometry precision, and other presentation settings.
-- **Controller Configuration**:
-  - Rebind individual keyboard keys and controller buttons.
-  - Set per-controller stick deadzone percentage.
-  - Toggle **Dual analog mode** and **Duplicate face buttons on shoulders** with an on-screen reference legend.
-- **Audio & System**: Mute or adjust audio, select host frequency, choose the savestate slot, manage memory cards, and switch disc images.
-- **System settings**: Choose **Fast boot** to skip the BIOS startup sequence and **HLE BIOS** to enable high-level BIOS services; these match the in-game controls and persist in `settings.toml`.
+A launcher in Master of Arena's own style, made for a **gamepad**
+(Steam Deck and handheld PCs included). No mouse needed.
 
-Settings are saved automatically to [game.toml](games/armored-core/game.toml) defaults and your user profile in `settings.toml`.
+- **Start:** launch the game.
+- **Network:** two-player versus over **LAN or online**.
+  - One player hosts a lobby, the other joins (recent hosts are remembered, and
+    an IP address is entered digit by digit with the d-pad).
+  - **Names are picked for you** from the game's arena pilot names, so
+    there's nothing to type.
+  - Each player plays on their own screen, with their own AC and memory card.
+- **AI Battle:** pick two AC "cards" and watch the computer fly both.
+- **Mods:** switch features on and off, or install new ones.
+- **Extras:** *Install data from Project Phantasma* builds the Phantasma
+  content on your PC from your own disc (it finds the disc by itself).
+- **Updates:** checks GitHub for a new release and installs it, only when you
+  ask.
+
+---
+
+## 3. Project Phantasma arena
+
+![Project Phantasma arena](docs/readme/pp-arena.png)
+
+- **How to get it:** Launcher → **Extras** → *Install data from Project
+  Phantasma*.
+- **Where it is:** in game, **Ex Arena** → **Project Phantasma** (the tenth
+  entry).
+- **What came over:** all **49 arena ACs from Project Phantasma**, with their
+  pilots, AC names, emblems, portraits and profiles.
+- It has its own ranking: you start at the bottom (rank 50) and climb.
+  Prize money is scaled to Master of Arena's economy.
+
+---
+
+## 4. Project Phantasma missions (work in progress)
+
+![Mission list with a Phantasma mission](docs/readme/missions.png)
+![Phantasma missions in game](docs/readme/pp-missions-gameplay.png)
+
+**The goal:** play all 17 Project Phantasma missions inside Master of Arena,
+with their own briefings, maps and enemies, and with any AC you build.
+
+**Where it is today (0.4.0):**
+
+- Installed together with the arena (same Extras button).
+- The next Phantasma mission sits at the top of the **Mission** list as
+  **"PP: …"**. Master of Arena's own missions show **"M: …"**.
+- Missions unlock **one at a time**, in order.
+- **12 of 17 missions are in.** Missions 1, 7, 9, 11 and 14 are left out for
+  now because they freeze or don't display correctly.
+- No replay list yet. Once you've finished them, the Phantasma missions leave
+  the list.
+- Progress is saved in `Phantasma Missions.txt` in the **Memory Card** folder,
+  one progress per memory card (every save on the card shares it).
+- A few long mission names are shortened to fit the list.
+
+**Planned:** a separate Phantasma mission list (like Arena's two lists), the
+missing missions, and replays after the last mission.
+
+---
+
+## Folders (Windows release)
+
+| Folder / file | What it is |
+|---|---|
+| `Armored Core Moa.exe` | Start here |
+| your `.cue` + `.bin` | Your Master of Arena Disc 1 (and optionally Project Phantasma) |
+| `Memory Card/` | Memory cards and Phantasma mission progress |
+| `Mods/` | Mods |
+| `RecompData/` | Everything else the game needs |
+
+---
+
+## Credits
+
+- **[AC1Recomp](https://github.com/NeonLightning/AC1Recomp)** by NeonLightning,
+  the recompilation this build is based on.
+- Armored Core is © FromSoftware. This is an unofficial fan project, with no
+  game data included and not affiliated with FromSoftware or Agetec.
+
+Problems or feedback: please open an
+[issue](https://github.com/Hatdagger/AC1Recomp/issues) and say what you did,
+what you saw, and whether you're on Windows or Linux / Steam Deck.

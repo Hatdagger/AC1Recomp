@@ -228,7 +228,9 @@ jobs:
 
   release:
     name: Publish release
-    if: startsWith(github.ref, 'refs/tags/moa-v')
+    # A tag push, or a push to the launcher branch whose commit message holds
+    # "[release moa-vX.Y.Z]" (the release then creates the tag itself).
+    if: startsWith(github.ref, 'refs/tags/moa-v') || (github.ref == 'refs/heads/moa-launcher' && contains(github.event.head_commit.message, '[release moa-v'))
     needs: [appimage, windows]
     runs-on: ubuntu-24.04
     permissions:
@@ -244,10 +246,22 @@ jobs:
         with:
           path: artifacts
 
-      - name: Package
+      - name: Work out the release tag
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
+          if [[ "${GITHUB_REF}" == refs/heads/* ]]; then
+            tag="$(printf '%s' "${COMMIT_MESSAGE}" | grep -oE '\[release moa-v[0-9][^]]*\]' | head -1 | sed -E 's/\[release (.*)\]/\1/')"
+          fi
+          test -n "$tag"
+          echo "RELEASE_TAG=$tag" >> "$GITHUB_ENV"
+        env:
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          tag="${RELEASE_TAG}"
           mkdir -p out
           cp artifacts/armored-core-moa-linux-x64-appimage/*.AppImage \
              "out/Armored-Core-MoA-${tag#moa-}-linux-x64.AppImage"
@@ -261,8 +275,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release create "${GITHUB_REF_NAME}" out/* \
+          gh release create "${RELEASE_TAG}" out/* \
             --repo "${GITHUB_REPOSITORY}" \
-            --title "Armored Core: Master of Arena ${GITHUB_REF_NAME#moa-}" \
+            --target "${GITHUB_SHA}" \
+            --title "Armored Core: Master of Arena ${RELEASE_TAG#moa-}" \
             --notes-file docs/moa-release-notes.md \
             --prerelease

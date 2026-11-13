@@ -731,7 +731,7 @@ static int moa_map_target;
 static int moa_lock;                           /* the script owns the controllers */
 static uint16_t moa_inject[2];                 /* buttons held, active high */
 static int moa_live_lock;                      /* AI vs AI fight: no controller */
-static uint32_t moa_live_ticks, moa_live_ai_mark, moa_live_quiet;
+static uint32_t moa_live_ticks, moa_live_ai_mark, moa_live_quiet, moa_live_wait;
 static int moa_reached_versus;                 /* the versus menu came up once */
 static uint8_t moa_expect_parts[2][12];
 static int moa_expect_set[2];
@@ -848,13 +848,13 @@ static void moa_script_frame(void)
     }
     case STEP_MAP: {
         if (!moa_map_target) {
-            /* The versus maps AI Battle uses: 10 (the default), 1, 3, 6, 9.
+            /* The versus maps AI Battle uses: 9 (the default), 1, 3, 6.
              * The others are left out (4, 5, 7 and 8 hang at match start in
-             * testing). PSX_MOA_AI_MAP = a map number, "random" (one of
-             * these), or unset (map 10). */
-            static const uint8_t usable[] = { 10, 1, 3, 6, 9 };
+             * testing). PSX_MOA_AI_MAP = one of those, "random" (one of
+             * them), or unset (map 9). */
+            static const uint8_t usable[] = { 9, 1, 3, 6 };
             const char *m = getenv("PSX_MOA_AI_MAP");
-            const int asked = m && m[0] ? atoi(m) : 10;
+            const int asked = m && m[0] ? atoi(m) : 9;
             for (size_t i = 0; i < sizeof usable; i++) if (usable[i] == asked) moa_map_target = asked;
             if (!moa_map_target) moa_map_target = usable[moa_random((uint32_t)sizeof usable)];
         }
@@ -874,9 +874,14 @@ static void moa_script_frame(void)
         const int row = psx_mod_read_byte(MOA_VS_ROW);
         moa_inject[0] = moa_inject[1] = 0;
         if (row == st->buttons && t >= 20) { moa_script_pos++; moa_step_time = 0; return; }
-        if (t > 4000) {                                 /* the menu never answered */
-            psx_mod_counter_add("moa.ai.menu_row_timeout", 1);
-            moa_script_pos++; moa_step_time = 0; return;
+        if (t > 4000) {                                 /* the menu never answered: */
+            psx_mod_counter_add("moa.ai.menu_row_timeout", 1);   /* give it to the player */
+            moa_inject[0] = moa_inject[1] = 0;
+            moa_lock = 0;
+            moa_vs_start_armed = 1;
+            psx_mod_request_fast_forward(0);
+            moa_script_pos = moa_script_len;
+            return;
         }
         if (row != st->buttons && (t % 30u) < 4u) moa_inject[0] = row < st->buttons ? MOA_PAD_DOWN : MOA_PAD_UP;
         return;
@@ -892,7 +897,7 @@ static void moa_script_frame(void)
     case STEP_FIGHT:                                    /* stays fast through the fight */
         moa_vs_start_armed = 1;
         moa_live_lock = 1;
-        moa_live_ticks = moa_live_quiet = 0;
+        moa_live_ticks = moa_live_quiet = moa_live_wait = 0;
         moa_live_ai_mark = moa_ai_frames_seen;
         moa_script_pos++; moa_step_time = 0;
         return;
@@ -935,6 +940,15 @@ static void moa_frame_hook(void)
 {
     if (!moa_ai_battle_on()) return;
     moa_script_frame();
+    /* AI vs AI: VS START was pressed but no fight began (the game refused a
+     * build, say): stop fast forward and give the player the controller. */
+    static uint32_t seen;
+    if (moa_ai_frames_seen != seen) { seen = moa_ai_frames_seen; moa_live_wait = 0; }
+    else if (moa_live_lock && !moa_lock && moa_ai_frames_seen == 0 && ++moa_live_wait > 1800u) {
+        moa_live_lock = 0;
+        psx_mod_request_fast_forward(0);
+        psx_mod_counter_add("moa.ai.fight_never_started", 1);
+    }
 }
 
 /* Arena engine controller sampler, while an AI vs AI fight runs unattended:

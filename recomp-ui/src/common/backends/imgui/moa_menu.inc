@@ -387,9 +387,10 @@ static void draw_unit(const Gfx& g, float x, int unit) {
 
 /* ---- stage and launch ---- */
 
-/* The versus maps offered: 10 first (the default), then 1, 3, 6, 9, then
- * RANDOM (one of those). The others hang at match start in testing. */
-static const int kStages[] = { 10, 1, 3, 6, 9, 0 };
+/* The versus maps offered: 9 (the default), 1, 3, 6, then RANDOM (one of
+ * those). Maps 4, 5, 7 and 8 hang at match start in testing; 2 and 10 are
+ * left out by choice. */
+static const int kStages[] = { 9, 1, 3, 6, 0 };
 static const int kStageCount = (int)(sizeof kStages / sizeof kStages[0]);
 static int g_ai_stage = 0;
 static moa_map_previews* g_maps = nullptr;
@@ -434,6 +435,8 @@ static void draw_stage(const LauncherModel* m, const Gfx& g, float x, float y, i
  * in slot 2 and the game loads them through its own DATA LOAD (RANDOM picks a
  * card here when there is one); otherwise the game enters them itself. */
 static void launch_ai_battle(LauncherModel* m) {
+    static bool seeded = false;
+    if (!seeded) { std::srand((unsigned)std::time(nullptr)); seeded = true; }
     int pick[2] = { g_ai_pick[0], g_ai_pick[1] };
     const int n = (int)g_ai_cards.size();
     for (int u = 0; u < 2; ++u) {
@@ -484,15 +487,17 @@ static void draw_ai_page(LauncherModel* m, const Gfx& g, const Input& in) {
     if (g_ai_sub == AI_SUB_OPTS)  { draw_ai_opts(g, in); return; }
     if (g_ai_sub == AI_SUB_PAINT) { draw_ai_paint(g, in); return; }
     if (g_ai_sub == AI_SUB_EMBLEM){ draw_ai_emblem(m, g, in); return; }
-    enum { AI_START = 0, AI_UNIT1, AI_UNIT2, AI_PILOT1, AI_STAGE, AI_WORKSHOP, AI_EXPORT, AI_ROWS };
+    enum { AI_START = 0, AI_UNIT1, AI_UNIT2, AI_PILOT1, AI_STAGE, AI_NEWCARD, AI_WORKSHOP, AI_EXPORT,
+           AI_ROWS };
     move_cursor(PAGE_AI, AI_ROWS, in, AI_ROWS);
     int& cur = g_state.cursor[PAGE_AI];
 
     header(g, "AI BATTLE", "COMPUTER VERSUS COMPUTER");
-    panel(g, 24.0f, 76.0f, 270.0f, 214.0f, "SETUP");
+    panel(g, 24.0f, 76.0f, 270.0f, 232.0f, "SETUP");
     int activate = -1;
     const char* labels[AI_ROWS] = { "START BATTLE", "UNIT 1", "UNIT 2", "UNIT 1 PILOT", "STAGE",
-                                    "CARD WORKSHOP", "EXPORT CARDS FROM MEMORY CARD" };
+                                    "BUILD NEW CARD", "CARD WORKSHOP",
+                                    "EXPORT CARDS FROM MEMORY CARD" };
     for (int i = 0; i < AI_ROWS; ++i) {
         std::string value;
         if (i == AI_UNIT1 || i == AI_UNIT2) {
@@ -514,20 +519,20 @@ static void draw_ai_page(LauncherModel* m, const Gfx& g, const Input& in) {
     draw_unit(g, 310.0f, 0);
     draw_unit(g, 471.0f, 1);
 
-    panel(g, 24.0f, 306.0f, 450.0f, 110.0f, "CARDS");
+    panel(g, 24.0f, 320.0f, 450.0f, 100.0f, "CARDS");
     {
         char buf[300];
         std::snprintf(buf, sizeof buf, "%d CARD%s FOUND", (int)g_ai_cards.size(),
                       g_ai_cards.size() == 1 ? "" : "S");
-        text(g, 38.0f, 322.0f, 11.0f, g_ai_cards.empty() ? kWarn : kHi, buf);
-        text(g, 38.0f, 342.0f, 10.0f, kText,
-             "Cards are AC images saved by the Raven Card Builder. Each card carries its "
-             "AI; set it in the CARD WORKSHOP. Cards live in the memory card folder:", 420.0f);
-        text(g, 38.0f, 384.0f, 10.0f, kDim,
+        text(g, 38.0f, 334.0f, 11.0f, g_ai_cards.empty() ? kWarn : kHi, buf);
+        text(g, 38.0f, 352.0f, 10.0f, kText,
+             "Build a card here (BUILD NEW CARD) or with the Raven Card Builder; edit "
+             "builds and AI in the CARD WORKSHOP. Cards live in the memory card folder:", 420.0f);
+        text(g, 38.0f, 392.0f, 10.0f, kDim,
              g_ai_folder.empty() ? "(no memory card folder yet)" : g_ai_folder.c_str(), 420.0f);
     }
-    panel(g, 490.0f, 306.0f, 126.0f, 110.0f, "STAGE");
-    draw_stage(m, g, 501.0f, 318.0f, g_ai_stage);
+    panel(g, 490.0f, 320.0f, 126.0f, 100.0f, "STAGE");
+    draw_stage(m, g, 501.0f, 328.0f, g_ai_stage);
     footer(g, "A  SELECT      LEFT / RIGHT  CHANGE      B  BACK      START  BATTLE");
 
     if (in.back) { g_state.ai_page = false; return; }
@@ -543,6 +548,7 @@ static void draw_ai_page(LauncherModel* m, const Gfx& g, const Input& in) {
     if (activate == AI_EXPORT) { export_ai_cards(m); return; }
     if (activate == AI_PILOT1) { g_ai_manual = !g_ai_manual; return; }
     if (activate == AI_STAGE) { g_ai_stage = (g_ai_stage + 1) % kStageCount; return; }
+    if (activate == AI_NEWCARD) { open_build_new(); return; }
     if (activate == AI_WORKSHOP) {
         g_ai_sub = AI_SUB_CARDS;
         g_ws_action = -1;

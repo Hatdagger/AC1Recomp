@@ -6,6 +6,18 @@ your own copy of Armored Core: Master of Arena (USA).**
 This is a test release. Please report problems in this repository's Issues
 (what you did, what you saw, Windows or Linux/Steam Deck).
 
+## What's new in 0.7.1
+
+- **AI Battle → BUILD NEW CARD** right on the AI Battle page, for the AC
+  builder (it was only reachable from the Card Workshop before). Existing
+  cards: Card Workshop → pick a card → EDIT BUILD.
+- **Stage fixes:** the launcher's map pictures now match the game's maps
+  (5 to 10 were wrong). Maps offered: 9 (the default), 1, 3, 6 and RANDOM.
+- If the game refuses a unit at VS START (over its limits without Human PLUS),
+  fast forward stops and you get the controller back instead of a locked,
+  fast-running menu.
+- RANDOM units now differ from one launch to the next.
+
 ## What's new in 0.7.0
 
 - **AI Battle runs itself.** From START BATTLE the game boots, loads both
@@ -20,8 +32,8 @@ This is a test release. Please report problems in this repository's Issues
   memory cards are not touched. Paint, names and emblem come in the way the
   game loads them.
 - **STAGE in the launcher**, with the map's preview picture read from your
-  disc. Map 10 is the default; maps 1, 3, 6 and 9 and RANDOM are also offered.
-  The other versus maps are left out (some froze at match start in testing).
+  disc. Map 9 is the default; maps 1, 3 and 6, or RANDOM (one of those),
+  are also offered.
 - **Back to the launcher** after the match (leaving after the replay or from
   the versus menu) on the AI Battle page.
 

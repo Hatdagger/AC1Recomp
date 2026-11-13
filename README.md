@@ -50,21 +50,46 @@ A launcher in Master of Arena's own style, made for a **gamepad**
   - **Names are picked for you** from the game's arena pilot names, so
     there's nothing to type.
   - Each player plays on their own screen, with their own AC and memory card.
-- **AI Battle:** pick two AC "cards" and watch the computer fly both.
+- **AI Battle:** pick two AC "cards" and watch the computer fly both (see below).
 - **Mods:** switch features on and off, or install new ones.
 - **Extras:** *Install data from Project Phantasma* builds the Phantasma
   content on your PC from your own disc (it finds the disc by itself).
+  *Reinstall additional content* removes it and builds it again.
 - **Updates:** checks GitHub for a new release and installs it, only when you
   ask.
 
 ---
 
-## 3. Project Phantasma arena
+## 3. AI Battle (computer vs computer)
+
+Pick two ACs and watch the computer fly both, using the game's own arena AI.
+
+- **Where:** Launcher → **AI Battle**. Choose **Unit 1**, **Unit 2** and the
+  stage, then start the battle.
+- **The ACs are "cards":** each one is a square picture, like an AC emblem,
+  with the whole build (parts, optional parts, colours, Human PLUS, emblem)
+  stored in a colour strip down its left edge. They're easy to share as
+  ordinary images.
+- **Make cards** with the
+  **[Raven Card Builder](https://github.com/Hatdagger/ACMOA-AI-CARDBUILDER)**,
+  a page that runs in any web browser. Pick parts from sorted lists, check the
+  stats and the game's own build rules, and turn any picture into the emblem.
+- **Or export your own ACs:** the launcher can turn the ACs in your memory card
+  saves into cards.
+- Put cards in the **Memory Card** folder and they show up in AI Battle.
+- **How a card fights:** it borrows the AI of an arena opponent that uses the
+  same legs (matching arms or head make that pilot more likely), so the same
+  card always fights the same way.
+
+---
+
+## 4. Project Phantasma arena
 
 ![Project Phantasma arena](docs/readme/pp-arena.png)
 
 - **How to get it:** Launcher → **Extras** → *Install data from Project
-  Phantasma*.
+  Phantasma*. If you installed it with a version before 0.4.1, use
+  *Reinstall additional content* to get the missions too.
 - **Where it is:** in game, **Ex Arena** → **Project Phantasma** (the tenth
   entry).
 - **What came over:** all **49 arena ACs from Project Phantasma**, with their
@@ -74,7 +99,7 @@ A launcher in Master of Arena's own style, made for a **gamepad**
 
 ---
 
-## 4. Project Phantasma missions (work in progress)
+## 5. Project Phantasma missions (work in progress)
 
 ![Mission list with a Phantasma mission](docs/readme/missions.png)
 ![Phantasma missions in game](docs/readme/pp-missions-gameplay.png)
@@ -82,7 +107,7 @@ A launcher in Master of Arena's own style, made for a **gamepad**
 **The goal:** play all 17 Project Phantasma missions inside Master of Arena,
 with their own briefings, maps and enemies, and with any AC you build.
 
-**Where it is today (0.4.0):**
+**Where it is today (0.4.1):**
 
 - Installed together with the arena (same Extras button).
 - The next Phantasma mission sits at the top of the **Mission** list as
@@ -107,7 +132,7 @@ missing missions, and replays after the last mission.
 |---|---|
 | `Armored Core Moa.exe` | Start here |
 | your `.cue` + `.bin` | Your Master of Arena Disc 1 (and optionally Project Phantasma) |
-| `Memory Card/` | Memory cards and Phantasma mission progress |
+| `Memory Card/` | Memory cards, AI Battle cards (`.png`) and Phantasma mission progress |
 | `Mods/` | Mods |
 | `RecompData/` | Everything else the game needs |
 

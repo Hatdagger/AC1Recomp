@@ -239,7 +239,7 @@ PSX_MOD_CONSTRUCTOR(psx_register_moa_phantasma_arena_plugin) {
  *  B. 800943AC (list builder return): slot 20 moves to the top of the list.
  *  C. Battle engine: while slot 20 loads, four loads are pointed at the
  *     pack's blocks (file 3, which the game's file table never uses):
- *      800556b8 jal -> textures, file 1, entry = slot (byte at s2+3504)
+ *      800556b8 jal -> textures, file 1, entry = slot
  *      800556d4 jal -> common,   file 2, entry 205
  *      80055874 jal -> code,     file 2, entry slot*5
  *      80055894 jal -> map,      file 2, entry slot*5+4
@@ -262,10 +262,8 @@ static const uint16_t ppm_index[PPM_INDEX_WORDS] = {
 #define PPM_ENTRY_COMMON    1u
 #define PPM_ENTRY_CODE      2u
 #define PPM_ENTRY_MAP       3u
-#define PPM_TEX_PC          0x800556B4u
-#define PPM_TEX_INSN        0x92450DB0u /* lbu a1,3504(s2) */
-#define PPM_TEXDONE_PC      0x800556C0u
-#define PPM_TEXDONE_INSN    0x0C0047CAu /* jal 0x80011f28 */
+#define PPM_TEX_PC          0x800556B8u
+#define PPM_TEX_INSN        0x0C005A96u /* jal 0x80016a58 (a1 = slot, loaded just before) */
 #define PPM_COMMON_PC       0x800556D4u
 #define PPM_COMMON_INSN     0x0C005A96u /* jal 0x80016a58 */
 #define PPM_CODE_PC         0x80055874u
@@ -577,20 +575,19 @@ static int ppm_ready(uint32_t *mission) {
     return 1;
 }
 
+/* The texture call's registers are set directly. (Writing the entry number
+ * into the engine's slot byte for the load, as the test build did, left the
+ * byte at 0 for Phantasma mission 1 - Master of Arena's first mission - and
+ * that mission crashed while loading.) */
 static void ppm_textures(struct CPUState* cpu, uint32_t address) {
     (void)address;
     uint32_t m;
-    if (cpu->gpr[PPM_REG_S2] + PPM_LOADING_OFFSET != PPM_LOADING_ADDR || cpu->gpr[PPM_REG_A0] != 1u)
+    if (cpu->gpr[PPM_REG_S2] + PPM_LOADING_OFFSET != PPM_LOADING_ADDR ||
+        cpu->gpr[PPM_REG_A0] != 1u || cpu->gpr[PPM_REG_A1] != PPM_SLOT)
         return;
     if (!ppm_ready(&m)) return;
-    psx_mod_write_byte(PPM_LOADING_ADDR, (uint8_t)(m * 4u + PPM_ENTRY_TEXTURES));
     cpu->gpr[PPM_REG_A0] = PPM_FILE;
-}
-
-static void ppm_textures_done(struct CPUState* cpu, uint32_t address) {
-    (void)cpu; (void)address;
-    if (psx_mod_read_byte(PPM_MISSION_ADDR) != PPM_SLOT) return;
-    psx_mod_write_byte(PPM_LOADING_ADDR, (uint8_t)PPM_SLOT);
+    cpu->gpr[PPM_REG_A1] = m * 4u + PPM_ENTRY_TEXTURES;
 }
 
 static void ppm_common(struct CPUState* cpu, uint32_t address) {
@@ -634,7 +631,6 @@ PSX_MOD_CONSTRUCTOR(psx_register_moa_phantasma_missions) {
     (void)psx_mod_register_instruction_plugin(id, PPM_TABLE_PC, PPM_TABLE_INSN, ppm_on_table);
     (void)psx_mod_register_instruction_plugin(id, PPM_LIST_PC, PPM_LIST_INSN, ppm_on_list);
     (void)psx_mod_register_instruction_plugin(id, PPM_TEX_PC, PPM_TEX_INSN, ppm_textures);
-    (void)psx_mod_register_instruction_plugin(id, PPM_TEXDONE_PC, PPM_TEXDONE_INSN, ppm_textures_done);
     (void)psx_mod_register_instruction_plugin(id, PPM_COMMON_PC, PPM_COMMON_INSN, ppm_common);
     (void)psx_mod_register_instruction_plugin(id, PPM_CODE_PC, PPM_CODE_INSN, ppm_code);
     (void)psx_mod_register_instruction_plugin(id, PPM_MAP_PC, PPM_MAP_INSN, ppm_map);

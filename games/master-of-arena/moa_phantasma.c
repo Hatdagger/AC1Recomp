@@ -504,8 +504,31 @@ static const uint8_t *tarc_entry(const struct tarc *t, unsigned k, uint32_t *byt
     return t->data + (size_t)a * SECTOR;
 }
 
+/* Fixes on top of the tested pack: calls and jumps the original port left
+ * pointing at Phantasma addresses (a call inside the mission's own code that
+ * was not moved with it, or an engine routine whose Master of Arena
+ * counterpart is known). Mission (0-16), word in its code block, XOR. */
+static const struct { uint8_t mission; uint16_t word; uint32_t xor_; } k_ppm_fixes[] = {
+    {  2u,   484u, 0x0000EB2Au },
+    {  4u,   524u, 0x0000DF1Eu },
+    {  5u,   216u, 0x000021D6u },
+    {  5u,   219u, 0x00006137u },
+    {  7u,   651u, 0x00002033u },
+    {  7u,   660u, 0x0000E71Au },
+    {  7u,   665u, 0x0000E71Au },
+    {  7u,   668u, 0x0000E72Eu },
+    {  7u,   670u, 0x0000673Du },
+    {  7u,   675u, 0x0000E72Eu },
+    {  7u,   680u, 0x000020D2u },
+    { 12u,   666u, 0x0000DBEAu },
+    { 14u,   771u, 0x0000DF7Eu },
+    { 15u,   593u, 0x0000DB1Au }
+};
+#define PPM_FIX_COUNT (sizeof k_ppm_fixes / sizeof k_ppm_fixes[0])
+
 /* Build the pack (PPM_PACK_SECTORS sectors) into `pack`. */
 static int build_missions(const struct tarc src[3], uint8_t *pack, char *err, unsigned errn) {
+    size_t code_start[PPM_BLOCKS + 1];
     uint8_t *r = (uint8_t *)malloc(PPM_RECIPE_RAW);
     if (!r) { snprintf(err, errn, "Out of memory."); return 0; }
     uLongf rn = PPM_RECIPE_RAW;
@@ -518,6 +541,7 @@ static int build_missions(const struct tarc src[3], uint8_t *pack, char *err, un
     {
         const uint8_t *p = r + 8, *end = r + rn;
         size_t at = 0;
+        size_t starts[PPM_BLOCKS + 1];
         for (unsigned b = 0; b < PPM_BLOCKS; ++b) {
             if (end - p < 10) goto bad;
             const uint32_t bytes = le32(p) * SECTOR;
@@ -526,6 +550,7 @@ static int build_missions(const struct tarc src[3], uint8_t *pack, char *err, un
             p += 10;
             if (at + bytes > (size_t)PPM_PACK_SECTORS * SECTOR || bytes < 4) goto bad;
             uint8_t *blk = pack + at;
+            starts[b] = at;
             memset(blk, 0, bytes);
             for (unsigned s = 0; s < nseg; ++s, p += 15) {
                 if (end - p < 15) goto bad;
@@ -549,6 +574,8 @@ static int build_missions(const struct tarc src[3], uint8_t *pack, char *err, un
             at += bytes;
         }
         if (at != (size_t)PPM_PACK_SECTORS * SECTOR || p != end) goto bad;
+        starts[PPM_BLOCKS] = at;
+        memcpy(code_start, starts, sizeof starts);
     }
     {   /* Exactly the pack the missions were tested with. */
         uint8_t hash[32];
@@ -560,6 +587,17 @@ static int build_missions(const struct tarc src[3], uint8_t *pack, char *err, un
                                 "the missions were made for (US discs).");
             goto out;
         }
+    }
+    for (size_t f = 0; f < PPM_FIX_COUNT; ++f) {
+        const unsigned b = k_ppm_fixes[f].mission * 4u + 2u;     /* code block */
+        uint8_t *w = pack + code_start[b] + (size_t)k_ppm_fixes[f].word * 4u;
+        if (w + 4 > pack + code_start[b + 1] - 4) goto bad;
+        const uint32_t v = le32(w) ^ k_ppm_fixes[f].xor_;
+        w[0] = (uint8_t)v; w[1] = (uint8_t)(v >> 8); w[2] = (uint8_t)(v >> 16); w[3] = (uint8_t)(v >> 24);
+    }
+    for (size_t f = 0; f < PPM_FIX_COUNT; ++f) {
+        const unsigned b = k_ppm_fixes[f].mission * 4u + 2u;
+        seal(pack + code_start[b], code_start[b + 1] - code_start[b]);
     }
     ok = 1;
     goto out;

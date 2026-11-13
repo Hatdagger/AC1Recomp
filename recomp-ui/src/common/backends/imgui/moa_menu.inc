@@ -581,7 +581,7 @@ static void draw_extras_page(LauncherModel* m, const Gfx& g, const Input& in) {
     panel(g, 24.0f, 152.0f, 592.0f, 264.0f, "PROJECT PHANTASMA");
     text(g, 38.0f, 168.0f, 11.0f, kText,
          "Adds the 49 arena opponents of Armored Core: Project Phantasma as a "
-         "tenth Ex Arena, and its 17 missions ('PP:', one at a time) at the top of "
+         "tenth Ex Arena, and its missions ('PP:', one at a time; 12 of 17 for now) at the top of "
          "the mission list. It is built here, on this computer, from your own "
          "Project Phantasma (USA) disc. Nothing from the disc is copied anywhere "
          "else.", 560.0f);

@@ -372,10 +372,17 @@ static void ppm_progress_write(void) {
     fclose(f);
 }
 
+/* Missions left out of the rotation for now: 1, 7, 9 and 14 hang on a black
+ * screen after loading, 11 loads with a broken view (ported code faults that
+ * are not yet found). */
+static const uint8_t k_pp_skip[PPM_MISSIONS] = {
+    1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0,
+};
+
 /* The next unfinished mission, or PPM_MISSIONS when all are done. */
 static uint32_t ppm_current(void) {
     ppm_progress_read();
-    for (uint32_t i = 0; i < PPM_MISSIONS; ++i) if (!s_done[i]) return i;
+    for (uint32_t i = 0; i < PPM_MISSIONS; ++i) if (!s_done[i] && !k_pp_skip[i]) return i;
     return PPM_MISSIONS;
 }
 

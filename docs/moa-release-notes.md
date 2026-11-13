@@ -32,10 +32,17 @@ disc 2 plays from the single disc.
   same legs.
 - **Extras → Install data from Project Phantasma:** if you also own Project
   Phantasma (USA), its 49 opponents are added as a tenth Ex Arena with their
-  own ranking. The launcher looks for the Phantasma disc image (`.cue` + `.bin`)
-  in the same folder as your Master of Arena disc; if it is not there you pick
-  the file yourself. The arena is built on your computer from your own discs;
-  nothing from them is included in or sent by this download.
+  own ranking, and **(new in 0.4.0) its missions**: the next Phantasma mission
+  sits at the top of the mission list as "PP: …" (Master of Arena's own show
+  "M: …"), with Phantasma's briefings, unlocking one at a time. 12 of the 17
+  missions are in for now (1, 7, 9, 11 and 14 are left out until they are
+  fixed). Progress is kept in `Phantasma Missions.txt` in the Memory Card
+  folder (one progress for the whole card). If you installed the arena with
+  an older version, select *Install data from Project Phantasma* again to add
+  the missions. The launcher looks for the Phantasma disc image (`.cue` +
+  `.bin`) in the same folder as your Master of Arena disc; if it is not there
+  you pick the file yourself. Everything is built on your computer from your
+  own discs; nothing from them is included in or sent by this download.
 - **Updates:** a new entry below Mods. *Check for update* asks GitHub for the
   newest release; *Download and apply update* installs it, only when you press
   it. Nothing is checked or downloaded by itself. When a newer version is found

@@ -201,9 +201,30 @@ static int moa_ai_init_filter(struct CPUState *cpu, uint32_t address)
     return 1;
 }
 
+/* The launcher's "Unit 1: You": player 1's controller flies unit 1 and the AI
+ * flies unit 2 alone, as in the arena itself. Read once per match. */
+static int moa_manual_unit1(void)
+{
+    const char *v = getenv("PSX_MOA_AI_P1");
+    return v && v[0] == '1';
+}
+
 static int moa_ai_frame_filter(struct CPUState *cpu, uint32_t address)
 {
     if (moa_ai_nested || !moa_arena_engine(address, MOA_SIG_AI_FRAME)) return 0;
+    if (moa_manual_unit1()) {
+        /* Only the game's own call for slot 2; slot 1's word stays the
+         * controller's. */
+        const uint32_t ra = cpu->gpr[31];
+        const uint32_t a0 = cpu->gpr[4], a1 = cpu->gpr[5];
+        const uint32_t a2 = cpu->gpr[6], a3 = cpu->gpr[7];
+        moa_ai_nested = 1;
+        (void)psx_mod_call_guest(cpu, address, ra, a0, a1, a2, a3);
+        moa_ai_nested = 0;
+        psx_mod_counter_add("moa.ai.frame", 1);
+        moa_count_bits(psx_mod_read_half(MOA_SLOT1 + MOA_SLOT_BYTES + MOA_SLOT_PAD), moa_bits2);
+        return 1;
+    }
     /* The controller sampler has already moved slot 1's word to "previous"
      * and stored the controller in its place. Put last frame's word back so
      * the AI's own previous/current step sees what slot 2's would. */
@@ -563,8 +584,24 @@ static uint32_t moa_load_frames;
 static uint8_t moa_unit_record[2][MOA_RECORD_BYTES];
 static uint8_t moa_unit_ai[2][MOA_AI_RECORD_BYTES];
 
+/* Playing styles. The opponent AI is a table of 36 tuning bytes; "aggressor"
+ * raises the ones that behave as chances of acting (attack, close in, use the
+ * ranged and blade weapons) to the top of what any arena rival has, so the
+ * unit pushes the lock-on and engages more often. */
+static void moa_apply_style(unsigned unit, uint8_t *ai)
+{
+    const char *name = getenv(unit ? "PSX_MOA_AI_STYLE2" : "PSX_MOA_AI_STYLE1");
+    if (!name || strcmp(name, "aggressor") != 0) return;
+    static const struct { uint8_t index, value; } tune[] = {
+        { 1, 60 }, { 2, 100 }, { 3, 100 }, { 8, 100 }, { 9, 100 }, { 10, 30 } };
+    for (unsigned i = 0; i < sizeof tune / sizeof tune[0]; i++)
+        ai[tune[i].index] = tune[i].value;
+}
+
 static void moa_units_ready(void)
 {
+    moa_apply_style(0, moa_unit_ai[0]);
+    moa_apply_style(1, moa_unit_ai[1]);
     memcpy(moa_side_record, moa_unit_ai[0], MOA_AI_RECORD_BYTES);
     moa_side_record_set = 1;
     for (unsigned i = 0; i < MOA_AI_RECORD_BYTES; i++)

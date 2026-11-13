@@ -10,7 +10,7 @@ name: Master of Arena builds
 on:
   workflow_dispatch:
   push:
-    branches: [moa-launcher]
+    branches: [moa-launcher, moa-debug]
     tags: ['moa-v*']
 
 permissions:
@@ -103,6 +103,7 @@ jobs:
           export VULKAN_SDK=/usr
           cmake -S . -B build-ci -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DPSX_DEBUG_TOOLS=ON \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DPSXRECOMP_REQUIRE_GAME_C=ON \
             -DPSXRECOMP_FORCE_SETUP_HOST=OFF \
@@ -194,6 +195,7 @@ jobs:
           unset CMAKE_PREFIX_PATH SDL3_DIR ZLIB_ROOT || true
           cmake -S . -B build-ci -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DPSX_DEBUG_TOOLS=ON \
             -DPSXRECOMP_REQUIRE_GAME_C=ON \
             -DPSXRECOMP_FORCE_SETUP_HOST=OFF \
             -DPSXRECOMP_ALLOW_NO_BIOS=OFF \

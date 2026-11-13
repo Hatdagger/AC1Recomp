@@ -444,6 +444,7 @@ static void draw_ai_page(LauncherModel* m, const Gfx& g, const Input& in) {
  * moa_phantasma.c). */
 static std::string new_mods_dir();
 static const char* const kPhantasmaPackage = "community.moa.phantasma-arena";
+static const char* const kPhantasmaVersion = "2.0.0";   /* what moa_phantasma_build() writes */
 static std::string g_pp_found;     /* the Phantasma disc found beside the game disc */
 static std::string g_pp_status;    /* the last result, shown on the page */
 static bool        g_pp_failed = false;
@@ -503,8 +504,40 @@ static void open_extras_page(LauncherModel* m) {
     g_pp_failed = false;
 }
 
-/* Build the arena from the two discs, install it and switch it on. */
-static void install_phantasma(LauncherModel* m, const std::string& phantasma) {
+/* Switch off and remove every installed version of the package (an older
+ * arena-only 1.x left beside 2.0 keeps the selection on 1.x, so the missions
+ * never switch on). */
+static bool remove_phantasma(LauncherModel* m) {
+    const RecompLauncherCModProvider* mods = m->mods;
+    if (!mods || !mods->remove_package || !mods->version_count || !mods->version_get) return false;
+    if (mods->feature_count && mods->feature_get && mods->feature_enable) {
+        const int n = mods->feature_count(mods->ctx);
+        std::vector<std::string> ids;
+        for (int i = 0; i < n; ++i) {
+            RecompLauncherCModFeature f;
+            std::memset(&f, 0, sizeof f);
+            if (mods->feature_get(mods->ctx, i, &f) && std::strcmp(f.package_id, kPhantasmaPackage) == 0)
+                ids.push_back(f.id);
+        }
+        for (const std::string& id : ids) mods->feature_enable(mods->ctx, kPhantasmaPackage, id.c_str(), 0);
+    }
+    if (mods->set_enabled) mods->set_enabled(mods->ctx, kPhantasmaPackage, 0);
+    std::vector<std::string> versions;
+    const int vn = mods->version_count(mods->ctx, kPhantasmaPackage);
+    for (int i = 0; i < vn; ++i) {
+        RecompLauncherCModVersion v;
+        std::memset(&v, 0, sizeof v);
+        if (mods->version_get(mods->ctx, kPhantasmaPackage, i, &v)) versions.push_back(v.version);
+    }
+    bool ok = true;
+    for (const std::string& v : versions)
+        if (!mods->remove_package(mods->ctx, kPhantasmaPackage, v.c_str())) ok = false;
+    return ok;
+}
+
+/* Build the arena and missions from the two discs, install them and switch
+ * them on. `reinstall` removes whatever is installed first. */
+static void install_phantasma(LauncherModel* m, const std::string& phantasma, bool reinstall) {
     namespace fs = std::filesystem;
     const RecompLauncherCModProvider* mods = m->mods;
     const std::string moa = game_disc(m);
@@ -523,6 +556,16 @@ static void install_phantasma(LauncherModel* m, const std::string& phantasma) {
         g_pp_status = upper(error[0] ? error : "PROJECT PHANTASMA COULD NOT BE BUILT.");
         return;
     }
+    /* Any version already installed goes first: a reinstall always, and an
+     * older version (arena only) on a plain install. */
+    if ((reinstall || (mods->version_count && mods->version_count(mods->ctx, kPhantasmaPackage) > 0)) &&
+        !remove_phantasma(m)) {
+        std::error_code rec;
+        fs::remove(file, rec);
+        mod_note_error(m);
+        g_pp_status = "THE INSTALLED CONTENT COULD NOT BE REMOVED: " + upper(m->mod_status);
+        return;
+    }
     const bool installed = mods->install_archive(mods->ctx, file.u8string().c_str()) != 0;
     if (!installed) mod_note_error(m);
     /* The package holds data from the player's discs: it stays inside the
@@ -530,53 +573,60 @@ static void install_phantasma(LauncherModel* m, const std::string& phantasma) {
     std::error_code rec;
     fs::remove(file, rec);
     if (!installed) { g_pp_status = upper(m->mod_status); return; }
+    if (mods->select_version) mods->select_version(mods->ctx, kPhantasmaPackage, kPhantasmaVersion);
+    if (mods->set_enabled) mods->set_enabled(mods->ctx, kPhantasmaPackage, 1);
     if (mods->feature_count && mods->feature_get && mods->feature_enable) {
         const int n = mods->feature_count(mods->ctx);
+        std::vector<std::string> ids;
         for (int i = 0; i < n; ++i) {
             RecompLauncherCModFeature f;
             std::memset(&f, 0, sizeof f);
-            if (mods->feature_get(mods->ctx, i, &f) &&
-                std::strcmp(f.package_id, kPhantasmaPackage) == 0)
-                mods->feature_enable(mods->ctx, f.package_id, f.id, 1);
+            if (mods->feature_get(mods->ctx, i, &f) && std::strcmp(f.package_id, kPhantasmaPackage) == 0)
+                ids.push_back(f.id);
         }
+        for (const std::string& id : ids) mods->feature_enable(mods->ctx, kPhantasmaPackage, id.c_str(), 1);
     }
     g_pp_failed = false;
-    g_pp_status = "INSTALLED AND SWITCHED ON: TENTH EX ARENA AND PP: MISSIONS.";
+    g_pp_status = reinstall ? "REINSTALLED AND SWITCHED ON: TENTH EX ARENA AND PP: MISSIONS."
+                            : "INSTALLED AND SWITCHED ON: TENTH EX ARENA AND PP: MISSIONS.";
 }
 
-static void choose_phantasma(LauncherModel* m) {
-    if (phantasma_installed(m)) {
+static void choose_phantasma(LauncherModel* m, bool reinstall) {
+    if (!reinstall && phantasma_installed(m)) {
         g_pp_failed = false;
-        g_pp_status = "ALREADY INSTALLED. SWITCH IT ON OR OFF UNDER MODS.";
+        g_pp_status = "ALREADY INSTALLED. USE REINSTALL TO BUILD IT AGAIN.";
         return;
     }
     if (!g_pp_found.empty()) {   /* beside the game disc: nothing to pick */
-        install_phantasma(m, g_pp_found);
+        install_phantasma(m, g_pp_found, reinstall);
         return;
     }
     ui_pick_file(m, "Select the Project Phantasma disc", {"*.cue", "*.bin", "*.iso"},
-                 "Disc image", [m](const char* path) {
+                 "Disc image", [m, reinstall](const char* path) {
         if (!path) return;
         if (!moa_phantasma_is_disc(path)) {
             g_pp_failed = true;
             g_pp_status = "THAT IS NOT THE PROJECT PHANTASMA (USA) DISC";
             return;
         }
-        install_phantasma(m, path);
+        install_phantasma(m, path, reinstall);
     });
 }
 
 static void draw_extras_page(LauncherModel* m, const Gfx& g, const Input& in) {
-    move_cursor(PAGE_EXTRAS, 1, in, 1);
+    move_cursor(PAGE_EXTRAS, 2, in, 2);
     int& cur = g_state.cursor[PAGE_EXTRAS];
     header(g, "EXTRAS", "BUILT FROM DISCS YOU OWN");
-    panel(g, 24.0f, 76.0f, 592.0f, 60.0f, "SELECT");
-    bool hovered = false;
+    panel(g, 24.0f, 76.0f, 592.0f, 70.0f, "SELECT");
+    bool hovered0 = false, hovered1 = false;
     const bool installed = phantasma_installed(m);
-    const bool clicked = row(g, 25.0f, 90.0f, 590.0f, true,
-                             true, "INSTALL DATA FROM PROJECT PHANTASMA",
-                             installed ? "INSTALLED" : "", false, false, &hovered);
-    (void)cur;
+    const bool clicked0 = row(g, 25.0f, 90.0f, 590.0f, cur == 0,
+                              true, "INSTALL DATA FROM PROJECT PHANTASMA",
+                              installed ? "INSTALLED" : "", false, false, &hovered0);
+    const bool clicked1 = row(g, 25.0f, 90.0f + kRowH + 2.0f, 590.0f, cur == 1,
+                              true, "REINSTALL ADDITIONAL CONTENT", "", false, false, &hovered1);
+    if (hovered0) cur = 0;
+    if (hovered1) cur = 1;
 
     panel(g, 24.0f, 152.0f, 592.0f, 264.0f, "PROJECT PHANTASMA");
     text(g, 38.0f, 168.0f, 11.0f, kText,
@@ -603,10 +653,11 @@ static void draw_extras_page(LauncherModel* m, const Gfx& g, const Input& in) {
     }
     if (!g_pp_status.empty())
         text(g, 38.0f, 340.0f, 11.0f, g_pp_failed ? kWarn : kHi, g_pp_status.c_str(), 560.0f);
-    footer(g, "A / ENTER  INSTALL      B / ESC  BACK");
+    footer(g, "A / ENTER  SELECT      B / ESC  BACK");
 
     if (in.back) { g_state.extras_page = false; return; }
-    if (in.confirm || clicked) choose_phantasma(m);
+    if (clicked0 || (in.confirm && cur == 0)) choose_phantasma(m, false);
+    else if (clicked1 || (in.confirm && cur == 1)) choose_phantasma(m, true);
 }
 
 /* ---- Updates page ----------------------------------------------------------------

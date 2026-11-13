@@ -6,6 +6,21 @@ your own copy of Armored Core: Master of Arena (USA).**
 This is a test release. Please report problems in this repository's Issues
 (what you did, what you saw, Windows or Linux/Steam Deck).
 
+## What's new in 0.4.1
+
+- **Extras → Reinstall additional content:** removes the installed Project
+  Phantasma content and builds it again from your discs.
+- **Fix:** installing the Phantasma content over an older arena-only install
+  now replaces it, so the missions actually switch on. (In 0.4.0 the old
+  version stayed selected and the missions never appeared.) If you're on
+  0.4.0 with the arena already installed, select *Reinstall additional
+  content* once.
+
+## What's new in 0.4.0
+
+- **Project Phantasma missions:** 12 of the 17 missions, one at a time, at the
+  top of the mission list as "PP: …" (details below).
+
 ## Downloads
 
 - **Windows:** `Armored-Core-MoA-…-windows-x64.zip`. Unzip anywhere and run
@@ -38,8 +53,8 @@ disc 2 plays from the single disc.
   missions are in for now (1, 7, 9, 11 and 14 are left out until they are
   fixed). Progress is kept in `Phantasma Missions.txt` in the Memory Card
   folder (one progress for the whole card). If you installed the arena with
-  an older version, select *Install data from Project Phantasma* again to add
-  the missions. The launcher looks for the Phantasma disc image (`.cue` +
+  an older version, select *Reinstall additional content* to add the
+  missions. The launcher looks for the Phantasma disc image (`.cue` +
   `.bin`) in the same folder as your Master of Arena disc; if it is not there
   you pick the file yourself. Everything is built on your computer from your
   own discs; nothing from them is included in or sent by this download.

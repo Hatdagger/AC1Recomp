@@ -209,6 +209,24 @@ static uint8_t *disc_file(struct disc *d, const char *path, uint32_t *size) {
     return buf;
 }
 
+unsigned char *moa_disc_read_range(const char *disc_path, const char *file_path,
+                                   uint32_t offset, uint32_t bytes, uint32_t *file_size) {
+    struct disc d;
+    uint32_t lba, size;
+    if (!disc_path || !disc_open(&d, disc_path)) return NULL;
+    uint8_t *out = NULL;
+    if (disc_find(&d, file_path, &lba, &size)) {
+        if (file_size) *file_size = size;
+        if (bytes && offset % SECTOR == 0 && offset + bytes <= size) {
+            const uint32_t secs = (bytes + SECTOR - 1) / SECTOR;
+            out = (uint8_t *)malloc((size_t)secs * SECTOR);
+            if (out && !disc_read(&d, lba + offset / SECTOR, secs, out)) { free(out); out = NULL; }
+        }
+    }
+    disc_close(&d);
+    return out;
+}
+
 int moa_phantasma_is_disc(const char *path) {
     struct disc d;
     uint32_t lba, size;

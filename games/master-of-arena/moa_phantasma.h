@@ -18,6 +18,13 @@ int moa_phantasma_is_disc(const char *path);
 int moa_phantasma_build(const char *moa_disc, const char *phantasma_disc,
                         const char *out_path, char *error, unsigned error_size);
 
+/* Read `bytes` bytes at `offset` (a multiple of 2048) of a file on a disc
+ * image (.cue / .bin / .iso), e.g. "GG/COM/FDAT.T". With bytes = 0 only the
+ * file's size is reported. Free the result with free(); NULL = failed. */
+unsigned char *moa_disc_read_range(const char *disc_path, const char *file_path,
+                                   unsigned int offset, unsigned int bytes,
+                                   unsigned int *file_size);
+
 #ifdef __cplusplus
 }
 #endif

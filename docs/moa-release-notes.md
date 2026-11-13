@@ -6,6 +6,24 @@ your own copy of Armored Core: Master of Arena (USA).**
 This is a test release. Please report problems in this repository's Issues
 (what you did, what you saw, Windows or Linux/Steam Deck).
 
+## What's new in 0.6.0
+
+- **AC builder in the launcher** (AI Battle → Card Workshop: START for a new
+  card, or a card's menu → EDIT BUILD). It works like the Raven Card Builder,
+  from the controller:
+  - names, all eleven part slots (choose with left/right or open the full
+    list, grouped like the web builder), optional parts against the core's
+    slots, paint (all sections or one by one), emblem, Human PLUS and the AI;
+  - part stats, totals and the game's own checks (legs load, arm load,
+    energy, option slots). A build the game would refuse can't be saved;
+  - the part list is read from your own Master of Arena disc, so it always
+    matches your game;
+  - emblems: put pictures in the `Emblems` folder next to your cards (or
+    browse for one). The centre square becomes the game's 64×64, 16-colour
+    emblem, and the paint can follow it.
+- Names keep the web builder's limit of 7 characters. On a keyboard you
+  can type them.
+
 ## What's new in 0.5.0
 
 - **AI Battle → Card Workshop:** your AI cards in one list. Edit a card's AI,

@@ -88,6 +88,18 @@ void moa_card_set_preset(struct moa_card *card, int preset);
 
 /* ---- writing cards ---- */
 
+/* A fresh card: the builder's default AC, the game's default paint, the
+ * default emblem, Balanced AI. */
+void moa_card_new(struct moa_card *card);
+
+/* Paint from the emblem: its four most used colours (near-identical entries
+ * counted together) become base, detail, joint and optional on every section. */
+void moa_card_paint_from_emblem(struct moa_card *card);
+
+/* Emblem from a picture file (PNG / JPEG / BMP ...): the centre square, cut to
+ * 64x64 and 16 colours as the builder does. 1 = ok. */
+int moa_card_emblem_from_image(struct moa_card *card, const uint8_t *file, size_t bytes);
+
 /* A card from one Master of Arena scenario save (product BASLUS-01030, one
  * 8 KB block, as stored on the memory card). The AC, its paint, optional parts,
  * Human PLUS level, pilot and AC names and the player's emblem (a default one

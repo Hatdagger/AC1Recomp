@@ -502,6 +502,120 @@ int moa_card_from_save(const uint8_t *b, size_t bytes, struct moa_card *c)
     return 1;
 }
 
+
+/* ---- making and editing cards (launcher builder) -------------------------------- */
+
+void moa_card_paint_from_emblem(struct moa_card *c) { card_paint_from_emblem(c); }
+
+void moa_card_new(struct moa_card *c)
+{
+    /* builder: DEFAULT, PAINT0 (the game's default paint) */
+    /* builder DEFAULT with LN-3001C legs: the builder's own default is over its leg load */
+    static const uint8_t rec[13] = { 0, 6, 0, 8, 4, 3, 0x1e, 2, 6, 6, 0, 0, 0 };
+    static const uint8_t paint0[12] = { 0x20, 0x24, 0x1c, 0x10, 0x14, 0x0c,
+                                        0x12, 0x18, 0x0c, 0x0c, 0x12, 0x0c };
+    memset(c, 0, sizeof *c);
+    c->format = 4;
+    memcpy(c->rec, rec, 13);
+    for (int i = 0; i < 48; i++) c->paint[i] = paint0[i % 12];
+    strcpy(c->pilot, "PILOT");
+    strcpy(c->ac, "NEW AC");
+    default_emblem(c);
+    moa_card_set_preset(c, MOA_AI_PRESET_BALANCED);
+}
+
+struct mc_box { int lo, hi; };   /* range in the point index array */
+
+static float *mc_pts;           /* 4096 x 3 */
+static int mc_axis;
+static int mc_cmp(const void *a, const void *b)
+{
+    const float x = mc_pts[*(const int *)a * 3 + mc_axis], y = mc_pts[*(const int *)b * 3 + mc_axis];
+    if (x < y) return -1;
+    if (x > y) return 1;
+    return (*(const int *)a) - (*(const int *)b);   /* stable, like the builder's sort */
+}
+
+int moa_card_emblem_from_image(struct moa_card *c, const uint8_t *file, size_t bytes)
+{
+    if (!file || bytes < 8 || bytes > 64u * 1024u * 1024u) return 0;
+    int w = 0, h = 0, n = 0;
+    uint8_t *rgb = stbi_load_from_memory(file, (int)bytes, &w, &h, &n, 3);
+    if (!rgb) return 0;
+    /* Centre square, area-averaged to 64x64 (the builder: 256x256, then 4x4). */
+    static float small[4096 * 3];
+    const int side = w < h ? w : h, ox = (w - side) / 2, oy = (h - side) / 2;
+    for (int y = 0; y < 64; y++)
+        for (int x = 0; x < 64; x++) {
+            const int x0 = ox + x * side / 64, x1 = ox + (x + 1) * side / 64;
+            const int y0 = oy + y * side / 64, y1 = oy + (y + 1) * side / 64;
+            double acc[3] = { 0, 0, 0 };
+            int cnt = 0;
+            for (int yy = y0; yy < (y1 > y0 ? y1 : y0 + 1); yy++)
+                for (int xx = x0; xx < (x1 > x0 ? x1 : x0 + 1); xx++) {
+                    const uint8_t *p = rgb + ((size_t)yy * w + xx) * 3;
+                    acc[0] += p[0]; acc[1] += p[1]; acc[2] += p[2]; cnt++;
+                }
+            for (int k = 0; k < 3; k++) small[(y * 64 + x) * 3 + k] = (float)(acc[k] / cnt);
+        }
+    stbi_image_free(rgb);
+    /* Median cut to 16 colours (builder: medianCut). */
+    static int idx[4096];
+    for (int i = 0; i < 4096; i++) idx[i] = i;
+    struct mc_box box[16] = { { 0, 4096 } };
+    int boxes = 1;
+    mc_pts = small;
+    while (boxes < 16) {
+        int bi = -1, bc = 0;
+        double bs = -1;
+        for (int i = 0; i < boxes; i++) {
+            const int len = box[i].hi - box[i].lo;
+            if (len < 2) continue;
+            for (int k = 0; k < 3; k++) {
+                float lo = 255, hi = 0;
+                for (int j = box[i].lo; j < box[i].hi; j++) {
+                    const float v = small[idx[j] * 3 + k];
+                    if (v < lo) lo = v;
+                    if (v > hi) hi = v;
+                }
+                const double sc = (hi - lo) * sqrt((double)len);
+                if (sc > bs) { bs = sc; bi = i; bc = k; }
+            }
+        }
+        if (bi < 0 || bs <= 0) break;
+        mc_axis = bc;
+        qsort(idx + box[bi].lo, (size_t)(box[bi].hi - box[bi].lo), sizeof(int), mc_cmp);
+        const int mid = box[bi].lo + ((box[bi].hi - box[bi].lo) >> 1);
+        for (int i = boxes; i > bi + 1; i--) box[i] = box[i - 1];
+        box[bi + 1].lo = mid; box[bi + 1].hi = box[bi].hi;
+        box[bi].hi = mid;
+        boxes++;
+    }
+    memset(c->palette, 0, sizeof c->palette);
+    for (int i = 0; i < boxes; i++) {
+        double acc[3] = { 0, 0, 0 };
+        const int len = box[i].hi - box[i].lo;
+        for (int j = box[i].lo; j < box[i].hi; j++)
+            for (int k = 0; k < 3; k++) acc[k] += small[idx[j] * 3 + k];
+        const int d = len ? len : 1;
+        c->palette[i] = c15(acc[0] / d, acc[1] / d, acc[2] / d);
+    }
+    int pal[16][3];
+    for (int i = 0; i < 16; i++) c15_rgb(c->palette[i], pal[i]);
+    for (int i = 0; i < 4096; i++) {
+        int best = 0;
+        double bd = 1e18;
+        for (int k = 0; k < 16; k++) {
+            const double dr = small[i * 3] - pal[k][0], dg = small[i * 3 + 1] - pal[k][1],
+                         db = small[i * 3 + 2] - pal[k][2];
+            const double dd = dr * dr + dg * dg + db * db;
+            if (dd < bd) { bd = dd; best = k; }
+        }
+        c->emblem[i] = (uint8_t)best;
+    }
+    return 1;
+}
+
 /* ---- format 3 payload (builder: pack) ---- */
 
 struct bit_writer { uint8_t b[160]; int pos; };

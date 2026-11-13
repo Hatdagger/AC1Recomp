@@ -27,7 +27,8 @@ namespace moa_menu {
 enum Page {
     PAGE_MAIN = 0, PAGE_SETTINGS, PAGE_MODS,
     PAGE_NET_MODE, PAGE_NET_ROOMS, PAGE_LOBBY, PAGE_AI, PAGE_EXTRAS, PAGE_UPDATES,
-    PAGE_AI_CARDS, PAGE_AI_EDIT, PAGE_AI_ADV, PAGE__COUNT
+    PAGE_AI_CARDS, PAGE_AI_EDIT, PAGE_AI_ADV, PAGE_AI_BUILD, PAGE_AI_PICK, PAGE_AI_OPTS,
+    PAGE_AI_PAINT, PAGE_AI_EMBLEM, PAGE__COUNT
 };
 
 struct State {
@@ -387,6 +388,16 @@ static void draw_ai_page(LauncherModel* m, const Gfx& g, const Input& in) {
     if (g_ai_sub == AI_SUB_CARDS) { draw_ai_cards(m, g, in); return; }
     if (g_ai_sub == AI_SUB_EDIT)  { draw_ai_edit(m, g, in); return; }
     if (g_ai_sub == AI_SUB_ADV)   { draw_ai_adv(g, in); return; }
+    if (g_ai_sub == AI_SUB_BUILD) { draw_ai_build(m, g, in); return; }
+    if (g_ai_sub == AI_SUB_PICK)  { draw_ai_pick(g, in); return; }
+    if (g_ai_sub == AI_SUB_OPTS)  { draw_ai_opts(g, in); return; }
+    if (g_ai_sub == AI_SUB_PAINT) { draw_ai_paint(g, in); return; }
+    if (g_ai_sub == AI_SUB_EMBLEM){ draw_ai_emblem(m, g, in); return; }
+    if (g_ai_sub == AI_SUB_BUILD) { draw_ai_build(m, g, in); return; }
+    if (g_ai_sub == AI_SUB_PICK)  { draw_ai_pick(g, in); return; }
+    if (g_ai_sub == AI_SUB_OPTS)  { draw_ai_opts(g, in); return; }
+    if (g_ai_sub == AI_SUB_PAINT) { draw_ai_paint(g, in); return; }
+    if (g_ai_sub == AI_SUB_EMBLEM){ draw_ai_emblem(m, g, in); return; }
     enum { AI_START = 0, AI_UNIT1, AI_UNIT2, AI_PILOT1, AI_WORKSHOP, AI_EXPORT, AI_ROWS };
     move_cursor(PAGE_AI, AI_ROWS, in, AI_ROWS);
     int& cur = g_state.cursor[PAGE_AI];

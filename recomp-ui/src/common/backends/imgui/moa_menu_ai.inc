@@ -15,7 +15,8 @@
  * Saving redraws the card image (format 4) from the decoded card.
  */
 
-enum AiSub { AI_SUB_SETUP = 0, AI_SUB_CARDS, AI_SUB_EDIT, AI_SUB_ADV };
+enum AiSub { AI_SUB_SETUP = 0, AI_SUB_CARDS, AI_SUB_EDIT, AI_SUB_ADV, AI_SUB_BUILD, AI_SUB_PICK,
+             AI_SUB_OPTS, AI_SUB_PAINT, AI_SUB_EMBLEM };
 static int g_ai_sub = AI_SUB_SETUP;
 
 static moa_card g_edit;                 /* the card being edited */
@@ -25,6 +26,9 @@ static int  g_ws_action = -1;           /* workshop: action list open on this ca
 static int  g_ws_action_cur = 0;
 static bool g_confirm_delete = false;
 static bool g_confirm_discard = false;
+static bool g_edit_from_build = false;  /* the AI editor was opened from the builder */
+static void open_build(const AiCard& c);
+static void open_build_new();
 
 static const char* const kSliderNames[MOA_AI_SLIDERS] = {
     "SHOOT FREQ.", "BLADE FREQ.", "LOCK FREQ.", "AVOID FREQ.", "FLY FREQ.", "RANGE TYPE"
@@ -114,6 +118,7 @@ static void open_editor(const AiCard& c) {
     if (!g_edit.has_ai) moa_card_set_preset(&g_edit, MOA_AI_PRESET_BALANCED);
     g_edit_dirty = !c.card.has_ai;      /* an old card gains AI when saved */
     g_confirm_discard = false;
+    g_edit_from_build = false;
     g_ai_sub = AI_SUB_EDIT;
     g_state.cursor[PAGE_AI_EDIT] = 0;
 }
@@ -168,8 +173,8 @@ static void draw_ai_cards(LauncherModel* m, const Gfx& g, const Input& in) {
     if (n == 0) {
         text(g, 38.0f, 96.0f, 11.0f, kWarn, "NO CARDS IN THE FOLDER", 270.0f);
         text(g, 38.0f, 116.0f, 10.0f, kText,
-             "Make one with the Raven Card Builder or export your saves "
-             "from the AI BATTLE page.", 270.0f);
+             "Press START to build a new card, use the Raven Card Builder, or export "
+             "your saves from the AI BATTLE page.", 270.0f);
     }
     for (int i = top; i < n && i < top + visible; ++i) {
         bool hovered = false;
@@ -204,19 +209,20 @@ static void draw_ai_cards(LauncherModel* m, const Gfx& g, const Input& in) {
     }
 
     /* Action list / delete prompt over the card panel. */
-    static const char* const kActions[] = { "EDIT AI", "DUPLICATE", "DELETE", "CANCEL" };
+    static const char* const kActions[] = { "EDIT BUILD", "EDIT AI", "DUPLICATE", "DELETE", "CANCEL" };
+    const int kActionCount = 5;
     if (g_confirm_delete && cur >= 0 && cur < n) {
         panel(g, 360.0f, 220.0f, 236.0f, 80.0f, "DELETE CARD");
         text(g, 374.0f, 236.0f, 11.0f, kWarn, ("DELETE " + g_ai_cards[(size_t)cur].label + "?").c_str(), 210.0f);
         text(g, 374.0f, 270.0f, 10.0f, kText, "A  DELETE      B  KEEP");
     } else if (g_ws_action >= 0) {
-        panel(g, 360.0f, 200.0f, 236.0f, 4.0f * kRowH + 20.0f, "CARD");
-        for (int i = 0; i < 4; ++i)
-            row(g, 361.0f, 210.0f + kRowH * i, 234.0f, i == g_ws_action_cur, true, kActions[i], "",
+        panel(g, 360.0f, 180.0f, 236.0f, kActionCount * kRowH + 20.0f, "CARD");
+        for (int i = 0; i < kActionCount; ++i)
+            row(g, 361.0f, 190.0f + kRowH * i, 234.0f, i == g_ws_action_cur, true, kActions[i], "",
                 false, false, nullptr);
     }
     footer(g, g_ws_action >= 0 || g_confirm_delete ? "A  SELECT      B  BACK"
-                                                   : "A  CARD MENU      X  DELETE      B  BACK");
+                                                   : "A  CARD MENU      START  NEW CARD      X  DELETE      B  BACK");
 
     if (g_confirm_delete) {
         if (in.back) { g_confirm_delete = false; return; }
@@ -234,15 +240,16 @@ static void draw_ai_cards(LauncherModel* m, const Gfx& g, const Input& in) {
         return;
     }
     if (g_ws_action >= 0) {
-        if (in.up)   g_ws_action_cur = (g_ws_action_cur + 3) % 4;
-        if (in.down) g_ws_action_cur = (g_ws_action_cur + 1) % 4;
+        if (in.up)   g_ws_action_cur = (g_ws_action_cur + kActionCount - 1) % kActionCount;
+        if (in.down) g_ws_action_cur = (g_ws_action_cur + 1) % kActionCount;
         if (in.back) { g_ws_action = -1; return; }
         if (!in.confirm) return;
         const int idx = g_ws_action;
         g_ws_action = -1;
         if (idx < 0 || idx >= n) return;
-        if (g_ws_action_cur == 0) { open_editor(g_ai_cards[(size_t)idx]); return; }
-        if (g_ws_action_cur == 1) {
+        if (g_ws_action_cur == 0) { open_build(g_ai_cards[(size_t)idx]); return; }
+        if (g_ws_action_cur == 1) { open_editor(g_ai_cards[(size_t)idx]); return; }
+        if (g_ws_action_cur == 2) {
             const std::string path = unused_card_path(g_ai_folder, g_ai_cards[(size_t)idx].card.ac);
             if (!path.empty() && moa_card_write_png(&g_ai_cards[(size_t)idx].card, path.c_str())) {
                 rescan_on(m, path);
@@ -252,10 +259,11 @@ static void draw_ai_cards(LauncherModel* m, const Gfx& g, const Input& in) {
             }
             return;
         }
-        if (g_ws_action_cur == 2) g_confirm_delete = true;
+        if (g_ws_action_cur == 3) g_confirm_delete = true;
         return;
     }
     if (in.back) { g_ai_sub = AI_SUB_SETUP; return; }
+    if (in.start) { open_build_new(); return; }
     if (n == 0) return;
     if (in.alt) { g_confirm_delete = true; return; }
     if (in.confirm) { g_ws_action = cur; g_ws_action_cur = 0; }
@@ -264,6 +272,7 @@ static void draw_ai_cards(LauncherModel* m, const Gfx& g, const Input& in) {
 /* ---- AI EDITOR ---- */
 
 static bool save_edit(LauncherModel* m, bool as_new) {
+    if (g_edit_path.empty()) as_new = true;
     const std::string path = as_new ? unused_card_path(g_ai_folder, g_edit.ac) : g_edit_path;
     if (path.empty() || !moa_card_write_png(&g_edit, path.c_str())) {
         note("COULD NOT WRITE THE CARD");
@@ -353,7 +362,8 @@ static void draw_ai_edit(LauncherModel* m, const Gfx& g, const Input& in) {
         return;
     }
     if (in.back) {
-        if (g_edit_dirty) g_confirm_discard = true;
+        if (g_edit_from_build) g_ai_sub = AI_SUB_BUILD;   /* the builder saves */
+        else if (g_edit_dirty) g_confirm_discard = true;
         else g_ai_sub = AI_SUB_CARDS;
         return;
     }
@@ -455,3 +465,6 @@ static void draw_ai_adv(const Gfx& g, const Input& in) {
         g_edit_dirty = true;
     }
 }
+
+#include "moa_menu_build.inc"
+

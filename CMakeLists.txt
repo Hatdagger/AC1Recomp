@@ -145,6 +145,7 @@ if(TARGET psx-master-of-arena)
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_ai_battle.c"
         # AI Battle cards (Raven Card Builder images) -> builds.
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_card.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_parts.c"
         # Extras: the Project Phantasma arena, built from the player's discs.
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_phantasma.c"
         # Updates: look for a newer release and install it when asked.

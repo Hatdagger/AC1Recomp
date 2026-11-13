@@ -20364,6 +20364,17 @@ session_reboot:
             { mc2.empty() ? nullptr : mc2.c_str(), memcard2_enabled ? 1 : 0 },
         };
         memcard_init_slots(memcard_dir_str.c_str(), slots);
+        /* Game plugins that keep files beside the player's memory card (MoA
+         * AI Battle cards) find the folder here: slot 1's own folder when a
+         * card file was chosen, else the card directory. */
+        const std::string card_home = mc1.empty()
+            ? memcard_dir_str
+            : std::filesystem::path(mc1).parent_path().string();
+#ifdef _WIN32
+        _putenv_s("PSX_MEMCARD_HOME", card_home.c_str());
+#else
+        setenv("PSX_MEMCARD_HOME", card_home.c_str(), 1);
+#endif
     }
     if (!rematch_session) {
         std::atexit(memcard_flush_all);

@@ -142,7 +142,9 @@ if(TARGET psx-master-of-arena)
     target_sources(psx-master-of-arena PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_link_netplay.c"
         # AI Battle: the arena opponent AI flies both ACs (offline only).
-        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_ai_battle.c")
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_ai_battle.c"
+        # AI Battle cards (Raven Card Builder images) -> builds.
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_card.c")
 endif()
 
 # Windows release front door: "Armored Core Moa.exe" starts the game from

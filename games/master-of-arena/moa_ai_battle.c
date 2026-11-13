@@ -25,6 +25,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <stdio.h>
+#include <dirent.h>
+
+#include "moa_card.h"
 
 #define MOA_MODE_BYTE     0x8003EA2Au  /* engine the exe launches next */
 #define MOA_MODE_ARENA    3u
@@ -54,6 +58,7 @@
 #define MOA_PAD_START     0x0008u
 
 static int moa_ai_enabled = -1;
+static uint32_t moa_random(uint32_t below);
 static int moa_ai_nested;
 
 static uint8_t moa_side_state[MOA_AI_STATE_END - MOA_AI_STATE];
@@ -218,10 +223,11 @@ static int moa_ai_frame_filter(struct CPUState *cpu, uint32_t address)
 
 /* ---- units ------------------------------------------------------------------
  *
- * Test roster: every VS START draws two arena opponents from the player's own
- * disc (MS\MENU_TIM.T holds each arena's AC and AI tables) and enters them as
- * unit 1 and unit 2 of the versus menu, each with its own AI. The versus menu
- * then launches the arena engine in place of the split-screen one.
+ * Every VS START draws two units: unit cards from the memory-card folder
+ * first, then arena opponents from the player's own disc (MS\MENU_TIM.T holds
+ * each arena's AC and AI tables) for any unit still missing. They are entered
+ * as player 1 and player 2 of the versus menu, each with its own AI, and the
+ * versus menu then launches the arena engine in place of the split-screen one.
  */
 #define MOA_MENU_VS_START   0x800B2D7Cu  /* menu: VS START pressed */
 #define MOA_SIG_VS_START    0x27BDFFD0u
@@ -290,6 +296,225 @@ static int moa_arena_unit(uint32_t arena, uint32_t rank,
     return record[0] != 0xFFu && record[1] != 0xFFu;
 }
 
+/* ---- loading the units' graphics --------------------------------------------
+ *
+ * The match draws each AC from its player's own part files: one heap copy per
+ * part (archive 5), painted in place, listed in the player's file table. The
+ * garage works on one player at a time: a working table that points at that
+ * player's files, and a working set of textures and colour tables in video
+ * memory (the other player's set is kept aside and traded in by a swap). The
+ * steps below are the garage's own: bring the player's set to the front,
+ * point the working table at the player's files, set the garage's parts and
+ * paint, rebuild (each part's textures and file are loaded, the file it
+ * replaces freed, the paint baked), wait for the disc, and hand the table back
+ * to the player (as leaving AC SETUP does).
+ *
+ * VS START is a menu state the game calls every frame until it moves on, so the
+ * steps run one per frame while VS START is held back.
+ */
+#define MOA_CD_BUSY         0x800589DCu  /* nonzero while disc loads are queued */
+#define MOA_SIG_CD_BUSY     0x27BDFFE8u
+#define MOA_REBUILD         0x80081E20u  /* garage AC: textures + paint, part files */
+#define MOA_SIG_REBUILD     0x27BDFFE8u
+#define MOA_AC_SWAP         0x800C0E7Cu  /* trade the two players' AC graphics */
+#define MOA_SIG_AC_SWAP     0x27BDFFC0u
+#define MOA_VS_FRONT        133u         /* VS menu state: 1 = player 2's set in front */
+#define MOA_GARAGE_PATTERN  0x8003EA72u  /* pattern, variant (0 = custom paint) */
+#define MOA_VS_PATTERN      0x8003EAD2u  /* + player */
+#define MOA_VS_VARIANT      0x8003EAB8u  /* + player */
+#define MOA_GARAGE_PARTS    0x80036FB0u  /* current AC: 12 part ids, then paint */
+#define MOA_GARAGE_PAINT    0x80036FBCu
+#define MOA_GARAGE_OPTIONS  0x8003EA70u
+#define MOA_WORK_FILES      0x801FBB00u  /* working table: file per slot */
+#define MOA_WORK_SIZES      0x801D0B28u  /* sizes in halves */
+#define MOA_PLAYER_FILES    0x8004AB60u  /* + 60 per player */
+#define MOA_PLAYER_SIZES    0x8004A9E0u  /* + 30 per player */
+#define MOA_FILE_FIRST      3u           /* slots 3..14 are the AC's parts */
+#define MOA_FILE_END        15u
+#define MOA_LOAD_FRAMES_MAX 900u         /* give up waiting after ~15 seconds */
+
+static int moa_cd_busy(struct CPUState *cpu)
+{
+    return (psx_mod_call_guest(cpu, MOA_CD_BUSY, cpu->gpr[31], 0, 0, 0, 0) & 0xFFFFu) != 0;
+}
+
+/* Garage := player `player`'s files, the unit's parts and paint; rebuild. */
+static void moa_load_unit(struct CPUState *cpu, unsigned player)
+{
+    for (uint32_t i = MOA_FILE_FIRST; i < MOA_FILE_END; i++) {
+        psx_mod_write_word(MOA_WORK_FILES + 4u * i,
+                           psx_mod_read_word(MOA_PLAYER_FILES + 60u * player + 4u * i));
+        psx_mod_write_word(MOA_WORK_SIZES + 4u * i,
+                           psx_mod_read_half(MOA_PLAYER_SIZES + 30u * player + 2u * i));
+    }
+    for (unsigned i = 0; i < 12; i++)
+        psx_mod_write_byte(MOA_GARAGE_PARTS + i,
+                           psx_mod_read_byte(MOA_VS_PARTS + 12u * player + i));
+    for (unsigned i = 0; i < MOA_PAINT_BYTES; i++)
+        psx_mod_write_byte(MOA_GARAGE_PAINT + i,
+                           psx_mod_read_byte(MOA_VS_PAINT + MOA_PAINT_BYTES * player + i));
+    psx_mod_write_half(MOA_GARAGE_OPTIONS, psx_mod_read_half(MOA_VS_OPTIONS + 2u * player));
+    psx_mod_write_byte(MOA_GARAGE_PATTERN, 0);
+    psx_mod_write_byte(MOA_GARAGE_PATTERN + 1u, 0);
+    psx_mod_write_byte(MOA_VS_PATTERN + player, 0);
+    psx_mod_write_byte(MOA_VS_VARIANT + player, 0);
+    (void)psx_mod_call_guest(cpu, MOA_REBUILD, cpu->gpr[31], 0, 0, 0, 0);
+}
+
+/* The rebuilt part files belong to player `player` from now on. */
+static void moa_commit_unit(unsigned player)
+{
+    for (uint32_t i = MOA_FILE_FIRST; i < MOA_FILE_END; i++) {
+        psx_mod_write_word(MOA_PLAYER_FILES + 60u * player + 4u * i,
+                           psx_mod_read_word(MOA_WORK_FILES + 4u * i));
+        psx_mod_write_half(MOA_PLAYER_SIZES + 30u * player + 2u * i,
+                           (uint16_t)psx_mod_read_word(MOA_WORK_SIZES + 4u * i));
+    }
+}
+
+static void moa_swap_sets(struct CPUState *cpu)
+{
+    (void)psx_mod_call_guest(cpu, MOA_AC_SWAP, cpu->gpr[31], 0, 0, 0, 0);
+}
+
+/* ---- cards ------------------------------------------------------------------
+ *
+ * Unit cards (Raven Card Builder images, .png) are read from the folder that
+ * holds the player's memory card. Each card borrows the AI of an in-game arena
+ * opponent picked by its legs (moa_card_pick_ai); the AI bytes come from the
+ * player's own disc.
+ */
+#define MOA_POOL_MAX 256
+
+static uint8_t moa_pool_parts[MOA_POOL_MAX][3];  /* head, arms, legs */
+static uint8_t moa_pool_ai[MOA_POOL_MAX][MOA_AI_RECORD_BYTES];
+static int moa_pool_count = -1;
+
+static void moa_build_pool(void)
+{
+    moa_pool_count = 0;
+    uint8_t record[MOA_RECORD_BYTES], ai[MOA_AI_RECORD_BYTES];
+    for (uint32_t arena = 0; arena < MOA_ARENAS; arena++) {
+        const uint32_t entries = psx_mod_read_byte(MOA_ARENA_ENTRIES + arena);
+        for (uint32_t rank = 0; rank + 1u < entries && moa_pool_count < MOA_POOL_MAX; rank++) {
+            if (!moa_arena_unit(arena, rank, record, ai)) continue;
+            moa_pool_parts[moa_pool_count][0] = record[1];
+            moa_pool_parts[moa_pool_count][1] = record[2];
+            moa_pool_parts[moa_pool_count][2] = record[3];
+            memcpy(moa_pool_ai[moa_pool_count], ai, MOA_AI_RECORD_BYTES);
+            moa_pool_count++;
+        }
+    }
+}
+
+#define MOA_CARDS_MAX 64
+static char *moa_card_paths[MOA_CARDS_MAX];
+static int moa_card_paths_count;
+
+static int moa_has_suffix(const char *name, const char *suffix)
+{
+    const size_t n = strlen(name), k = strlen(suffix);
+    if (n < k) return 0;
+    for (size_t i = 0; i < k; i++) {
+        char c = name[n - k + i];
+        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        if (c != suffix[i]) return 0;
+    }
+    return 1;
+}
+
+static void moa_scan_cards(void)
+{
+    for (int i = 0; i < moa_card_paths_count; i++) free(moa_card_paths[i]);
+    moa_card_paths_count = 0;
+    const char *dir = getenv("PSX_MEMCARD_HOME");
+    if (!dir || !dir[0]) return;
+    DIR *d = opendir(dir);
+    if (!d) return;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL && moa_card_paths_count < MOA_CARDS_MAX) {
+        if (!moa_has_suffix(e->d_name, ".png")) continue;
+        const size_t n = strlen(dir) + strlen(e->d_name) + 2;
+        char *path = (char *)malloc(n);
+        if (!path) break;
+        snprintf(path, n, "%s/%s", dir, e->d_name);
+        moa_card_paths[moa_card_paths_count++] = path;
+    }
+    closedir(d);
+}
+
+static int moa_read_card(const char *path, struct moa_card *card)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    int ok = 0;
+    if (fseek(f, 0, SEEK_END) == 0) {
+        const long n = ftell(f);
+        if (n > 0 && n < 32L * 1024 * 1024 && fseek(f, 0, SEEK_SET) == 0) {
+            uint8_t *data = (uint8_t *)malloc((size_t)n);
+            if (data && fread(data, 1, (size_t)n, f) == (size_t)n)
+                ok = moa_card_decode(data, (size_t)n, card);
+            free(data);
+        }
+    }
+    fclose(f);
+    return ok;
+}
+
+/* A card as a unit: its record, and the AI of the opponent it is matched to
+ * with the card's own Human PLUS level. */
+static int moa_card_unit(const char *path, uint8_t *record, uint8_t *ai)
+{
+    static struct moa_card card;
+    if (!moa_read_card(path, &card)) {
+        psx_mod_counter_add("moa.ai.card_unreadable", 1);
+        return 0;
+    }
+    if (moa_pool_count < 0) moa_build_pool();
+    const int pick = moa_card_pick_ai(&card, (const uint8_t (*)[3])moa_pool_parts,
+                                      moa_pool_count);
+    if (pick < 0) return 0;
+    moa_card_record(&card, record);
+    memcpy(ai, moa_pool_ai[pick], MOA_AI_RECORD_BYTES);
+    ai[0] = card.plus;
+    psx_mod_counter_add("moa.ai.card_unit", 1);
+    return 1;
+}
+
+/* Two units: cards first (in random order, never the same file twice), then
+ * random arena opponents for whatever is missing. */
+static int moa_pick_units(uint8_t record[2][MOA_RECORD_BYTES],
+                          uint8_t ai[2][MOA_AI_RECORD_BYTES])
+{
+    moa_scan_cards();
+    int used[2] = { -1, -1 };
+    unsigned have = 0;
+    for (unsigned tries = 0; have < 2 && tries < 4u * MOA_CARDS_MAX && moa_card_paths_count; tries++) {
+        const int k = (int)moa_random((uint32_t)moa_card_paths_count);
+        if (k == used[0] || (moa_card_paths_count == 1 && tries > 0)) {
+            if (moa_card_paths_count == 1) break;
+            continue;
+        }
+        if (moa_card_unit(moa_card_paths[k], record[have], ai[have])) used[have++] = k;
+    }
+    uint32_t picked = 0xFFFFFFFFu;
+    while (have < 2) {
+        int ok = 0;
+        for (unsigned tries = 0; tries < 64 && !ok; tries++) {
+            const uint32_t arena = moa_random(MOA_ARENAS);
+            const uint32_t entries = psx_mod_read_byte(MOA_ARENA_ENTRIES + arena);
+            if (entries < 2u) continue;
+            const uint32_t rank = moa_random(entries - 1u);  /* last = player's slot */
+            if (arena * 256u + rank == picked) continue;
+            ok = moa_arena_unit(arena, rank, record[have], ai[have]);
+            if (ok) picked = arena * 256u + rank;
+        }
+        if (!ok) return 0;
+        have++;
+    }
+    return 1;
+}
+
 static void moa_enter_unit(unsigned player, const uint8_t *r, const uint8_t *ai)
 {
     /* Arena record order -> the garage's: core, booster, head, arms, blade,
@@ -298,49 +523,15 @@ static void moa_enter_unit(unsigned player, const uint8_t *r, const uint8_t *ai)
                                 r[6], r[7], r[9], r[8], 0xFFu, r[3] };
     for (unsigned i = 0; i < 12; i++)
         psx_mod_write_byte(MOA_VS_PARTS + 12u * player + i, parts[i]);
-    /* Paint: four sections of base, optional, detail and joint colour, as
-     * the garage's sliders show them. */
     for (unsigned i = 0; i < MOA_PAINT_BYTES; i++)
         psx_mod_write_byte(MOA_VS_PAINT + MOA_PAINT_BYTES * player + i, r[16u + i]);
     /* Optional parts: one bit per part, in the option table's order. */
     psx_mod_write_half(MOA_VS_OPTIONS + 2u * player, (uint16_t)(r[10] | (r[11] << 8)));
-    /* Human PLUS level from the AI record; arena builds may be overweight. */
-    const uint8_t plus[8] = { ai[0], 0, 1, 0, 0, 0, 0, 0 };
+    /* Human PLUS level from the AI record; with it, the game waives the
+     * load and energy limits (byte 2). */
+    const uint8_t plus[8] = { ai[0], 0, (uint8_t)(ai[0] ? 1 : 0), 0, 0, 0, 0, 0 };
     for (unsigned i = 0; i < 8; i++)
         psx_mod_write_byte(MOA_VS_PLUS + 8u * player + i, plus[i]);
-}
-
-/* Paint is baked into colour tables in video memory, one set per player.
- * Player 1's set is the menu's working set; the game swaps the two sets to
- * work on player 2's. The paint routine recolours the working set from the
- * garage's current colours. */
-#define MOA_GARAGE_PAINT    0x80036FBCu  /* current AC: 48 colour bytes */
-#define MOA_PAINT_APPLY     0x80082530u  /* garage colours -> working colour tables */
-#define MOA_SIG_PAINT_APPLY 0x27BDFFD0u
-#define MOA_AC_SWAP         0x800C0E7Cu  /* swap the two players' AC graphics */
-#define MOA_SIG_AC_SWAP     0x27BDFFC0u
-
-static void moa_paint_units(struct CPUState *cpu, const uint8_t *paint1,
-                            const uint8_t *paint2)
-{
-    if (psx_mod_read_word(MOA_PAINT_APPLY) != MOA_SIG_PAINT_APPLY ||
-        psx_mod_read_word(MOA_AC_SWAP) != MOA_SIG_AC_SWAP)
-        return;
-    const uint32_t ra = cpu->gpr[31];
-    uint8_t keep[MOA_PAINT_BYTES];
-    for (unsigned i = 0; i < MOA_PAINT_BYTES; i++)
-        keep[i] = psx_mod_read_byte(MOA_GARAGE_PAINT + i);
-    for (unsigned i = 0; i < MOA_PAINT_BYTES; i++)
-        psx_mod_write_byte(MOA_GARAGE_PAINT + i, paint1[i]);
-    (void)psx_mod_call_guest(cpu, MOA_PAINT_APPLY, ra, 0, 0, 0, 0);
-    (void)psx_mod_call_guest(cpu, MOA_AC_SWAP, ra, 0, 0, 0, 0);
-    for (unsigned i = 0; i < MOA_PAINT_BYTES; i++)
-        psx_mod_write_byte(MOA_GARAGE_PAINT + i, paint2[i]);
-    (void)psx_mod_call_guest(cpu, MOA_PAINT_APPLY, ra, 0, 0, 0, 0);
-    (void)psx_mod_call_guest(cpu, MOA_AC_SWAP, ra, 0, 0, 0, 0);
-    for (unsigned i = 0; i < MOA_PAINT_BYTES; i++)
-        psx_mod_write_byte(MOA_GARAGE_PAINT + i, keep[i]);
-    psx_mod_counter_add("moa.ai.painted", 1);
 }
 
 static uint32_t moa_random(uint32_t below)
@@ -351,40 +542,74 @@ static uint32_t moa_random(uint32_t below)
     return below ? state % below : 0;
 }
 
-static void moa_vs_start_entry(struct CPUState *cpu, uint32_t address)
+/* VS START, held back for as many frames as the units' graphics take. */
+static unsigned moa_load_step;
+static uint32_t moa_load_frames;
+static uint8_t moa_unit_record[2][MOA_RECORD_BYTES];
+static uint8_t moa_unit_ai[2][MOA_AI_RECORD_BYTES];
+
+static void moa_units_ready(void)
 {
-    moa_ai_enabled = -1;                       /* read the option per match */
-    if (!moa_ai_battle_on() || psx_mod_read_word(address) != MOA_SIG_VS_START)
-        return;
-    const uint8_t mode = psx_mod_read_byte(MOA_MODE_BYTE);
-    if (mode != MOA_MODE_VERSUS && mode != MOA_MODE_ARENA) return;
-    uint8_t record[2][MOA_RECORD_BYTES], ai[2][MOA_AI_RECORD_BYTES];
-    uint32_t picked[2] = { 0, 0 };
-    for (unsigned unit = 0; unit < 2; unit++) {
-        int ok = 0;
-        for (unsigned tries = 0; tries < 64 && !ok; tries++) {
-            const uint32_t arena = moa_random(MOA_ARENAS);
-            const uint32_t entries = psx_mod_read_byte(MOA_ARENA_ENTRIES + arena);
-            if (entries < 2u) continue;
-            const uint32_t rank = moa_random(entries - 1u);  /* last = player's slot */
-            picked[unit] = arena * 256u + rank;
-            if (unit == 1 && picked[1] == picked[0]) continue;
-            ok = moa_arena_unit(arena, rank, record[unit], ai[unit]);
-        }
-        if (!ok) {
-            psx_mod_counter_add("moa.ai.roster_failed", 1);
-            return;                            /* stock versus match instead */
-        }
-    }
-    moa_enter_unit(0, record[0], ai[0]);
-    moa_enter_unit(1, record[1], ai[1]);
-    moa_paint_units(cpu, record[0] + 16u, record[1] + 16u);
-    memcpy(moa_side_record, ai[0], MOA_AI_RECORD_BYTES);
+    memcpy(moa_side_record, moa_unit_ai[0], MOA_AI_RECORD_BYTES);
     moa_side_record_set = 1;
     for (unsigned i = 0; i < MOA_AI_RECORD_BYTES; i++)
-        psx_mod_write_byte(MOA_AI_RECORD + i, ai[1][i]);
+        psx_mod_write_byte(MOA_AI_RECORD + i, moa_unit_ai[1][i]);
     psx_mod_write_byte(MOA_MODE_BYTE, MOA_MODE_ARENA);
     psx_mod_counter_add("moa.ai.match", 1);
+}
+
+static int moa_vs_start_filter(struct CPUState *cpu, uint32_t address)
+{
+    if (moa_load_step == 0) moa_ai_enabled = -1;  /* read the option per match */
+    if (!moa_ai_battle_on() || psx_mod_read_word(address) != MOA_SIG_VS_START)
+        return 0;
+    const uint8_t mode = psx_mod_read_byte(MOA_MODE_BYTE);
+    if (mode != MOA_MODE_VERSUS && mode != MOA_MODE_ARENA) return 0;
+    const int can_load = psx_mod_read_word(MOA_CD_BUSY) == MOA_SIG_CD_BUSY &&
+                         psx_mod_read_word(MOA_REBUILD) == MOA_SIG_REBUILD &&
+                         psx_mod_read_word(MOA_AC_SWAP) == MOA_SIG_AC_SWAP;
+    const uint32_t state = cpu->gpr[4];
+    if (moa_load_step == 0) {
+        if (!moa_pick_units(moa_unit_record, moa_unit_ai)) {
+            psx_mod_counter_add("moa.ai.roster_failed", 1);
+            return 0;                          /* stock versus match instead */
+        }
+        moa_enter_unit(0, moa_unit_record[0], moa_unit_ai[0]);
+        moa_enter_unit(1, moa_unit_record[1], moa_unit_ai[1]);
+        if (!can_load) {                       /* default colours, but a match */
+            moa_units_ready();
+            return 0;
+        }
+        moa_load_step = 1;
+        moa_load_frames = 0;
+    }
+    if (moa_cd_busy(cpu) && ++moa_load_frames < MOA_LOAD_FRAMES_MAX)
+        return 1;                              /* VS START runs again next frame */
+    switch (moa_load_step) {
+    case 1:                                    /* player 1's set in front */
+        if (psx_mod_read_byte(state + MOA_VS_FRONT) == 1) {
+            moa_swap_sets(cpu);
+            psx_mod_write_byte(state + MOA_VS_FRONT, 0);
+        }
+        moa_load_unit(cpu, 0);
+        moa_load_step = 2;
+        return 1;
+    case 2:                                    /* unit 1 done; player 2's set */
+        moa_commit_unit(0);
+        moa_swap_sets(cpu);
+        moa_load_unit(cpu, 1);
+        moa_load_step = 3;
+        return 1;
+    default:                                   /* unit 2 done; player 1 in front */
+        moa_commit_unit(1);
+        moa_swap_sets(cpu);
+        moa_load_step = 0;
+        if (moa_load_frames >= MOA_LOAD_FRAMES_MAX)
+            psx_mod_counter_add("moa.ai.load_timeout", 1);
+        psx_mod_counter_add("moa.ai.painted", 1);
+        moa_units_ready();
+        return 0;                              /* VS START goes ahead */
+    }
 }
 
 /* ---- straight to the versus menu ----------------------------------------------
@@ -494,7 +719,7 @@ PSX_MOD_CONSTRUCTOR(moa_ai_battle_register)
     (void)psx_game_register_offline_function_entry(MOA_MODE_CONFIRM, moa_mode_confirm_entry);
     (void)psx_game_register_offline_function_entry(MOA_TITLE_OPEN, moa_title_open_entry);
     (void)psx_game_register_offline_function_filter(MOA_MOVIE_PLAY, moa_movie_filter);
-    (void)psx_game_register_offline_function_entry(MOA_MENU_VS_START, moa_vs_start_entry);
+    (void)psx_game_register_offline_function_filter(MOA_MENU_VS_START, moa_vs_start_filter);
     (void)psx_game_register_offline_function_filter(MOA_AI_SETUP, moa_ai_setup_filter);
     (void)psx_game_register_offline_function_filter(MOA_AI_INIT, moa_ai_init_filter);
     (void)psx_game_register_offline_function_filter(MOA_AI_FRAME, moa_ai_frame_filter);

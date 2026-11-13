@@ -339,20 +339,50 @@ int stbi_write_png_to_func(void (*func)(void *, void *, int), void *context,
 #define SAVE_PATTERN  0x1C4
 #define SAVE_VARIANT  0x1C5
 #define SAVE_OPTIONS  0x1C6                    /* u16 optional-parts mask */
-#define SAVE_PILOT    0x1CC                    /* 18 bytes, '>' ends */
-#define SAVE_ACNAME   0x1DE
+#define SAVE_ACNAME   0x1CC                    /* 18 bytes: 8 two-byte characters, '>' ends */
+#define SAVE_PILOT    0x1DE                    /* the game's name editors: "AC NAME" / "PILOT NAME" */
 #define SAVE_PAINT    0x250                    /* 48 colour values */
 #define SAVE_EMBLEM   0x480                    /* 64x64, 4 bits per pixel */
 #define SAVE_CLUT     0xC80                    /* 16 x 15-bit colours */
 #define SAVE_PLUS     0xDEC                    /* Human PLUS state; [0] = level */
 
+/* Names are Shift-JIS, two bytes a character (the name editor offers full-width
+ * letters, digits, kana and symbols), eight characters at most, ended by '>'
+ * on a character boundary. The card keeps plain ASCII: full-width letters,
+ * digits and common punctuation map to their ASCII twins, anything else (kana,
+ * Greek, box drawing) becomes '?'. */
+static char sjis_to_ascii(uint8_t hi, uint8_t lo)
+{
+    if (hi >= 0x20 && hi < 0x7F) return (char)hi;          /* already one byte */
+    if (hi == 0x82) {
+        if (lo >= 0x4F && lo <= 0x58) return (char)('0' + (lo - 0x4F));
+        if (lo >= 0x60 && lo <= 0x79) return (char)('A' + (lo - 0x60));
+        if (lo >= 0x81 && lo <= 0x9A) return (char)('a' + (lo - 0x81));
+    } else if (hi == 0x81) {
+        switch (lo) {
+        case 0x40: return ' ';  case 0x43: return ',';  case 0x44: return '.';
+        case 0x45: return '.';  case 0x46: return ':';  case 0x47: return ';';
+        case 0x48: return '?';  case 0x49: return '!';  case 0x5B: return '-';
+        case 0x5E: return '/';  case 0x60: return '~';  case 0x62: return '|';
+        case 0x66: return '\'';  case 0x68: return '"';  case 0x69: return '(';
+        case 0x6A: return ')';  case 0x6D: return '[';  case 0x6E: return ']';
+        case 0x7B: return '+';  case 0x7C: return '-';  case 0x81: return '=';
+        case 0x83: return '<';  case 0x84: return '>';  case 0x90: return '$';
+        case 0x93: return '%';  case 0x94: return '#';  case 0x95: return '&';
+        case 0x96: return '*';  case 0x97: return '@';
+        default: break;
+        }
+    }
+    return '?';
+}
+
 static void save_name(const uint8_t *src, char out[17])
 {
     int n = 0;
-    for (int i = 0; i < 18 && n < 16; i++) {
-        const uint8_t c = src[i];
-        if (c == 0 || c == '>') break;
-        out[n++] = (c >= 32 && c < 127) ? (char)c : '?';
+    for (int i = 0; i < 9 && n < 16; i++) {
+        const uint8_t hi = src[2 * i], lo = src[2 * i + 1];
+        if (hi == 0 || hi == '>') break;
+        out[n++] = sjis_to_ascii(hi, lo);
     }
     while (n > 0 && out[n - 1] == ' ') n--;
     out[n] = 0;

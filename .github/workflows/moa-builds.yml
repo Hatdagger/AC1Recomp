@@ -1,8 +1,9 @@
 # Master of Arena builds for players: a Linux AppImage (Steam Deck and other
 # Linux PCs) and the Windows "Armored Core Moa" folder.
 #
-# Runs on every push to the launcher branch and on request. Both are kept as
-# build artifacts on the run's page; nothing is published.
+# Runs on every push to the launcher branch and on request; both are kept as
+# build artifacts on the run's page. A tag named moa-vX.Y.Z also publishes them
+# as a GitHub release (the Windows folder zipped).
 
 name: Master of Arena builds
 
@@ -10,6 +11,7 @@ on:
   workflow_dispatch:
   push:
     branches: [moa-launcher]
+    tags: ['moa-v*']
 
 permissions:
   contents: read
@@ -223,3 +225,44 @@ jobs:
           path: dist/
           if-no-files-found: error
           retention-days: 30
+
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/moa-v')
+    needs: [appimage, windows]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Download builds
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          mkdir -p out
+          cp artifacts/armored-core-moa-linux-x64-appimage/*.AppImage \
+             "out/Armored-Core-MoA-${tag#moa-}-linux-x64.AppImage"
+          (cd artifacts/armored-core-moa-windows-x64 && \
+             zip -qr9 "$GITHUB_WORKSPACE/out/Armored-Core-MoA-${tag#moa-}-windows-x64.zip" "Armored Core Moa")
+          ls -la out
+          sha256sum out/* | tee out/SHA256SUMS.txt
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "${GITHUB_REF_NAME}" out/* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "Armored Core: Master of Arena ${GITHUB_REF_NAME#moa-}" \
+            --notes-file docs/moa-release-notes.md \
+            --prerelease

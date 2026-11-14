@@ -6,7 +6,7 @@ static void check(int ok,const char* text){if(!ok){fprintf(stderr,"FAIL %s\n",te
 int main(void){
     check(psx_mod_memory_snapshot_bytes()==0 && psx_mod_memory_layout_cookie()==0,"vanilla unchanged");
     psx_mod_memory_snapshot_write(NULL);
-    check(psx_mod_memory_alloc(13,16)==0x9f000000u,"CPU allocation");
+    check(psx_mod_memory_alloc(13,16)==0x81000000u,"CPU allocation");
     check(psx_mod_gpu_dma_memory_alloc(5u*1024u*1024u,16)==PSX_MOD_GPU_DMA_GUEST_BASE,"beyond old four MiB");
     check(psx_mod_gpu_dma_resolve_address(0xd00000u)==0x100000u,"unallocated tag retains retail folding");
     uint32_t size=psx_mod_memory_snapshot_bytes(),cookie=psx_mod_memory_layout_cookie();
@@ -17,7 +17,7 @@ int main(void){
     check(!psx_mod_memory_snapshot_read(saved,size-1),"truncation rejected");
     saved[0]=99;
     check(!psx_mod_memory_snapshot_read(saved,size) && mod_memory[0]==0x56,"bad version no mutation");
-    saved[0]=1;saved[8]++;
+    saved[0]=2;saved[8]++;
     check(!psx_mod_memory_snapshot_read(saved,size) && mod_gpu_dma_memory[0]==0x78,"bad layout no mutation");
     saved[8]--;
     check(psx_mod_memory_snapshot_read(saved,size),"restore");
@@ -35,7 +35,7 @@ int main(void){
               "pass store reaches the GPU-DMA arena");
         check(render_pass_mod_store(PSX_MOD_GPU_DMA_GUEST_BASE + 4096u - 2u, 0x1234u, 2) == 1,
               "pass store at a page edge");
-        check(render_pass_mod_store(0x9f000004u, 0x77u, 1) == 1 && mod_memory[4] == 0x77,
+        check(render_pass_mod_store(0x81000004u, 0x77u, 1) == 1 && mod_memory[4] == 0x77,
               "pass store reaches mod memory");
         check(render_pass_mod_store(0x80001000u, 1u, 4) == 0, "main RAM left to the RAM path");
         check(render_pass_mod_arenas_hash() != before, "hash sees the pass writes");

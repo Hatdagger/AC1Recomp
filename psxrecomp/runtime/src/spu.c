@@ -38,6 +38,10 @@
 /* Title enhancements preload assets from the owner's disc. Hardware DMA,
  * capture buffers and reverb continue to use spu_ram exclusively. */
 static struct { uint8_t *data; uint32_t bytes; } sample_banks[SPU_SAMPLE_BANKS];
+/* Xbox-class audio budget (docs/MEMORY_BUDGET.md): 8 MiB of host sample banks
+ * on top of the PS1's own 512 KiB SPU RAM. */
+#define SPU_SAMPLE_BANK_BUDGET_BYTES (8u * 1024u * 1024u)
+static uint32_t sample_bank_bytes;
 
 static uint8_t  spu_ram[SPU_RAM_SIZE];
 static uint16_t spu_regs[SPU_REG_COUNT];
@@ -183,8 +187,10 @@ int spu_register_sample_bank(uint32_t bank,const void *adpcm,uint32_t bytes) {
     /* Assets cannot change under a playing or queued voice. */
     if(sample_banks[bank].data)
         return sample_banks[bank].bytes==bytes && !memcmp(sample_banks[bank].data,adpcm,bytes);
+    if(bytes>SPU_SAMPLE_BANK_BUDGET_BYTES-sample_bank_bytes)return 0;
     uint8_t *copy=malloc(bytes);if(!copy)return 0;
     memcpy(copy,adpcm,bytes);sample_banks[bank].data=copy;sample_banks[bank].bytes=bytes;
+    sample_bank_bytes+=bytes;
     return 1;
 }
 int spu_bind_next_voice_bank(unsigned voice,uint32_t bank) {
@@ -1076,7 +1082,7 @@ uint32_t spu_private_voice_active(void) {
 
 void spu_init(void) {
     for(unsigned bank=1;bank<SPU_SAMPLE_BANKS;++bank) {
-        free(sample_banks[bank].data);sample_banks[bank].data=NULL;sample_banks[bank].bytes=0;
+        sample_bank_bytes-=sample_banks[bank].bytes;free(sample_banks[bank].data);sample_banks[bank].data=NULL;sample_banks[bank].bytes=0;
     }
     memset(spu_ram, 0, sizeof(spu_ram));
     memset(spu_regs, 0, sizeof(spu_regs));

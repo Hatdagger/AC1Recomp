@@ -18,10 +18,16 @@ extern "C" {
 #define PSX_MOD_GPU_DMA_APERTURE_SIZE (8u * 1024u * 1024u)
 #define PSX_MOD_GPU_DMA_GUEST_BASE    0x80800000u
 
-/* Trusted-mod guest memory in Expansion 1 (psx_mod_memory_alloc; KSEG0
- * 0x9F000000). Open bus until the first allocation. */
-#define PSX_MOD_MEMORY_BASE 0x1F000000u
-#define PSX_MOD_MEMORY_SIZE (1u * 1024u * 1024u)
+/* Trusted-mod guest data memory (psx_mod_memory_alloc; KSEG0 0x81000000).
+ * 16 MiB in the unmapped physical range right above the GPU DMA aperture.
+ * Together with 8 MB main RAM and the 8 MiB aperture this gives the
+ * Xbox-class 32 MiB guest budget (docs/MEMORY_BUDGET.md). It sits above the
+ * GPU's 24-bit linked-list reach on purpose: CPU data only (tables, models,
+ * imported content). Open bus until the first allocation. Moved here from
+ * Expansion 1, which is back to plain open bus and could hold only 8 MiB. */
+#define PSX_MOD_MEMORY_BASE 0x01000000u
+#define PSX_MOD_MEMORY_SIZE (16u * 1024u * 1024u)
+#define PSX_MOD_MEMORY_GUEST_BASE (0x80000000u | PSX_MOD_MEMORY_BASE)
 
 static inline int psx_mod_gpu_dma_aperture_offset_for(
     uint32_t address, uint32_t width, uint32_t used, uint32_t *offset) {

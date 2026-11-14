@@ -61,14 +61,14 @@ uint32_t psx_mod_memory_layout_cookie(void) {
     /* Compatibility guard, not a cryptographic identity. Include aperture
      * revision; old enabled-mod saves must be rejected before applying RAM. */
     if (!psx_mod_memory_snapshot_bytes()) return 0u;
-    return 0x4D4F4402u ^ (mod_memory_used * 16777619u) ^ mod_gpu_dma_memory_used;
+    return 0x4D4F4403u ^ (mod_memory_used * 16777619u) ^ mod_gpu_dma_memory_used;
 }
 
 void psx_mod_memory_snapshot_write(uint8_t* out) {
     PstW w;
     if (!out || !psx_mod_memory_snapshot_bytes()) return;
     pst_w_init(&w, out, psx_mod_memory_snapshot_bytes());
-    pst_w_u32(&w, 1u);
+    pst_w_u32(&w, 2u);   /* v2: mod data memory at PSX_MOD_MEMORY_BASE (16 MiB) */
     pst_w_u32(&w, PSX_MOD_GPU_DMA_APERTURE_BASE);
     pst_w_u32(&w, mod_memory_used);
     pst_w_u32(&w, mod_gpu_dma_memory_used);
@@ -84,7 +84,7 @@ int psx_mod_memory_snapshot_validate(const uint8_t* data, uint32_t size) {
     pst_r_init(&r, data, size);
     return pst_r_u32(&r, &version) && pst_r_u32(&r, &base) &&
            pst_r_u32(&r, &cpu_bytes) && pst_r_u32(&r, &dma_bytes) &&
-           version == 1u && base == PSX_MOD_GPU_DMA_APERTURE_BASE &&
+           version == 2u && base == PSX_MOD_GPU_DMA_APERTURE_BASE &&
            cpu_bytes == mod_memory_used && dma_bytes == mod_gpu_dma_memory_used;
 }
 
@@ -107,7 +107,7 @@ int psx_mod_memory_snapshot_read(const uint8_t* data, uint32_t size) {
 }
 
 /*
- * Trusted mods may opt into host-backed guest memory in Expansion 1. Before
+ * Trusted mods may opt into host-backed guest data memory at 0x01000000. Before
  * the first allocation this entire region retains hardware open-bus behavior.
  */
 uint32_t psx_mod_memory_alloc(uint32_t size, uint32_t alignment) {
@@ -119,7 +119,7 @@ uint32_t psx_mod_memory_alloc(uint32_t size, uint32_t alignment) {
     if (start > MOD_MEMORY_SIZE || size > MOD_MEMORY_SIZE - start) return 0u;
     memset(mod_memory + start, 0, size);
     mod_memory_used = start + size;
-    return 0x9F000000u + start;
+    return PSX_MOD_MEMORY_GUEST_BASE + start;
 }
 
 static int mod_memory_offset(uint32_t phys, uint32_t width, uint32_t *offset) {
@@ -1723,7 +1723,7 @@ static uint32_t psx_read_word_raw(uint32_t addr) {
             return v;
         }
     }
-    /* Expansion 1: 0x1F000000..0x1F7FFFFF — no device, open bus */
+    /* Mod data memory (0x01000000, after the first allocation). */
     {
         uint32_t off;
         if (mod_memory_offset(phys, 4u, &off)) {
@@ -1732,6 +1732,7 @@ static uint32_t psx_read_word_raw(uint32_t addr) {
             return v;
         }
     }
+    /* Expansion 1: 0x1F000000..0x1F7FFFFF — no device, open bus */
     if (phys >= 0x1F000000u && phys <= 0x1F7FFFFFu) {
         return 0xFFFFFFFFu;
     }
@@ -2084,7 +2085,7 @@ static void psx_write_word_raw(uint32_t addr, uint32_t val) {
             return;
         }
     }
-    /* Expansion 1: 0x1F000000..0x1F7FFFFF — ignore writes */
+    /* Mod data memory (0x01000000, after the first allocation). */
     {
         uint32_t off;
         if (mod_memory_offset(phys, 4u, &off)) {
@@ -2092,6 +2093,7 @@ static void psx_write_word_raw(uint32_t addr, uint32_t val) {
             return;
         }
     }
+    /* Expansion 1: 0x1F000000..0x1F7FFFFF — ignore writes */
     if (phys >= 0x1F000000u && phys <= 0x1F7FFFFFu) return;
     if (phys >= 0x1F800000u && phys <= 0x1F8003FFu) {
         uint32_t off = phys - 0x1F800000u;

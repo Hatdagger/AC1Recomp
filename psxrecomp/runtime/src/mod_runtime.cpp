@@ -80,6 +80,7 @@ extern "C" int fntrace_is_game_started(void);
 
 /* Declared in mod_plugins.h; see active_function_entry_hooks() below. */
 uint32_t g_psx_mod_function_entry_hooks = 0;
+uint32_t g_psx_mod_function_replacements = 0;
 uint32_t g_psx_mod_guest_functions = 0;
 uint32_t g_psx_mod_instruction_hooks = 0;
 /* Guest vblanks seen by the mod runtime: the plugin counters' time base. */
@@ -313,7 +314,25 @@ void update_function_entry_count() {
         game_offline_entry_hooks().size());
 }
 
+/* Native function replacements (docs/MOD_FUNCTION_REPLACEMENTS.md). They
+ * belong to the active plan, so they are cleared with its hooks. */
+struct FunctionReplacement {
+    uint32_t key = 0;
+    PSXModFunctionReplacementCallback callback = nullptr;
+};
+constexpr size_t kMaxFunctionReplacements = 64;
+std::array<FunctionReplacement, kMaxFunctionReplacements>& function_replacements() {
+    static std::array<FunctionReplacement, kMaxFunctionReplacements> value{};
+    return value;
+}
+
+void clear_function_replacements() {
+    function_replacements().fill(FunctionReplacement{});
+    g_psx_mod_function_replacements = 0;
+}
+
 void clear_function_entry_hooks() {
+    clear_function_replacements();
     active_function_entry_hooks().clear();
     update_function_entry_count();
     active_guest_functions().clear();
@@ -3122,6 +3141,48 @@ extern "C" int psx_mod_finish_function(CPUState* cpu) {
     return 1;
 }
 
+static int mod_plan_hooks_parked_for_replacement(void);
+extern "C" int psx_mod_set_function_replacement(
+    uint32_t address, PSXModFunctionReplacementCallback callback) {
+    using namespace PSXRecompV4;
+    if (!address || (address & 3u)) return 0;
+    const uint32_t key = function_entry_key(address);
+    auto& table = function_replacements();
+    FunctionReplacement* free_slot = nullptr;
+    for (auto& entry : table) {
+        if (entry.callback && entry.key == key) {
+            entry.callback = callback;           /* replace, or remove on NULL */
+            if (!callback) { entry.key = 0; --g_psx_mod_function_replacements; }
+            return 1;
+        }
+        if (!entry.callback && !free_slot) free_slot = &entry;
+    }
+    if (!callback) return 1;                     /* removing a missing entry */
+    if (!free_slot) return 0;                    /* registry full */
+    free_slot->key = key;
+    free_slot->callback = callback;
+    ++g_psx_mod_function_replacements;
+    return 1;
+}
+
+extern "C" int psx_mod_try_function_replacement(CPUState* cpu, uint32_t address) {
+    using namespace PSXRecompV4;
+    if (!g_psx_mod_function_replacements || !cpu) return 0;
+    if (mod_plan_hooks_parked_for_replacement()) return 0;
+    const uint32_t key = function_entry_key(address);
+    for (const auto& entry : function_replacements()) {
+        if (!entry.callback || entry.key != key) continue;
+        const uint32_t ra = cpu->gpr[31];      /* the callback may clobber $ra */
+        ++function_entry_depth;
+        const int handled = entry.callback(cpu, address);
+        --function_entry_depth;
+        if (!handled) return 0;
+        cpu->pc = ra;
+        return 1;
+    }
+    return 0;
+}
+
 extern "C" int psx_mod_register_guest_function_plugin(
     const char* id, uint32_t address, PSXModFunctionEntryCallback callback) {
     return id && PSXRecompV4::mod_register_guest_function_plugin(id, address, callback);
@@ -3132,6 +3193,9 @@ extern "C" int psx_mod_local_view_scope(void);
  * shared simulation never runs them. */
 static int mod_plan_hooks_parked(void) {
     return PSXRecompV4::state().netplay_view_plan && !psx_mod_local_view_scope();
+}
+static int mod_plan_hooks_parked_for_replacement(void) {
+    return mod_plan_hooks_parked();
 }
 
 extern "C" int psx_mod_dispatch_guest_function(CPUState* cpu, uint32_t address) {

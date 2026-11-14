@@ -270,6 +270,11 @@ int psx_mod_function_entry(CPUState *cpu, uint32_t address) {
     overlay_flush_cycles();
     return g_cbs.mod_function_entry ? g_cbs.mod_function_entry(cpu, address) : 0;
 }
+int psx_mod_try_function_replacement(CPUState *cpu, uint32_t address) {
+    if (!g_cbs.mod_try_function_replacement) return 0;
+    overlay_flush_cycles();
+    return g_cbs.mod_try_function_replacement(cpu, address);
+}
 int32_t psx_ws_depth_bound(int32_t imm) {
     return g_cbs.ws_depth_bound ? g_cbs.ws_depth_bound(imm) : imm;
 }

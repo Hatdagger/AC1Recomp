@@ -60,6 +60,21 @@ extern uint32_t g_psx_mod_instruction_hooks;
 int psx_mod_register_function_filter_plugin(
     const char* id, uint32_t address, PSXModFunctionFilterCallback callback);
 int psx_mod_function_entry(struct CPUState* cpu, uint32_t address);
+/* Trusted opt-in native function replacements (docs/MOD_FUNCTION_REPLACEMENTS.md).
+ * Register during an opt-in plugin's activation. The callback validates and,
+ * only after completing every caller-visible effect, returns nonzero; the
+ * dispatcher then publishes the caller's $ra (captured at entry) as cpu->pc.
+ * Returning zero runs the original body and must leave all state untouched.
+ * Bounded at 64 word-aligned nonzero addresses; segment aliases share an
+ * entry; re-registering replaces; a NULL callback removes. Cleared with the
+ * mod plan. Emulation thread only. Generated code calls the try function at
+ * every [recompiler] mod_function_entry_funcs entry, after the entry hooks. */
+typedef int (*PSXModFunctionReplacementCallback)(struct CPUState* cpu,
+                                                 uint32_t address);
+int psx_mod_set_function_replacement(uint32_t address,
+                                     PSXModFunctionReplacementCallback callback);
+int psx_mod_try_function_replacement(struct CPUState* cpu, uint32_t address);
+extern uint32_t g_psx_mod_function_replacements;
 /* Trusted game code (not a mod package) may hook guest functions for netplay
  * only. These are independent of the mod package plan, which every online
  * match clears, and run only while netplay is active; offline execution stays

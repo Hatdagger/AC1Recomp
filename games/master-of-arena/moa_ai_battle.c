@@ -589,14 +589,16 @@ static uint32_t moa_random(uint32_t below)
  * pool, "random" (one of them) or unset (Seabed). Left out: the versus maps
  * that hang in the arena engine and the stages not tried.
  *
- * The time limit: the arena engine keeps a countdown (30ths of a second) that
+ * The time limit: the arena engine keeps a countdown in game steps (22 a
+ * second; its HUD shows steps x 100 / 22 as hundredths of a second) that
  * an arena fight leaves at 0, off. Set, the HUD shows it and at 0 the engine
  * itself calls TIME UP and gives the win on AP (a draw when equal), then its
  * usual result and replay. PSX_MOA_AI_TIME = seconds (0 or unset: none). */
 #define MOA_STAGE_P1        0x800453EDu  /* player 1 block +597 */
 #define MOA_STAGE_P2        0x8004578Du  /* player 2 block +597 */
 #define MOA_STAGE_DEFAULT   29u          /* Seabed */
-#define MOA_ENGINE_TIMER    0x8009EFDCu  /* arena engine: countdown, 30ths of a second */
+#define MOA_ENGINE_TIMER    0x8009EFDCu  /* arena engine: countdown, game steps */
+#define MOA_STEPS_PER_SEC   22           /* the engine's step rate; also its HUD's divisor */
 static const uint8_t moa_stage_pool[] = {
     29, 27, 39, 24, 25,                  /* Seabed, Green Silo, Ocean Platform, Scaffold Yard, Garden Plaza */
     20, 22, 33, 36,                      /* Lunar Base, Pillar Hall, Forest, Night City */
@@ -1171,7 +1173,7 @@ static void moa_battle_frame(void)
     if (!window) return;
     window--;
     if (psx_mod_read_half(MOA_ENGINE_TIMER) == 0) {
-        psx_mod_write_half(MOA_ENGINE_TIMER, (uint16_t)(limit * 30));
+        psx_mod_write_half(MOA_ENGINE_TIMER, (uint16_t)(limit * MOA_STEPS_PER_SEC));
         psx_mod_counter_add("moa.ai.time_limit_set", 1);
     }
 }

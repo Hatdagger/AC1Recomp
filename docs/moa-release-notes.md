@@ -14,3 +14,6 @@ This is a test release. Please report problems in this repository's Issues
 - **Demo movie first:** the title screen now plays the demo movie before the
   opening movie (the loop still alternates). Toggle "Demo movie first" on the
   launcher's MODS page; off restores the original order.
+- **AI Battle time limit:** the countdown now starts at the time you pick
+  (2:00 showed about 2:45 before; the arena engine counts 22 steps a second,
+  not 30).

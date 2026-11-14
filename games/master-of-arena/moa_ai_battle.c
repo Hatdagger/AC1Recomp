@@ -721,7 +721,12 @@ static uint32_t moa_autopilot_ticks;
 
 enum { STEP_PRESS, STEP_CHECK, STEP_MAP, STEP_HANDOVER, STEP_FIGHT, STEP_ROW };
 #define MOA_VS_ROW          0x801B2038u  /* versus menu cursor: 0 VS START .. 3 SELECT MAP */
-struct moa_step { uint8_t kind, port; uint16_t buttons, hold, wait; };
+struct moa_step { uint8_t kind, port; uint16_t buttons, hold, wait; uint8_t phase; };
+enum { PH_READY = 0, PH_UNIT1, PH_UNIT2, PH_STAGE, PH_START };
+static const char *const moa_phase_text[] = {
+    "AI BATTLE  Getting ready", "AI BATTLE  Loading unit 1", "AI BATTLE  Loading unit 2",
+    "AI BATTLE  Selecting the stage", "AI BATTLE  Starting the battle" };
+static uint8_t moa_phase_now;                  /* phase given to steps as they are added */
 
 static struct moa_step moa_script[80];
 static int moa_script_len, moa_script_pos;
@@ -742,10 +747,20 @@ static int moa_env_flag(const char *name)
     return v && v[0] == '1';
 }
 
+/* Fast forward while the session runs unattended. Asked for again every frame
+ * (moa_frame_hook) so nothing can quietly drop it. */
+static int moa_ff_want;
+static void moa_set_ff(int on)
+{
+    moa_ff_want = on ? 1 : 0;
+    psx_mod_request_fast_forward(moa_ff_want);
+    if (!moa_ff_want) psx_mod_set_loading_screen(NULL, 0);
+}
+
 static void moa_return_to_launcher(const char *why)
 {
     psx_mod_counter_add(why, 1);
-    psx_mod_request_fast_forward(0);
+    moa_set_ff(0);
     moa_lock = moa_live_lock = 0;
     if (moa_env_flag("PSX_MOA_AI_NO_RETURN")) return;   /* headless tests */
     psx_mod_request_return_to_launcher();
@@ -754,7 +769,7 @@ static void moa_return_to_launcher(const char *why)
 static void moa_add(uint8_t kind, uint8_t port, uint16_t buttons, uint16_t hold, uint16_t wait)
 {
     if (moa_script_len >= (int)(sizeof moa_script / sizeof moa_script[0])) return;
-    struct moa_step st = { kind, port, buttons, hold, wait };
+    struct moa_step st = { kind, port, buttons, hold, wait, moa_phase_now };
     moa_script[moa_script_len++] = st;
 }
 static void moa_tap(uint8_t port, uint16_t buttons, uint16_t wait) { moa_add(STEP_PRESS, port, buttons, 4, wait); }
@@ -776,18 +791,19 @@ static int moa_card_parts(const char *path, uint8_t parts[12])
 static void moa_script_load(unsigned player)
 {
     const uint8_t port = (uint8_t)(player + 1);
+    moa_phase_now = (uint8_t)(player ? PH_UNIT2 : PH_UNIT1);
     moa_add(STEP_ROW, 1, (uint16_t)(1 + player), 0, 0); /* 1P / 2P AC SETUP */
-    moa_tap(1, MOA_PAD_X, 120);
-    for (int i = 0; i < 4; i++) moa_tap(port, MOA_PAD_DOWN, 30);   /* SYSTEM */
-    moa_tap(port, MOA_PAD_X, 120);                      /* SYSTEM: DATA LOAD / OPTION */
-    moa_tap(port, MOA_PAD_X, 180);                      /* DATA LOAD -> SLOT 1 / SLOT 2 */
-    moa_tap(port, MOA_PAD_DOWN, 40);                    /* SLOT 2 */
-    moa_tap(port, MOA_PAD_X, 600);                      /* search the card */
-    if (player) moa_tap(port, MOA_PAD_DOWN, 40);        /* save 2 */
-    moa_tap(port, MOA_PAD_X, 120);                      /* "Load the saved data?" */
-    moa_tap(port, MOA_PAD_X, 700);                      /* Yes, load */
-    moa_tap(port, MOA_PAD_O, 90);                       /* out of SYSTEM */
-    moa_tap(port, MOA_PAD_O, 240);                      /* out of AC SETUP: commits */
+    moa_tap(1, MOA_PAD_X, 70);
+    for (int i = 0; i < 4; i++) moa_tap(port, MOA_PAD_DOWN, 18);   /* SYSTEM */
+    moa_tap(port, MOA_PAD_X, 70);                       /* SYSTEM: DATA LOAD / OPTION */
+    moa_tap(port, MOA_PAD_X, 110);                      /* DATA LOAD -> SLOT 1 / SLOT 2 */
+    moa_tap(port, MOA_PAD_DOWN, 24);                    /* SLOT 2 */
+    moa_tap(port, MOA_PAD_X, 480);                      /* search the card */
+    if (player) moa_tap(port, MOA_PAD_DOWN, 24);        /* save 2 */
+    moa_tap(port, MOA_PAD_X, 70);                       /* "Load the saved data?" */
+    moa_tap(port, MOA_PAD_X, 720);                      /* Yes, load ("Load completed." closes itself) */
+    moa_tap(port, MOA_PAD_O, 50);                       /* out of SYSTEM */
+    moa_tap(port, MOA_PAD_O, 150);                      /* out of AC SETUP: commits */
     moa_add(STEP_CHECK, (uint8_t)player, 0, 0, 0);
 }
 
@@ -797,6 +813,7 @@ static void moa_script_build(void)
     moa_step_time = 0;
     moa_map_presses = 0;
     moa_menu_loaded[0] = moa_menu_loaded[1] = 0;
+    moa_phase_now = PH_READY;
     if (moa_env_flag("PSX_MOA_AI_LOADMENU")) {
         const char *card[2] = { getenv("PSX_MOA_AI_UNIT1"), getenv("PSX_MOA_AI_UNIT2") };
         for (unsigned u = 0; u < 2; u++) moa_expect_set[u] = moa_card_parts(card[u], moa_expect_parts[u]);
@@ -805,10 +822,12 @@ static void moa_script_build(void)
             moa_script_load(1);
         }
     }
+    moa_phase_now = PH_STAGE;
     moa_add(STEP_ROW, 1, 3, 0, 0);                      /* SELECT MAP */
     moa_tap(1, MOA_PAD_X, 40);                          /* arrows on */
     moa_add(STEP_MAP, 1, 0, 0, 0);
     moa_tap(1, MOA_PAD_X, 40);                          /* settle the map */
+    moa_phase_now = PH_START;
     moa_add(STEP_ROW, 1, 0, 0, 0);                      /* VS START */
     if (moa_manual_unit1()) {
         moa_add(STEP_HANDOVER, 1, 0, 0, 0);
@@ -816,6 +835,15 @@ static void moa_script_build(void)
         moa_add(STEP_FIGHT, 1, 0, 0, 0);
         moa_tap(1, MOA_PAD_X, 0);                       /* VS START */
     }
+}
+
+static uint32_t moa_step_budget(const struct moa_step *st);
+static uint32_t moa_script_budget;             /* expected frames for the whole script */
+
+static void moa_script_budget_count(void)
+{
+    moa_script_budget = 0;
+    for (int i = 0; i < moa_script_len; i++) moa_script_budget += moa_step_budget(&moa_script[i]);
 }
 
 static void moa_script_frame(void)
@@ -879,7 +907,7 @@ static void moa_script_frame(void)
             moa_inject[0] = moa_inject[1] = 0;
             moa_lock = 0;
             moa_vs_start_armed = 1;
-            psx_mod_request_fast_forward(0);
+            moa_set_ff(0);
             moa_script_pos = moa_script_len;
             return;
         }
@@ -890,7 +918,7 @@ static void moa_script_frame(void)
         moa_vs_start_armed = 1;
         moa_inject[0] = moa_inject[1] = 0;
         moa_lock = 0;
-        psx_mod_request_fast_forward(0);
+        moa_set_ff(0);
         psx_mod_counter_add("moa.ai.handover_menu", 1);
         moa_script_pos = moa_script_len;
         return;
@@ -936,9 +964,58 @@ static void moa_save_sum_entry(struct CPUState *cpu, uint32_t address)
     psx_mod_counter_add("moa.ai.save_settings_kept", 1);
 }
 
+/* The loading screen while the session runs unattended: the script's stage
+ * and how far through its frame budget it is; "battle in progress" during
+ * an AI vs AI fight. */
+static uint32_t moa_screen_frames;             /* frames since the menu module came up */
+
+static uint32_t moa_step_budget(const struct moa_step *st)
+{
+    switch (st->kind) {
+    case STEP_PRESS: return (uint32_t)st->hold + st->wait;
+    case STEP_ROW:   return st->buttons == 1 ? 760u : 60u;   /* the first waits for the menu */
+    case STEP_MAP:   return 160u;
+    default:         return 1u;
+    }
+}
+
+static void moa_loading_frame(void)
+{
+    if (!moa_ff_want) { psx_mod_set_loading_screen(NULL, 0); return; }
+    moa_screen_frames++;
+    if (moa_live_lock && !moa_lock) {
+        static const char *const dots[] = { "", ".", "..", "..." };
+        char t[64];
+        snprintf(t, sizeof t, "AI BATTLE  Battle in progress%s", dots[(moa_screen_frames / 30u) % 4u]);
+        psx_mod_set_loading_screen(t, -1);
+        return;
+    }
+    if (!moa_lock || !moa_script_len) {                 /* boot, up to the versus menu */
+        const uint32_t boot = moa_screen_frames * 8u / 900u;
+        psx_mod_set_loading_screen("AI BATTLE  Starting up", (int)(boot < 8u ? boot : 8u));
+        return;
+    }
+    uint32_t done = 0;
+    for (int i = 0; i < moa_script_pos && i < moa_script_len; i++) done += moa_step_budget(&moa_script[i]);
+    if (moa_script_pos < moa_script_len) {
+        const uint32_t cur = moa_step_budget(&moa_script[moa_script_pos]);
+        done += moa_step_time < cur ? moa_step_time : cur;
+    }
+    const uint32_t total = moa_script_budget ? moa_script_budget : 1u;
+    int pct = 8 + (int)((uint64_t)done * 91u / total);
+    if (pct > 99) pct = 99;
+    const int ph = moa_script_pos < moa_script_len ? moa_script[moa_script_pos].phase : PH_START;
+    psx_mod_set_loading_screen(moa_phase_text[ph], pct);
+}
+
 static void moa_frame_hook(void)
 {
     if (!moa_ai_battle_on()) return;
+    moa_loading_frame();
+    if (moa_ff_want && !psx_mod_fast_forward_requested()) {
+        psx_mod_counter_add("moa.ai.ff_reasserted", 1);
+        psx_mod_request_fast_forward(1);
+    }
     moa_script_frame();
     /* AI vs AI: VS START was pressed but no fight began (the game refused a
      * build, say): stop fast forward and give the player the controller. */
@@ -946,7 +1023,7 @@ static void moa_frame_hook(void)
     if (moa_ai_frames_seen != seen) { seen = moa_ai_frames_seen; moa_live_wait = 0; }
     else if (moa_live_lock && !moa_lock && moa_ai_frames_seen == 0 && ++moa_live_wait > 1800u) {
         moa_live_lock = 0;
-        psx_mod_request_fast_forward(0);
+        moa_set_ff(0);
         psx_mod_counter_add("moa.ai.fight_never_started", 1);
     }
 }
@@ -964,7 +1041,7 @@ static int moa_sampler_filter(struct CPUState *cpu, uint32_t address)
         return 0;
     if (psx_mod_read_byte(MOA_REPLAY_FLAG) != 0) {
         moa_live_lock = 0;
-        psx_mod_request_fast_forward(0);
+        moa_set_ff(0);
         psx_mod_counter_add("moa.ai.handover_replay", 1);
         return 0;                                       /* the player's own controller */
     }
@@ -1000,6 +1077,8 @@ static void moa_session_check(void)
     moa_menu_loaded[0] = moa_menu_loaded[1] = 0;
     moa_inject[0] = moa_inject[1] = 0;
     moa_ai_frames_seen = 0;
+    moa_ff_want = 0;
+    moa_screen_frames = 0;
     moa_load_step = 0;
 }
 
@@ -1016,7 +1095,7 @@ static void moa_menu_entry(struct CPUState *cpu, uint32_t address)
     }
     moa_autopilot = 1;
     moa_autopilot_ticks = 0;
-    psx_mod_request_fast_forward(1);
+    moa_set_ff(1);
     psx_mod_counter_add("moa.ai.menu_entry", 1);
 }
 
@@ -1028,10 +1107,11 @@ static void moa_menu_versus_entry(struct CPUState *cpu, uint32_t address)
     if (!moa_ai_battle_on() || moa_reached_versus) return;
     moa_reached_versus = 1;
     psx_mod_write_word(MOA_MENU_FLAGS, psx_mod_read_word(MOA_MENU_FLAGS) | 0x200u);
-    if (moa_env_flag("PSX_MOA_AI_NOSCRIPT")) { psx_mod_request_fast_forward(0); return; }  /* tests */
+    if (moa_env_flag("PSX_MOA_AI_NOSCRIPT")) { moa_set_ff(0); return; }  /* tests */
     moa_script_build();
+    moa_script_budget_count();
     moa_lock = 1;
-    psx_mod_request_fast_forward(1);
+    moa_set_ff(1);
     psx_mod_counter_add("moa.ai.script_start", 1);
 }
 

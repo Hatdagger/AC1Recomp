@@ -6,6 +6,19 @@ your own copy of Armored Core: Master of Arena (USA).**
 This is a test release. Please report problems in this repository's Issues
 (what you did, what you saw, Windows or Linux/Steam Deck).
 
+## What's new in 0.7.2
+
+- **AI Battle loading screen:** while the battle is set up (and, in AI vs AI,
+  while the fight runs before the replay) the game is hidden behind a black
+  screen with a progress bar: Starting up, Loading unit 1, Loading unit 2,
+  Selecting the stage, then "Battle in progress". It goes away when you take
+  over.
+- **Faster setup:** fast forward now spends almost no time drawing, and the
+  setup steps wait less between menu presses (about 15% fewer game frames to
+  reach the battle).
+- "Fast forward: off" shows when the game hands control back, and the log
+  notes when AI Battle's fast forward starts and stops.
+
 ## What's new in 0.7.1
 
 - **AI Battle → BUILD NEW CARD** right on the AI Battle page, for the AC

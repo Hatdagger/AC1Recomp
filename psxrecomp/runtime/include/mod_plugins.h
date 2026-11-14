@@ -82,6 +82,11 @@ int psx_game_register_offline_function_filter(
  * should take over. Ignored under netplay; cleared when a session ends. */
 void psx_mod_request_fast_forward(int on);
 int psx_mod_fast_forward_requested(void);
+/* Offline only. A loading screen over an unattended stretch: while `text` is
+ * set, the game picture is hidden behind a black screen showing `text` and,
+ * for percent 0..100, a progress bar (percent < 0: no bar). NULL or "" ends
+ * it. Cleared when a session ends. */
+void psx_mod_set_loading_screen(const char *text, int percent);
 /* Offline only. End the session and reopen the launcher (on its dashboard);
  * starting from the launcher begins a new session. Takes effect at the next
  * scheduler escape point. */

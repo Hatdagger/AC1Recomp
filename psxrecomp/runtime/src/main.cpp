@@ -677,7 +677,14 @@ static int g_fast_forward_speed = 4;  /* [hotkeys] fast_forward_speed, 2..16 */
 /* Fast forward a trusted plugin asks for (MoA AI Battle sets up and plays its
  * match unattended). Uncapped while set; cleared at every session start. */
 static int g_mod_fast_forward = 0;
-extern "C" void psx_mod_request_fast_forward(int on) { g_mod_fast_forward = on ? 1 : 0; }
+extern "C" void psx_mod_request_fast_forward(int on) {
+    const int v = on ? 1 : 0;
+    if (v != g_mod_fast_forward) {
+        std::fprintf(stdout, "psxrecomp: plugin fast forward %s\n", v ? "requested" : "released");
+        std::fflush(stdout);
+    }
+    g_mod_fast_forward = v;
+}
 extern "C" int psx_mod_fast_forward_requested(void) { return g_mod_fast_forward; }
 
 /* An offline session a trusted plugin ends: back to the launcher, which opens
@@ -686,6 +693,40 @@ static int g_offline_launcher_return = 0;
 extern "C" void psx_mod_request_return_to_launcher(void) {
     g_offline_launcher_return = 1;
     psx_request_return_to_lobby();   /* the same scheduler escape */
+}
+
+/* A plugin's loading screen: while set, the game picture is replaced by a
+ * black screen with the message and a progress bar in the OSD box, redrawn
+ * about ten times a second of wall time. */
+static int g_mod_loading = 0;
+static uint64_t s_mod_loading_last_ms = 0;
+static char s_mod_loading_text[200];
+extern "C" void psx_mod_set_loading_screen(const char *text, int percent) {
+    if (!text || !text[0] || psx_netplay_active()) {
+        if (g_mod_loading) {
+            g_mod_loading = 0;
+            s_mod_loading_text[0] = '\0';
+            host_osd_set_status(NULL);
+        }
+        return;
+    }
+    char buf[sizeof s_mod_loading_text];
+    if (percent >= 0) {
+        if (percent > 100) percent = 100;
+        char bar[33];
+        const int cells = 30, full = percent * cells / 100;
+        for (int i = 0; i < cells; i++) bar[i] = i < full ? '#' : '.';
+        bar[cells] = '\0';
+        std::snprintf(buf, sizeof buf, "%s\n[%s] %3d%%", text, bar, percent);
+    } else {
+        std::snprintf(buf, sizeof buf, "%s", text);
+    }
+    g_mod_loading = 1;
+    if (std::strcmp(buf, s_mod_loading_text) != 0) {
+        if (std::getenv("PSX_LOADING_SCREEN_LOG")) { std::fprintf(stdout, "loading: %s\n", buf); std::fflush(stdout); }
+        std::snprintf(s_mod_loading_text, sizeof s_mod_loading_text, "%s", buf);
+        host_osd_set_status(s_mod_loading_text);
+    }
 }
 
 static int manual_fast_forward_multiplier(void) {
@@ -9824,10 +9865,28 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
         const bool kb_turbo = host_hotkey_input_focused() &&
             host_keymap_down(HOST_KEYMAP_TURBO, host_keys, (int)SDL_GetModState());
         const bool mod_ff = g_mod_fast_forward && !psx_netplay_active();
+        {
+            /* Say when a plugin's fast forward starts and stops (and why it
+             * would be held back), on screen and in the log. */
+            static int s_mod_ff_shown = -1;
+            const int state = g_mod_fast_forward ? (psx_netplay_active() ? 2 : 1) : 0;
+            if (state != s_mod_ff_shown) {
+                /* "on" is the plugin's loading screen; say "held" and "off". */
+                if (state == 2 || (state == 0 && s_mod_ff_shown > 0))
+                    host_osd_push(state == 2 ? "Fast forward held: netplay active"
+                                             : "Fast forward: off", 1500);
+                std::fprintf(stdout, "psxrecomp: plugin fast forward state=%d (netplay_active=%d)\n",
+                             state, psx_netplay_active() ? 1 : 0);
+                std::fflush(stdout);
+                s_mod_ff_shown = state;
+            }
+        }
         if (kb_turbo || g_manual_turbo_latched || mod_ff ||
             hotkey_shortcut_down(PSX_ASSIST_BIND_FAST_FORWARD, g_hotkey_pad_fast_forward)) {
             const int mult = mod_ff ? -1 : manual_fast_forward_multiplier();
-            const int present_every = (mult < 0) ? 8 : (mult <= 2 ? 2 : (mult <= 4 ? 4 : 8));
+            /* A plugin's unattended fast forward shows one frame in 30 (as
+             * turbo-through-loads does): the host time goes to the game. */
+            const int present_every = mod_ff ? 30 : (mult < 0) ? 8 : (mult <= 2 ? 2 : (mult <= 4 ? 4 : 8));
             manual_turbo_active = true;
             if (!s_manual_ff_active) {
                 s_manual_ff_active = 1;
@@ -9851,8 +9910,17 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
                                          &g_runtime_perf.pacer_ticks);
                 latency_ring_mark(LAT_PACED);
             }
-            turbo_skip = (turbo_skip + 1) % present_every;
-            if (turbo_skip != 0) {
+            bool skip_present;
+            if (mod_ff && g_mod_loading) {
+                /* Loading screen: redraw it ~10 times a second of wall time. */
+                const uint64_t now = (uint64_t)SDL_GetTicks();
+                skip_present = now - s_mod_loading_last_ms < 100u;
+                if (!skip_present) s_mod_loading_last_ms = now;
+            } else {
+                turbo_skip = (turbo_skip + 1) % present_every;
+                skip_present = turbo_skip != 0;
+            }
+            if (skip_present) {
                 ep.skip_pace = 1;
                 return ep;  /* skip render this frame */
             }
@@ -10054,7 +10122,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
         gpu_get_display_info(&di);
         depth24_frame = di.depth24 != 0;
         depth24_cutover_tick(depth24_frame ? 1 : 0);
-        if (di.disabled || di.width == 0 || di.height == 0) {
+        if (di.disabled || di.width == 0 || di.height == 0 || g_mod_loading) {
             smooth_60_present(nullptr, 0, 0, false);
             present_ring_commit(PRES_PATH_BLANK, (uint16_t)di.width,
                                 (uint16_t)di.height, 0);
@@ -10062,7 +10130,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
             /* After savestate load, always restage once even if we blanked
              * earlier in the session — otherwise the window keeps a stale
              * pre-load frame while vblanks (and FPS) keep advancing. */
-            if (!s_disabled_frame_presented || s_force_present_after_load) {
+            if (!s_disabled_frame_presented || s_force_present_after_load || g_mod_loading) {
                 s_disabled_frame_presented = true;
                 s_force_present_after_load = false;
                 if (g_gl_active) {
@@ -21444,6 +21512,7 @@ soft_return_lobby:
     const bool offline_return = g_offline_launcher_return != 0;
     g_offline_launcher_return = 0;
     g_mod_fast_forward = 0;
+    psx_mod_set_loading_screen(NULL, 0);
     teardown_game_session_keep_lobby();
     PSXRecompV4::mod_runtime_end_netplay();
 #if defined(RECOMP_LAUNCHER) && defined(PSX_HAS_LOBBY_CLIENT)

@@ -800,6 +800,7 @@ static int moa_ff_want;
 static uint64_t moa_outro_ms;                  /* replay started: the screen holds, then fades */
 static int moa_decided;                        /* the fight is over (result screen) */
 static int moa_timer_ran, moa_time_up;         /* the countdown ran this fight / reached its end */
+static int moa_limit_armed;                    /* the fight's countdown was set up this session */
 static void moa_set_ff(int on)
 {
     moa_ff_want = on ? 1 : 0;
@@ -1032,10 +1033,11 @@ static void moa_screen_units(void)
     moa_screen_set_units(&unit[0], &unit[1]);
 }
 
-/* The loading screen while the session runs unattended: "Gathering battle
- * simulation data..." with a bar for the setup (first 30%) and the fight
- * against its time limit, "Simulation complete" once the fight is decided,
- * held a moment and faded out as the replay starts. START or O on
+/* The loading screen while the session runs unattended, in four steps:
+ * Setting up (boot and intros to the versus menu), Staging (loading the
+ * units, VS START), Gathering battle simulation data (the fight, the bar
+ * following its time limit) and Simulation complete (held a moment, then
+ * faded out as the replay starts). START or O on
  * controller 1 gives up and goes back to the launcher. */
 static uint32_t moa_screen_frames;             /* frames since the menu module came up */
 #define MOA_OUTRO_HOLD_MS 700u
@@ -1050,10 +1052,12 @@ static uint32_t moa_step_budget(const struct moa_step *st)
     }
 }
 
-static void moa_loading_show(const char *log_text, int permille, float fade)
+static void moa_loading_show(const char *log_text, int step, int permille, float fade)
 {
-    const char *status = moa_decided || moa_outro_ms ? "Simulation complete"
-                                                      : "Gathering battle simulation data...";
+    static const char *const status_text[MOA_STEP_COUNT] = {
+        "Setting up...", "Staging...", "Gathering battle simulation data...", "Simulation complete" };
+    if (moa_decided || moa_outro_ms) step = MOA_STEP_COMPLETE;
+    const char *status = status_text[step];
     psx_mod_set_loading_screen(log_text, permille >= 0 ? permille / 10 : -1);
     if (!moa_screen_ready()) {
         uint32_t bytes = 0;
@@ -1068,7 +1072,7 @@ static void moa_loading_show(const char *log_text, int permille, float fade)
     int ww = 0, wh = 0, w = 0, h = 0;
     psx_mod_window_size(&ww, &wh);
     const int limit = moa_manual_unit1() ? 0 : moa_time_limit_secs();
-    const uint32_t *px = moa_screen_render(ww, wh, status, permille, limit, fade, now, &w, &h);
+    const uint32_t *px = moa_screen_render(ww, wh, status, step, permille, limit, fade, now, &w, &h);
     if (px) psx_mod_set_loading_image(px, w, h);
 }
 
@@ -1083,28 +1087,29 @@ static void moa_loading_frame(void)
         }
         const float fade = t <= MOA_OUTRO_HOLD_MS ? 0.0f
                          : (float)(t - MOA_OUTRO_HOLD_MS) / (float)MOA_OUTRO_FADE_MS;
-        moa_loading_show("AI BATTLE  Simulation complete", 1000, fade);
+        moa_loading_show("AI BATTLE  Simulation complete", MOA_STEP_COMPLETE, 1000, fade);
         return;
     }
     if (!moa_ff_want) { psx_mod_set_loading_screen(NULL, 0); return; }
     moa_screen_frames++;
     if (moa_live_lock && !moa_lock) {                   /* the fight */
-        int permille = 300;
+        int permille = 350;
         const int limit = moa_time_limit_secs();
         if (moa_decided) permille = 1000;
         else if (limit > 0 && moa_ai_frames_seen > 0) {
             const uint32_t left = psx_mod_read_half(MOA_ENGINE_TIMER);
             const uint32_t total = (uint32_t)limit * 30u;
-            if (left > 0 && left <= total) permille = 300 + (int)((total - left) * 700u / total);
+            if (left > 0 && left <= total) permille = 350 + (int)((total - left) * 650u / total);
         } else if (moa_ai_frames_seen > 0) {            /* no limit: creep towards the end */
-            permille = 300 + (int)(650u - 650u * 3000u / (3000u + moa_ai_frames_seen));
+            permille = 350 + (int)(600u - 600u * 3000u / (3000u + moa_ai_frames_seen));
         }
-        moa_loading_show("AI BATTLE  Battle in progress", permille, 0.0f);
+        moa_loading_show("AI BATTLE  Battle in progress",
+                         moa_ai_frames_seen > 0 ? MOA_STEP_GATHERING : MOA_STEP_STAGING, permille, 0.0f);
         return;
     }
     if (!moa_lock || !moa_script_len) {                 /* boot, up to the versus menu */
-        const uint32_t boot = moa_screen_frames * 40u / 900u;
-        moa_loading_show("AI BATTLE  Starting up", (int)(boot < 40u ? boot : 40u), 0.0f);
+        const uint32_t boot = moa_screen_frames * 150u / 900u;
+        moa_loading_show("AI BATTLE  Starting up", MOA_STEP_SETUP, (int)(boot < 150u ? boot : 150u), 0.0f);
         return;
     }
     uint32_t done = 0;
@@ -1114,10 +1119,10 @@ static void moa_loading_frame(void)
         done += moa_step_time < cur ? moa_step_time : cur;
     }
     const uint32_t total = moa_script_budget ? moa_script_budget : 1u;
-    int permille = 40 + (int)((uint64_t)done * 260u / total);
-    if (permille > 300) permille = 300;
+    int permille = 150 + (int)((uint64_t)done * 200u / total);
+    if (permille > 350) permille = 350;
     const int ph = moa_script_pos < moa_script_len ? moa_script[moa_script_pos].phase : PH_START;
-    moa_loading_show(moa_phase_text[ph], permille, 0.0f);
+    moa_loading_show(moa_phase_text[ph], MOA_STEP_STAGING, permille, 0.0f);
 }
 
 /* START or O pressed (not held from before) on controller 1 while the
@@ -1146,13 +1151,15 @@ static void moa_battle_frame(void)
     }
     const int limit = moa_manual_unit1() ? 0 : moa_time_limit_secs();
     if (!limit || psx_mod_read_word(MOA_AI_FRAME) != MOA_SIG_AI_FRAME) return;
-    static uint32_t window, seen_frames;
+    static uint32_t window;
     static int was_replay;
     const int replay = psx_mod_read_byte(MOA_REPLAY_FLAG) != 0;
     if (replay && !was_replay) window = 120u;           /* replay starts */
     was_replay = replay;
-    if (moa_ai_frames_seen > 0 && seen_frames == 0) window = 120u;   /* fight starts */
-    seen_frames = moa_ai_frames_seen;
+    if (moa_ai_frames_seen > 0 && !moa_limit_armed) {   /* fight starts (once a session) */
+        moa_limit_armed = 1;
+        window = 120u;
+    }
     if (!replay && moa_live_lock) {                     /* the fight's countdown ran out */
         const uint16_t left = psx_mod_read_half(MOA_ENGINE_TIMER);
         if (left > 1u) moa_timer_ran = 1;
@@ -1250,6 +1257,7 @@ static void moa_session_check(void)
     moa_outro_ms = 0;
     moa_decided = 0;
     moa_timer_ran = moa_time_up = 0;
+    moa_limit_armed = 0;
     moa_stage_pending = 0;
     moa_screen_frames = 0;
     moa_load_step = 0;

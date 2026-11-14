@@ -9902,10 +9902,10 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
             static int s_mod_ff_shown = -1;
             const int state = g_mod_fast_forward ? (psx_netplay_active() ? 2 : 1) : 0;
             if (state != s_mod_ff_shown) {
-                /* "on" is the plugin's loading screen; say "held" and "off". */
-                if (state == 2 || (state == 0 && s_mod_ff_shown > 0))
-                    host_osd_push(state == 2 ? "Fast forward held: netplay active"
-                                             : "Fast forward: off", 1500);
+                /* "on" and "off" stay quiet (the plugin's loading screen
+                 * shows the unattended stretch); only "held" is said. */
+                if (state == 2)
+                    host_osd_push("Fast forward held: netplay active", 1500);
                 std::fprintf(stdout, "psxrecomp: plugin fast forward state=%d (netplay_active=%d)\n",
                              state, psx_netplay_active() ? 1 : 0);
                 std::fflush(stdout);

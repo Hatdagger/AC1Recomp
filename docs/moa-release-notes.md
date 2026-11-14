@@ -6,6 +6,19 @@ your own copy of Armored Core: Master of Arena (USA).**
 This is a test release. Please report problems in this repository's Issues
 (what you did, what you saw, Windows or Linux/Steam Deck).
 
+## What's new in 0.8.1
+
+- **Time limit fix:** the limit only worked for the first battle after
+  starting the program; every later battle (after returning to the launcher)
+  ran with no timer, so fights went on for minutes. It is now set for every
+  battle.
+- **Loading screen steps:** the screen now says which step it is on, with a
+  row of the four steps under the bar: 1 Setting up (intros to the versus
+  menu), 2 Staging (loading the units), 3 Gathering battle simulation data
+  (the fight), 4 Simulation complete.
+- The "Fast forward: off" message no longer pops up when AI Battle hands
+  control back.
+
 ## What's new in 0.8.0
 
 - **Time limit for AI vs AI:** fights now end. The arena engine's own

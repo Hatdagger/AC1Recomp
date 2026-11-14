@@ -250,7 +250,7 @@ static uint32_t add_glow(uint32_t c, float g)
 }
 
 const uint32_t *moa_screen_render(int win_w, int win_h, const char *status,
-                                  int permille, int limit_secs, float fade,
+                                  int step, int permille, int limit_secs, float fade,
                                   uint64_t now_ms, int *out_w, int *out_h)
 {
     *out_w = *out_h = 0;
@@ -314,10 +314,27 @@ const uint32_t *moa_screen_render(int win_w, int win_h, const char *status,
             fill(s_frame, bx0 + 2, by + 2, fx1, by + 9, rgb(255, 220, 170));
         }
     }
+    {   /* the steps: done dim amber, current bright, to come grey */
+        static const char *const names[MOA_STEP_COUNT] = {
+            "1 SETTING UP", "2 STAGING", "3 BATTLE DATA", "4 COMPLETE" };
+        int widths = 0;
+        for (int i = 0; i < MOA_STEP_COUNT; i++) widths += text_width(names[i], 1);
+        const int gap = 34;
+        int x = cx - (widths + gap * (MOA_STEP_COUNT - 1)) / 2;
+        for (int i = 0; i < MOA_STEP_COUNT; i++) {
+            const int w = text_width(names[i], 1);
+            const uint32_t c = i == step ? rgb(255, 210, 140)
+                             : i < step  ? rgb(150, 100, 40) : rgb(90, 94, 102);
+            text(s_frame, NULL, names[i], x + w / 2, 660, 1, c);
+            if (i == step) fill(s_frame, x, 670, x + w, 672, rgb(255, 150, 30));
+            if (i + 1 < MOA_STEP_COUNT) text(s_frame, NULL, ">", x + w + gap / 2, 660, 1, rgb(70, 74, 82));
+            x += w + gap;
+        }
+    }
     if (limit_secs > 0) {
         char line[32];
         snprintf(line, sizeof line, "TIME LIMIT %d:%02d", limit_secs / 60, limit_secs % 60);
-        text(s_frame, NULL, line, cx, 670, 2, rgb(150, 156, 168));
+        text(s_frame, NULL, line, cx, 696, 1, rgb(130, 136, 148));
     }
     if (fade > 0.0f) {
         const float k = fade >= 1.0f ? 0.0f : 1.0f - fade;

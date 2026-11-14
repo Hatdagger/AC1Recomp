@@ -6,6 +6,22 @@ your own copy of Armored Core: Master of Arena (USA).**
 This is a test release. Please report problems in this repository's Issues
 (what you did, what you saw, Windows or Linux/Steam Deck).
 
+## What's new in 0.8.2
+
+- **Fast loading:** the emulated CD drive now delivers game data much faster
+  (16 sectors a frame instead of 2.5), so loading screens are far shorter.
+  Music, voice and movies keep their normal timing. On by default; turn it off
+  with "Fast loading" on the launcher's MODS page. It stays off during
+  online play.
+- **Speed:** game code that has mod hooks in it now runs compiled instead of
+  interpreted (this was failing to build before), which may help on the Steam
+  Deck.
+- **More memory for mods:** the game now has room to grow to an original-Xbox
+  sized budget (32 MB of game memory, 24 MB of textures, 8 MB of sound). Nothing
+  uses it yet; it is groundwork for bigger content later. Save states made with
+  older versions while Project Phantasma content was installed will not load;
+  memory card saves are not affected.
+
 ## What's new in 0.8.1
 
 - **Time limit fix:** the limit only worked for the first battle after

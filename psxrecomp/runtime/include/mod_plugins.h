@@ -148,6 +148,10 @@ int psx_mod_read_disc_file(const char* path, void* buffer, uint32_t capacity,
 /* Effective-disc LBA and byte size of a file (directory records patched by
  * active mods apply, so a relocated file reports its new extent). */
 int psx_mod_disc_file_extent(const char* path, uint32_t* lba, uint32_t* size);
+/* `count` 2048-byte user-data sectors of the effective disc from `lba`, without
+ * touching guest CD state or timing. Form 2 (XA/STR) sectors fail. Emulation
+ * thread only. */
+int psx_mod_read_disc_sectors(uint32_t lba, uint32_t count, void* buffer);
 /* Experimental retained-texture service (currently OpenGL only). IDs are
  * nonzero, stable game-owned identities, NOT GL names. Banks are immutable
  * 16-bit PS1 texels/indices with a caller-selected row pitch (width).

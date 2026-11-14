@@ -1,0 +1,25 @@
+format_version = 5
+id = "acrecomp.moa.instant-loading"
+version = "1.0.0"
+name = "Master of Arena: Instant Loading"
+author = "AC1Recomp"
+description = "Game data loads straight from the disc image instead of through the emulated CD drive, so loading screens last only as long as the game's own unpacking. Music, voice and movie streaming keep using the drive. No disc or game data is modified. Off during online play."
+resolver = "declarative"
+save_compatibility = "shared"
+
+[[target]]
+game_id = "SLUS-01030"
+
+[[target]]
+game_id = "SLUS-01081"
+
+[[feature]]
+id = "instant-loading"
+name = "Instant loading"
+description = "Reads game data straight from the disc image, skipping the emulated drive's seek and read time. Turn off for original load times."
+group = "Quality of Life"
+default_enabled = true
+
+[[plugin]]
+feature = "instant-loading"
+id = "moa.instant-loading"

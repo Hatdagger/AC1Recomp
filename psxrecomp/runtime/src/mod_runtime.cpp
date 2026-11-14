@@ -2748,6 +2748,36 @@ extern "C" int psx_mod_disc_file_extent(const char* path, uint32_t* lba,
     } catch (...) { return 0; }
 }
 
+/* Effective-disc user-data sectors by LBA (instant loading). The reader stays
+ * open between calls and reopens only when the mounted image changes; the OS
+ * page cache keeps the image in memory after the first read. */
+extern "C" int psx_mod_read_disc_sectors(uint32_t lba, uint32_t count,
+                                         void* buffer) {
+    using namespace PSXRecompV4;
+    if (!buffer || !count || count > 4096u) return 0;
+    try {
+        static std::unique_ptr<PS1::ISOReader> reader;
+        static std::string open_path;
+        const auto& s = state();
+        const auto& mount = s.effective_disc_path.empty() ? s.disc_path : s.effective_disc_path;
+        if (mount.empty()) return 0;
+        const std::string path = mount.string();
+        if (!reader || open_path != path) {
+            reader.reset();
+            open_path.clear();
+            auto fresh = std::make_unique<PS1::ISOReader>();
+            if (!fresh->Open(path)) return 0;
+            reader = std::move(fresh);
+            open_path = path;
+        }
+        uint8_t* out = static_cast<uint8_t*>(buffer);
+        for (uint32_t i = 0; i < count; ++i)
+            if (!read_effective_user_sector(*reader, lba + i, out + size_t(i) * 2048u))
+                return 0;
+        return 1;
+    } catch (...) { return 0; }
+}
+
 namespace PSXRecompV4 {
 /* Whole effective sectors, including the bytes after end-of-file in the last
  * sector: a sector-granular read by the game receives exactly these. */

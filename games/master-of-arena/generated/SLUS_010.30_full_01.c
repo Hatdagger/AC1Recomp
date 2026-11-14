@@ -18194,6 +18194,8 @@ void func_800167A0(CPUState* cpu)
         }
     }
     debug_server_log_call_entry(0x800167A0u);
+    if (psx_mod_function_entry(cpu, 0x800167A0u)) return;  /* trusted opt-in game-mod hook */
+    if (psx_mod_try_function_replacement(cpu, 0x800167A0u)) return;
     /* Address: 0x800167A0, Size: 200 bytes, Blocks: 16 */
 
 block_800167A0:

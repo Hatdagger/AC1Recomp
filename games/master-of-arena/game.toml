@@ -60,6 +60,8 @@ mod_function_entry_funcs = [
     "0x80055768", "0x8008DC98", "0x8008D4AC", "0x8007F69C",
     # menu: save checksum (AI Battle keeps the settings on DATA LOAD)
     "0x80070F1C",
+    # boot exe: archive sector read (instant loading, mod_builtin_moa_loading.c)
+    "0x800167A0",
 ]
 
 # Instruction hooks of the game's plugins (psxrecomp/runtime/src/

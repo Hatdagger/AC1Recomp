@@ -78,6 +78,13 @@ mod_instruction_sites = [
     # Project Phantasma missions: mission screen (menu), mission loads (engine)
     "0x8009417C", "0x800943AC",
     "0x800556B8", "0x800556D4", "0x80055874", "0x80055894",
+    # Project Phantasma missions: chosen slot, results, leaving the screen (menu)
+    "0x800976C0", "0x80094068", "0x800940C8", "0x80095730",
+    # mission source picker (menu: mission fade, Ex Arena category list)
+    "0x800943D8", "0x800BA6B8", "0x800BA6E0", "0x800BA750", "0x800BAFC8",
+    "0x800BB4C4", "0x800BB5B0", "0x800BB1B0", "0x800BB398", "0x800BB3B0",
+    "0x800BB864", "0x800BB7E8", "0x800BB920", "0x800BB6D8", "0x800BB5FC",
+    "0x800BA784",
 ]
 
 [runtime]

@@ -11,3 +11,6 @@ This is a test release. Please report problems in this repository's Issues
 - **Updater:** mods that ship with a new release (in Mods/bundled) are now
   installed when you update from the launcher. Your own mods are still left
   alone.
+- **Demo movie first:** the title screen now plays the demo movie before the
+  opening movie (the loop still alternates). Toggle "Demo movie first" on the
+  launcher's MODS page; off restores the original order.

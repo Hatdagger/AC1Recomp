@@ -1,0 +1,25 @@
+format_version = 5
+id = "acrecomp.moa.intro-order"
+version = "1.0.0"
+name = "Master of Arena: Demo Movie First"
+author = "AC1Recomp"
+description = "The title screen's attract loop plays the demo movie first and the opening movie second, instead of the opening first after every boot. The loop still alternates between the two. No disc or game data is modified."
+resolver = "declarative"
+save_compatibility = "shared"
+
+[[target]]
+game_id = "SLUS-01030"
+
+[[target]]
+game_id = "SLUS-01081"
+
+[[feature]]
+id = "intro-order"
+name = "Demo movie first"
+description = "Plays the demo movie before the opening movie on the title screen. Turn off for the original order."
+group = "Quality of Life"
+default_enabled = true
+
+[[plugin]]
+feature = "intro-order"
+id = "moa.intro-order"

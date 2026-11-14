@@ -27,6 +27,10 @@
 #include <time.h>
 #include <stdio.h>
 #include <dirent.h>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 
 #include "moa_card.h"
 #include "moa_screen.h"
@@ -988,11 +992,16 @@ static void moa_save_sum_entry(struct CPUState *cpu, uint32_t address)
     psx_mod_counter_add("moa.ai.save_settings_kept", 1);
 }
 
+/* A wall clock in milliseconds (the loading screen's pulse and fade). */
 static uint64_t moa_now_ms(void)
 {
+#ifdef _WIN32
+    return (uint64_t)GetTickCount64();
+#else
     struct timespec ts;
-    if (timespec_get(&ts, TIME_UTC) != TIME_UTC) return 0;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
     return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+#endif
 }
 
 /* The picture's units: the session's two cards (none for arena opponents). */

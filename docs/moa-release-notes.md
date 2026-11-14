@@ -6,6 +6,27 @@ your own copy of Armored Core: Master of Arena (USA).**
 This is a test release. Please report problems in this repository's Issues
 (what you did, what you saw, Windows or Linux/Steam Deck).
 
+## What's new in 0.8.0
+
+- **Time limit for AI vs AI:** fights now end. The arena engine's own
+  countdown is switched on (TIME LIMIT on the AI Battle page: 2:00 by default,
+  5:00 or NONE); at TIME UP the game gives the win to the AC with more AP (a
+  draw when equal) and goes to the replay as usual. Player vs AI has no limit.
+- **New stages:** the stage is now set directly for the fight, which opens up
+  arena-only stages. Pool: Seabed (the new default), Green Silo, Ocean
+  Platform, Scaffold Yard, Garden Plaza, Lunar Base, Pillar Hall, Forest,
+  Night City, and RANDOM among them. Previews come from your disc.
+- **Faster setup:** the SELECT MAP steps are gone from the automatic setup.
+- **New loading screen:** steel panel background, both units' emblems with AC
+  name, pilot and AI style, "Gathering battle simulation data..." in the
+  game's own font with a pulsing glow and a bar that follows the time limit,
+  then "Simulation complete" fading into the replay. Fills widescreen
+  windows.
+- **Cancel:** press START or O on the loading screen to go back to the
+  launcher.
+- **Fix:** loading the battle cards no longer resets your sound volume,
+  vibration and other option settings.
+
 ## What's new in 0.7.2
 
 - **AI Battle loading screen:** while the battle is set up (and, in AI vs AI,

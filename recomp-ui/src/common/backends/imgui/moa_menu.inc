@@ -387,22 +387,36 @@ static void draw_unit(const Gfx& g, float x, int unit) {
 
 /* ---- stage and launch ---- */
 
-/* The versus maps offered: 9 (the default), 1, 3, 6, then RANDOM (one of
- * those). Maps 4, 5, 7 and 8 hang at match start in testing; 2 and 10 are
- * left out by choice. */
-static const int kStages[] = { 9, 1, 3, 6, 0 };
+/* The stages offered, by the id the fight loads (20..39; the game plugin
+ * writes it after VS START, so arena-only stages work too): Seabed (the
+ * default), the other arena stages tried, the versus maps that run in the
+ * arena engine, then RANDOM (one of them). Versus maps 4, 5, 7 and 8 hang in
+ * the arena engine; the rest were not picked. Same pool as moa_ai_battle.c. */
+static const struct { int id; const char* name; } kStages[] = {
+    { 29, "SEABED" }, { 27, "GREEN SILO" }, { 39, "OCEAN PLATFORM" }, { 24, "SCAFFOLD YARD" },
+    { 25, "GARDEN PLAZA" }, { 20, "LUNAR BASE" }, { 22, "PILLAR HALL" }, { 33, "FOREST" },
+    { 36, "NIGHT CITY" }, { 0, "RANDOM" },
+};
 static const int kStageCount = (int)(sizeof kStages / sizeof kStages[0]);
 static int g_ai_stage = 0;
+/* Time limit, AI versus AI only (the arena engine's own countdown; TIME UP
+ * goes to the AC with more AP). Player versus AI has none. */
+static const int kTimeLimits[] = { 120, 300, 0 };
+static const int kTimeLimitCount = 3;
+static int g_ai_time = 0;
+static std::string time_label(void) {
+    if (g_ai_manual) return "NONE";
+    const int t = kTimeLimits[g_ai_time];
+    if (!t) return "NONE";
+    char b[16];
+    std::snprintf(b, sizeof b, "%d:%02d", t / 60, t % 60);
+    return b;
+}
 static moa_map_previews* g_maps = nullptr;
 static int g_maps_state = 0;               /* 0 not read, 1 ok, -1 failed */
 static unsigned g_ai_session = 0;
 
-static std::string stage_label(int i) {
-    if (kStages[i] == 0) return "RANDOM";
-    char b[16];
-    std::snprintf(b, sizeof b, "MAP %d", kStages[i]);
-    return b;
-}
+static std::string stage_label(int i) { return kStages[i].name; }
 
 static void draw_stage(const LauncherModel* m, const Gfx& g, float x, float y, int i) {
     if (g_maps_state == 0) {
@@ -412,15 +426,15 @@ static void draw_stage(const LauncherModel* m, const Gfx& g, float x, float y, i
         g_maps_state = (p && p[0] && moa_map_previews_load(p, g_maps)) ? 1 : -1;
     }
     const float w = 104.0f, h = 86.0f;
-    if (kStages[i] == 0 || g_maps_state < 0) {
+    if (kStages[i].id == 0 || g_maps_state < 0) {
         g.dl->AddRect(at(g, x, y), at(g, x + w, y + h), kLine);
-        const std::string label = kStages[i] == 0 ? std::string("?") : stage_label(i);
+        const std::string label = kStages[i].id == 0 ? std::string("?") : stage_label(i);
         const float tw = text_width(g, 20.0f, label.c_str());
         text(g, x + (w - tw) * 0.5f, y + h * 0.5f - 12.0f, 20.0f, kDim, label.c_str());
         return;
     }
     /* Every other pixel: 52 x 50 cells. */
-    const uint32_t* px = g_maps->rgba[kStages[i] - 1];
+    const uint32_t* px = g_maps->rgba[kStages[i].id - MOA_STAGE_FIRST];
     const float cw = w / 52.0f, ch = h / 50.0f;
     for (int yy = 0; yy < 50; ++yy)
         for (int xx = 0; xx < 52; ++xx) {
@@ -466,9 +480,11 @@ static void launch_ai_battle(LauncherModel* m) {
     set_env("PSX_MEMCARD2_SESSION", session_card.c_str());
     {
         char b[16];
-        if (kStages[g_ai_stage] == 0) std::snprintf(b, sizeof b, "random");
-        else std::snprintf(b, sizeof b, "%d", kStages[g_ai_stage]);
-        set_env("PSX_MOA_AI_MAP", b);
+        if (kStages[g_ai_stage].id == 0) std::snprintf(b, sizeof b, "random");
+        else std::snprintf(b, sizeof b, "%d", kStages[g_ai_stage].id);
+        set_env("PSX_MOA_AI_STAGE", b);
+        std::snprintf(b, sizeof b, "%d", g_ai_manual ? 0 : kTimeLimits[g_ai_time]);
+        set_env("PSX_MOA_AI_TIME", b);
         char t[32];
         std::snprintf(t, sizeof t, "%u-%ld", ++g_ai_session, (long)std::time(nullptr));
         set_env("PSX_MOA_AI_SESSION", t);
@@ -487,16 +503,17 @@ static void draw_ai_page(LauncherModel* m, const Gfx& g, const Input& in) {
     if (g_ai_sub == AI_SUB_OPTS)  { draw_ai_opts(g, in); return; }
     if (g_ai_sub == AI_SUB_PAINT) { draw_ai_paint(g, in); return; }
     if (g_ai_sub == AI_SUB_EMBLEM){ draw_ai_emblem(m, g, in); return; }
-    enum { AI_START = 0, AI_UNIT1, AI_UNIT2, AI_PILOT1, AI_STAGE, AI_NEWCARD, AI_WORKSHOP, AI_EXPORT,
-           AI_ROWS };
+    enum { AI_START = 0, AI_UNIT1, AI_UNIT2, AI_PILOT1, AI_STAGE, AI_TIME, AI_NEWCARD, AI_WORKSHOP,
+           AI_EXPORT, AI_ROWS };
     move_cursor(PAGE_AI, AI_ROWS, in, AI_ROWS);
     int& cur = g_state.cursor[PAGE_AI];
 
     header(g, "AI BATTLE", "COMPUTER VERSUS COMPUTER");
-    panel(g, 24.0f, 76.0f, 270.0f, 232.0f, "SETUP");
+    panel(g, 24.0f, 76.0f, 270.0f, 240.0f, "SETUP");
+    const float row_step = 25.0f;              /* nine rows in the panel */
     int activate = -1;
     const char* labels[AI_ROWS] = { "START BATTLE", "UNIT 1", "UNIT 2", "UNIT 1 PILOT", "STAGE",
-                                    "BUILD NEW CARD", "CARD WORKSHOP",
+                                    "TIME LIMIT", "BUILD NEW CARD", "CARD WORKSHOP",
                                     "EXPORT CARDS FROM MEMORY CARD" };
     for (int i = 0; i < AI_ROWS; ++i) {
         std::string value;
@@ -507,9 +524,11 @@ static void draw_ai_page(LauncherModel* m, const Gfx& g, const Input& in) {
             value = g_ai_manual ? "YOU" : "COMPUTER";
         } else if (i == AI_STAGE) {
             value = stage_label(g_ai_stage);
+        } else if (i == AI_TIME) {
+            value = time_label();
         }
         bool hovered = false;
-        if (row(g, 25.0f, 90.0f + kRowH * i, 268.0f, i == cur, true, labels[i],
+        if (row(g, 25.0f, 90.0f + row_step * i, 268.0f, i == cur, i != AI_TIME || !g_ai_manual, labels[i],
                 value.c_str(), false, false, &hovered))
             activate = i;
         if (hovered && (ImGui::GetIO().MouseDelta.x != 0.0f ||
@@ -519,20 +538,20 @@ static void draw_ai_page(LauncherModel* m, const Gfx& g, const Input& in) {
     draw_unit(g, 310.0f, 0);
     draw_unit(g, 471.0f, 1);
 
-    panel(g, 24.0f, 320.0f, 450.0f, 100.0f, "CARDS");
+    panel(g, 24.0f, 324.0f, 450.0f, 96.0f, "CARDS");
     {
         char buf[300];
         std::snprintf(buf, sizeof buf, "%d CARD%s FOUND", (int)g_ai_cards.size(),
                       g_ai_cards.size() == 1 ? "" : "S");
-        text(g, 38.0f, 334.0f, 11.0f, g_ai_cards.empty() ? kWarn : kHi, buf);
-        text(g, 38.0f, 352.0f, 10.0f, kText,
+        text(g, 38.0f, 336.0f, 11.0f, g_ai_cards.empty() ? kWarn : kHi, buf);
+        text(g, 38.0f, 353.0f, 10.0f, kText,
              "Build a card here (BUILD NEW CARD) or with the Raven Card Builder; edit "
              "builds and AI in the CARD WORKSHOP. Cards live in the memory card folder:", 420.0f);
         text(g, 38.0f, 392.0f, 10.0f, kDim,
              g_ai_folder.empty() ? "(no memory card folder yet)" : g_ai_folder.c_str(), 420.0f);
     }
-    panel(g, 490.0f, 320.0f, 126.0f, 100.0f, "STAGE");
-    draw_stage(m, g, 501.0f, 328.0f, g_ai_stage);
+    panel(g, 490.0f, 324.0f, 126.0f, 96.0f, "STAGE");
+    draw_stage(m, g, 501.0f, 331.0f, g_ai_stage);
     footer(g, "A  SELECT      LEFT / RIGHT  CHANGE      B  BACK      START  BATTLE");
 
     if (in.back) { g_state.ai_page = false; return; }
@@ -541,6 +560,8 @@ static void draw_ai_page(LauncherModel* m, const Gfx& g, const Input& in) {
     if (cur == AI_PILOT1 && (in.left || in.right)) g_ai_manual = !g_ai_manual;
     if (cur == AI_STAGE && (in.left || in.right))
         g_ai_stage = (g_ai_stage + (in.left ? kStageCount - 1 : 1)) % kStageCount;
+    if (cur == AI_TIME && !g_ai_manual && (in.left || in.right))
+        g_ai_time = (g_ai_time + (in.left ? kTimeLimitCount - 1 : 1)) % kTimeLimitCount;
     if (in.confirm) activate = cur;
     if (in.start) activate = AI_START;
     if (activate < 0) return;
@@ -548,6 +569,10 @@ static void draw_ai_page(LauncherModel* m, const Gfx& g, const Input& in) {
     if (activate == AI_EXPORT) { export_ai_cards(m); return; }
     if (activate == AI_PILOT1) { g_ai_manual = !g_ai_manual; return; }
     if (activate == AI_STAGE) { g_ai_stage = (g_ai_stage + 1) % kStageCount; return; }
+    if (activate == AI_TIME) {
+        if (!g_ai_manual) g_ai_time = (g_ai_time + 1) % kTimeLimitCount;
+        return;
+    }
     if (activate == AI_NEWCARD) { open_build_new(); return; }
     if (activate == AI_WORKSHOP) {
         g_ai_sub = AI_SUB_CARDS;

@@ -167,12 +167,13 @@ const char *moa_option_effect(int i)
     return (i >= 0 && i < MOA_OPTIONS) ? k[i] : "";
 }
 
-/* ---- versus map previews ------------------------------------------------------
+/* ---- stage previews -----------------------------------------------------------
  * GG/MS/MENU_TIM.T: u16 entry count, u16 flag, then u16 start sectors. Each
- * SELECT MAP preview is an 8-bit TIM, 256-colour CLUT, 104 x 100 (menu
- * 0x800AE0E4 loads it as the map changes). Entries per map, as read back from
- * the game's video memory for maps 1..10: */
-static const uint16_t k_map_entry[MOA_VS_MAPS] = { 9, 10, 11, 12, 19, 22, 23, 24, 25, 26 };
+ * stage preview is an 8-bit TIM, 256-colour CLUT, 104 x 100 (menu 0x800AE0E4
+ * loads the SELECT MAP ones). Stage id n is entry n - 11: entries 9..28, as
+ * read back from the game's video memory for the versus maps and as the
+ * forced arena stages load. */
+#define MOA_STAGE_ENTRY(i) (9 + (i))
 
 int moa_map_previews_load(const char *disc, struct moa_map_previews *out)
 {
@@ -181,15 +182,15 @@ int moa_map_previews_load(const char *disc, struct moa_map_previews *out)
     if (!head) return 0;
     const unsigned count = rd16(head);
     int ok = count > 30 && count < 2040;
-    uint32_t start[MOA_VS_MAPS], end[MOA_VS_MAPS];
-    for (int i = 0; ok && i < MOA_VS_MAPS; i++) {
-        start[i] = rd16(head + 4 + 2 * k_map_entry[i]) * 2048u;
-        end[i] = rd16(head + 4 + 2 * (k_map_entry[i] + 1)) * 2048u;
+    uint32_t start[MOA_STAGES], end[MOA_STAGES];
+    for (int i = 0; ok && i < MOA_STAGES; i++) {
+        start[i] = rd16(head + 4 + 2 * MOA_STAGE_ENTRY(i)) * 2048u;
+        end[i] = rd16(head + 4 + 2 * (MOA_STAGE_ENTRY(i) + 1)) * 2048u;
     }
     free(head);
     if (!ok) return 0;
     int got = 0;
-    for (int m = 0; m < MOA_VS_MAPS; m++) {
+    for (int m = 0; m < MOA_STAGES; m++) {
         const uint32_t bytes = end[m] > start[m] ? end[m] - start[m] : 0;
         if (bytes < 12 + 524 + 12 + 52 * 2 * 100) continue;
         uint8_t *t = moa_disc_read_range(disc, "GG/MS/MENU_TIM.T", start[m], bytes, NULL);
@@ -215,5 +216,5 @@ int moa_map_previews_load(const char *disc, struct moa_map_previews *out)
         }
         free(t);
     }
-    return got == MOA_VS_MAPS;
+    return got == MOA_STAGES;
 }

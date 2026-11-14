@@ -70,12 +70,15 @@ struct moa_build_check {
 void moa_build_check(const struct moa_parts *p, const uint8_t rec[13], int plus,
                      struct moa_build_check *out);
 
-/* The versus maps' preview pictures (SELECT MAP), read from the disc's menu
- * archive. Map n (1..MOA_VS_MAPS) is preview[n - 1], RGBA, 104 x 100. */
-#define MOA_VS_MAPS 10
+/* The stages' preview pictures, read from the disc's menu archive: all
+ * twenty, by stage id (20..39, the id the fight loads; the versus menu's
+ * maps 1..10 are ids 20, 21, 22, 23, 30, 33, 34, 35, 36, 37). Stage id n is
+ * rgba[n - MOA_STAGE_FIRST], RGBA, 104 x 100. */
+#define MOA_STAGE_FIRST 20
+#define MOA_STAGES 20
 #define MOA_MAP_W 104
 #define MOA_MAP_H 100
-struct moa_map_previews { uint32_t rgba[MOA_VS_MAPS][MOA_MAP_W * MOA_MAP_H]; };
+struct moa_map_previews { uint32_t rgba[MOA_STAGES][MOA_MAP_W * MOA_MAP_H]; };
 int moa_map_previews_load(const char *disc_path, struct moa_map_previews *out);
 
 /* What each optional part does (builder text). */

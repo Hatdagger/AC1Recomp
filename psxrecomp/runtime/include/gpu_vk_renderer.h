@@ -40,6 +40,9 @@ int  vk_renderer_present_wide(int disp_x, int disp_y, int disp_h, int linear);
 void vk_renderer_present_cpu(const uint32_t *pixels, int src_w, int src_h,
                              int linear, int force_4_3);
 void vk_renderer_present_blank(void);
+/* A host-made 0xAARRGGBB picture stretched over the whole window (plugin
+ * loading screen). */
+void vk_renderer_present_image(const uint32_t *pixels, int w, int h);
 
 /* Sync the GPU VRAM image down into the CPU VRAM mirror (screenshots, debug
  * server, 24-bit present). No-op when the Vulkan path is inactive. */

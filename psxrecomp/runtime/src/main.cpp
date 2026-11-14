@@ -699,6 +699,7 @@ extern "C" void psx_mod_request_return_to_launcher(void) {
  * black screen with the message and a progress bar in the OSD box, redrawn
  * about ten times a second of wall time. */
 static int g_mod_loading = 0;
+static int mod_loading_image_ready(void);
 static uint64_t s_mod_loading_last_ms = 0;
 static char s_mod_loading_text[200];
 extern "C" void psx_mod_set_loading_screen(const char *text, int percent) {
@@ -708,6 +709,7 @@ extern "C" void psx_mod_set_loading_screen(const char *text, int percent) {
             s_mod_loading_text[0] = '\0';
             host_osd_set_status(NULL);
         }
+        psx_mod_set_loading_image(NULL, 0, 0);
         return;
     }
     char buf[sizeof s_mod_loading_text];
@@ -725,8 +727,37 @@ extern "C" void psx_mod_set_loading_screen(const char *text, int percent) {
     if (std::strcmp(buf, s_mod_loading_text) != 0) {
         if (std::getenv("PSX_LOADING_SCREEN_LOG")) { std::fprintf(stdout, "loading: %s\n", buf); std::fflush(stdout); }
         std::snprintf(s_mod_loading_text, sizeof s_mod_loading_text, "%s", buf);
-        host_osd_set_status(s_mod_loading_text);
+        host_osd_set_status(mod_loading_image_ready() ? NULL : s_mod_loading_text);
     }
+}
+
+/* The loading screen's picture (psx_mod_set_loading_image). */
+static std::mutex s_mod_image_mtx;
+static std::vector<uint32_t> s_mod_image;
+static int s_mod_image_w = 0, s_mod_image_h = 0;
+static int mod_loading_image_ready(void) {
+    std::lock_guard<std::mutex> lk(s_mod_image_mtx);
+    return s_mod_image_w > 0;
+}
+extern "C" void psx_mod_set_loading_image(const uint32_t *argb, int w, int h) {
+    std::lock_guard<std::mutex> lk(s_mod_image_mtx);
+    if (!argb || w <= 0 || h <= 0 || w > 4096 || h > 4096) {
+        s_mod_image.clear(); s_mod_image_w = s_mod_image_h = 0;
+        return;
+    }
+    s_mod_image.assign(argb, argb + (size_t)w * (size_t)h);
+    if (!s_mod_image_w) host_osd_set_status(NULL);
+    s_mod_image_w = w; s_mod_image_h = h;
+}
+extern "C" void psx_mod_window_size(int *w, int *h) {
+    int ww = 0, wh = 0;
+    if (sdl_window) SDL_GetWindowSize(sdl_window, &ww, &wh);
+    if (w) *w = ww;
+    if (h) *h = wh;
+}
+extern "C" uint16_t psx_mod_host_pad_buttons(int slot) {
+    if (slot < 0 || slot >= PSX_MAX_PLAYERS) return 0xFFFFu;
+    return sio_get_pad_buttons_slot(slot);
 }
 
 static int manual_fast_forward_multiplier(void) {
@@ -9912,9 +9943,10 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
             }
             bool skip_present;
             if (mod_ff && g_mod_loading) {
-                /* Loading screen: redraw it ~10 times a second of wall time. */
+                /* Loading screen: redraw it ~10 times a second of wall time,
+                 * ~20 with a plugin's picture (its glow pulses). */
                 const uint64_t now = (uint64_t)SDL_GetTicks();
-                skip_present = now - s_mod_loading_last_ms < 100u;
+                skip_present = now - s_mod_loading_last_ms < (mod_loading_image_ready() ? 50u : 100u);
                 if (!skip_present) s_mod_loading_last_ms = now;
             } else {
                 turbo_skip = (turbo_skip + 1) % present_every;
@@ -10133,7 +10165,16 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
             if (!s_disabled_frame_presented || s_force_present_after_load || g_mod_loading) {
                 s_disabled_frame_presented = true;
                 s_force_present_after_load = false;
-                if (g_gl_active) {
+                std::vector<uint32_t> mod_img; int mod_w = 0, mod_h = 0;
+                if (g_mod_loading) {
+                    std::lock_guard<std::mutex> lk(s_mod_image_mtx);
+                    if (s_mod_image_w > 0) { mod_img = s_mod_image; mod_w = s_mod_image_w; mod_h = s_mod_image_h; }
+                }
+                if (mod_w > 0 && g_gl_active) {
+                    gl_renderer_present_image(mod_img.data(), mod_w, mod_h);
+                } else if (mod_w > 0 && g_vk_active) {
+                    vk_renderer_present_image(mod_img.data(), mod_w, mod_h);
+                } else if (g_gl_active) {
                     gl_renderer_present_blank();
                 } else if (g_vk_active) {
                     vk_renderer_present_blank();

@@ -87,6 +87,16 @@ int psx_mod_fast_forward_requested(void);
  * for percent 0..100, a progress bar (percent < 0: no bar). NULL or "" ends
  * it. Cleared when a session ends. */
 void psx_mod_set_loading_screen(const char *text, int percent);
+/* Offline only. A picture for the loading screen, 0xAARRGGBB, stretched over
+ * the whole window instead of the black screen and OSD text (the text passed
+ * above is then only logged). Copied; NULL clears it. Render it at the
+ * window's aspect from psx_mod_window_size. */
+void psx_mod_set_loading_image(const uint32_t *argb, int w, int h);
+/* The output window's size in pixels; 0x0 when there is none (headless). */
+void psx_mod_window_size(int *w, int *h);
+/* Port `slot`'s buttons as the host controller holds them, PSX layout,
+ * active low (0xFFFF = nothing held). Independent of what the guest reads. */
+uint16_t psx_mod_host_pad_buttons(int slot);
 /* Offline only. End the session and reopen the launcher (on its dashboard);
  * starting from the launcher begins a new session. Takes effect at the next
  * scheduler escape point. */

@@ -29,6 +29,7 @@
 #include <dirent.h>
 
 #include "moa_card.h"
+#include "moa_screen.h"
 
 #define MOA_MODE_BYTE     0x8003EA2Au  /* engine the exe launches next */
 #define MOA_MODE_ARENA    3u
@@ -575,6 +576,50 @@ static uint32_t moa_random(uint32_t below)
     return below ? state % below : 0;
 }
 
+/* ---- stage and time limit ----------------------------------------------------
+ *
+ * The stage: after VS START each player block holds the stage id the fight
+ * loads (+597; 20..39, one per preview in MENU_TIM.T order: the ten versus
+ * maps and ten arena-only stages). It is written over every frame until the
+ * fight runs, whatever the menu chose. PSX_MOA_AI_STAGE = an id from the
+ * pool, "random" (one of them) or unset (Seabed). Left out: the versus maps
+ * that hang in the arena engine and the stages not tried.
+ *
+ * The time limit: the arena engine keeps a countdown (30ths of a second) that
+ * an arena fight leaves at 0, off. Set, the HUD shows it and at 0 the engine
+ * itself calls TIME UP and gives the win on AP (a draw when equal), then its
+ * usual result and replay. PSX_MOA_AI_TIME = seconds (0 or unset: none). */
+#define MOA_STAGE_P1        0x800453EDu  /* player 1 block +597 */
+#define MOA_STAGE_P2        0x8004578Du  /* player 2 block +597 */
+#define MOA_STAGE_DEFAULT   29u          /* Seabed */
+#define MOA_ENGINE_TIMER    0x8009EFDCu  /* arena engine: countdown, 30ths of a second */
+static const uint8_t moa_stage_pool[] = {
+    29, 27, 39, 24, 25,                  /* Seabed, Green Silo, Ocean Platform, Scaffold Yard, Garden Plaza */
+    20, 22, 33, 36,                      /* Lunar Base, Pillar Hall, Forest, Night City */
+};
+static uint8_t moa_stage_id;
+static int moa_stage_pending;            /* write the stage until the fight runs */
+
+static void moa_stage_pick(void)
+{
+    const char *e = getenv("PSX_MOA_AI_STAGE");
+    const int asked = e && e[0] ? atoi(e) : (int)MOA_STAGE_DEFAULT;
+    moa_stage_id = 0;
+    for (size_t i = 0; i < sizeof moa_stage_pool; i++)
+        if (moa_stage_pool[i] == asked) moa_stage_id = (uint8_t)asked;
+    if (!moa_stage_id)
+        moa_stage_id = (e && e[0]) ? moa_stage_pool[moa_random((uint32_t)sizeof moa_stage_pool)]
+                                   : (uint8_t)MOA_STAGE_DEFAULT;
+    moa_stage_pending = 1;
+}
+
+static int moa_time_limit_secs(void)
+{
+    const char *e = getenv("PSX_MOA_AI_TIME");
+    const int v = e && e[0] ? atoi(e) : 0;
+    return v > 0 && v <= 1800 ? v : 0;
+}
+
 /* VS START, held back for as many frames as the units' graphics take. */
 static unsigned moa_load_step;
 static uint32_t moa_load_frames;
@@ -588,6 +633,7 @@ static void moa_units_ready(void)
     for (unsigned i = 0; i < MOA_AI_RECORD_BYTES; i++)
         psx_mod_write_byte(MOA_AI_RECORD + i, moa_unit_ai[1][i]);
     psx_mod_write_byte(MOA_MODE_BYTE, MOA_MODE_ARENA);
+    moa_stage_pick();
     moa_matches++;
     psx_mod_counter_add("moa.ai.match", 1);
 }
@@ -708,7 +754,6 @@ static uint32_t moa_autopilot_ticks;
  * returns to the launcher.
  */
 #define MOA_PAD2_BUFFER     0x800458FAu  /* port 2: status, id, buttons */
-#define MOA_VS_MAP          0x8003EA81u  /* SELECT MAP: 1..10 */
 #define MOA_REPLAY_FLAG     0x8003EA92u  /* nonzero while the arena engine replays */
 #define MOA_SAMPLER         0x8007F69Cu  /* arena engine: controller sampler */
 #define MOA_SIG_SAMPLER     0x27BDFFE8u
@@ -719,20 +764,18 @@ static uint32_t moa_autopilot_ticks;
 #define MOA_PAD_X           0x4000u
 #define MOA_PAD_O           0x2000u
 
-enum { STEP_PRESS, STEP_CHECK, STEP_MAP, STEP_HANDOVER, STEP_FIGHT, STEP_ROW };
+enum { STEP_PRESS, STEP_CHECK, STEP_HANDOVER, STEP_FIGHT, STEP_ROW };
 #define MOA_VS_ROW          0x801B2038u  /* versus menu cursor: 0 VS START .. 3 SELECT MAP */
 struct moa_step { uint8_t kind, port; uint16_t buttons, hold, wait; uint8_t phase; };
-enum { PH_READY = 0, PH_UNIT1, PH_UNIT2, PH_STAGE, PH_START };
+enum { PH_READY = 0, PH_UNIT1, PH_UNIT2, PH_START };
 static const char *const moa_phase_text[] = {
     "AI BATTLE  Getting ready", "AI BATTLE  Loading unit 1", "AI BATTLE  Loading unit 2",
-    "AI BATTLE  Selecting the stage", "AI BATTLE  Starting the battle" };
+    "AI BATTLE  Starting the battle" };
 static uint8_t moa_phase_now;                  /* phase given to steps as they are added */
 
 static struct moa_step moa_script[80];
 static int moa_script_len, moa_script_pos;
 static uint32_t moa_step_time;
-static int moa_map_presses;
-static int moa_map_target;
 static int moa_lock;                           /* the script owns the controllers */
 static uint16_t moa_inject[2];                 /* buttons held, active high */
 static int moa_live_lock;                      /* AI vs AI fight: no controller */
@@ -750,16 +793,20 @@ static int moa_env_flag(const char *name)
 /* Fast forward while the session runs unattended. Asked for again every frame
  * (moa_frame_hook) so nothing can quietly drop it. */
 static int moa_ff_want;
+static uint64_t moa_outro_ms;                  /* replay started: the screen holds, then fades */
+static int moa_decided;                        /* the fight is over (result screen) */
+static int moa_timer_ran, moa_time_up;         /* the countdown ran this fight / reached its end */
 static void moa_set_ff(int on)
 {
     moa_ff_want = on ? 1 : 0;
     psx_mod_request_fast_forward(moa_ff_want);
-    if (!moa_ff_want) psx_mod_set_loading_screen(NULL, 0);
+    if (!moa_ff_want && !moa_outro_ms) psx_mod_set_loading_screen(NULL, 0);
 }
 
 static void moa_return_to_launcher(const char *why)
 {
     psx_mod_counter_add(why, 1);
+    moa_outro_ms = 0;
     moa_set_ff(0);
     moa_lock = moa_live_lock = 0;
     if (moa_env_flag("PSX_MOA_AI_NO_RETURN")) return;   /* headless tests */
@@ -811,7 +858,6 @@ static void moa_script_build(void)
 {
     moa_script_len = moa_script_pos = 0;
     moa_step_time = 0;
-    moa_map_presses = 0;
     moa_menu_loaded[0] = moa_menu_loaded[1] = 0;
     moa_phase_now = PH_READY;
     if (moa_env_flag("PSX_MOA_AI_LOADMENU")) {
@@ -822,12 +868,12 @@ static void moa_script_build(void)
             moa_script_load(1);
         }
     }
-    moa_phase_now = PH_STAGE;
-    moa_add(STEP_ROW, 1, 3, 0, 0);                      /* SELECT MAP */
-    moa_tap(1, MOA_PAD_X, 40);                          /* arrows on */
-    moa_add(STEP_MAP, 1, 0, 0, 0);
-    moa_tap(1, MOA_PAD_X, 40);                          /* settle the map */
+    /* No SELECT MAP: the stage is set straight in the player blocks after
+     * VS START (moa_battle_frame), so the menu's map does not matter. */
     moa_phase_now = PH_START;
+    /* Down a row and back: the cursor answering is the sign the menu takes
+     * input (the first press after the menu opens is otherwise lost). */
+    moa_add(STEP_ROW, 1, 1, 0, 0);
     moa_add(STEP_ROW, 1, 0, 0, 0);                      /* VS START */
     if (moa_manual_unit1()) {
         moa_add(STEP_HANDOVER, 1, 0, 0, 0);
@@ -874,30 +920,6 @@ static void moa_script_frame(void)
         moa_script_pos++; moa_step_time = 0;
         return;
     }
-    case STEP_MAP: {
-        if (!moa_map_target) {
-            /* The versus maps AI Battle uses: 9 (the default), 1, 3, 6.
-             * The others are left out (4, 5, 7 and 8 hang at match start in
-             * testing). PSX_MOA_AI_MAP = one of those, "random" (one of
-             * them), or unset (map 9). */
-            static const uint8_t usable[] = { 9, 1, 3, 6 };
-            const char *m = getenv("PSX_MOA_AI_MAP");
-            const int asked = m && m[0] ? atoi(m) : 9;
-            for (size_t i = 0; i < sizeof usable; i++) if (usable[i] == asked) moa_map_target = asked;
-            if (!moa_map_target) moa_map_target = usable[moa_random((uint32_t)sizeof usable)];
-        }
-        const int want = moa_map_target;
-        const int now = psx_mod_read_byte(MOA_VS_MAP);
-        moa_inject[0] = moa_inject[1] = 0;
-        if (want < 1 || want > 10 || now == want || moa_map_presses >= 24) {
-            if (want >= 1 && want <= 10 && now != want) psx_mod_counter_add("moa.ai.map_failed", 1);
-            moa_script_pos++; moa_step_time = 0; moa_map_presses = 0; moa_map_target = 0;
-            return;
-        }
-        if (t < 4) moa_inject[0] = MOA_PAD_RIGHT;
-        if (t >= 30) { moa_step_time = 0; moa_map_presses++; }
-        return;
-    }
     case STEP_ROW: {                                    /* move the versus menu cursor */
         const int row = psx_mod_read_byte(MOA_VS_ROW);
         moa_inject[0] = moa_inject[1] = 0;
@@ -942,8 +964,10 @@ static void moa_script_frame(void)
 #define MOA_SAVE_SUM        0x80070F1Cu
 #define MOA_SIG_SAVE_SUM    0x00002821u  /* addu a1,zero,zero */
 static const struct { uint16_t save; uint32_t ram; uint16_t bytes; } moa_keep[] = {
+    /* 3276: 48 bytes and the 8 option bytes after them (volumes, key
+     * assign, VS stage, VS time limit, vibration): the loader copies 56. */
     { 456, 0x8003EA94u, 4 },   { 496, 0x8004B508u, 96 },  { 640, 0x80036FECu, 256 },
-    { 896, 0x800370ECu, 256 }, { 3232, 0x8004AC50u, 32 }, { 3276, 0x8004B568u, 48 },
+    { 896, 0x800370ECu, 256 }, { 3232, 0x8004AC50u, 32 }, { 3276, 0x8004B568u, 56 },
     { 3332, 0x8004B5A0u, 224 }, { 3572, 0x8004B688u, 96 },
 };
 
@@ -964,35 +988,114 @@ static void moa_save_sum_entry(struct CPUState *cpu, uint32_t address)
     psx_mod_counter_add("moa.ai.save_settings_kept", 1);
 }
 
-/* The loading screen while the session runs unattended: the script's stage
- * and how far through its frame budget it is; "battle in progress" during
- * an AI vs AI fight. */
+static uint64_t moa_now_ms(void)
+{
+    struct timespec ts;
+    if (timespec_get(&ts, TIME_UTC) != TIME_UTC) return 0;
+    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+}
+
+/* The picture's units: the session's two cards (none for arena opponents). */
+static void moa_screen_units(void)
+{
+    static char token[40] = "\x01";
+    const char *t = getenv("PSX_MOA_AI_SESSION");
+    if (!t) t = "";
+    if (strncmp(token, t, sizeof token - 1) == 0) return;
+    snprintf(token, sizeof token, "%s", t);
+    static struct moa_screen_unit unit[2];
+    static struct moa_card card;
+    const char *path[2] = { getenv("PSX_MOA_AI_UNIT1"), getenv("PSX_MOA_AI_UNIT2") };
+    for (unsigned u = 0; u < 2; u++) {
+        memset(&unit[u], 0, sizeof unit[u]);
+        if (!path[u] || !path[u][0] || !moa_read_card(path[u], &card)) continue;
+        unit[u].have = 1;
+        snprintf(unit[u].ac, sizeof unit[u].ac, "%s", card.ac);
+        snprintf(unit[u].pilot, sizeof unit[u].pilot, "%s", card.pilot);
+        snprintf(unit[u].style, sizeof unit[u].style, "%s",
+                 moa_ai_preset_name(card.has_ai ? card.ai_preset : MOA_AI_PRESET_BALANCED));
+        for (unsigned k = 0; k < 64u * 64u; k++) {
+            const uint16_t c = card.palette[card.emblem[k] & 15u];
+            unit[u].emblem[k] = (uint32_t)(c & 31u) << 19 | (uint32_t)((c >> 5) & 31u) << 11 |
+                                (uint32_t)((c >> 10) & 31u) << 3;
+        }
+    }
+    moa_screen_set_units(&unit[0], &unit[1]);
+}
+
+/* The loading screen while the session runs unattended: "Gathering battle
+ * simulation data..." with a bar for the setup (first 30%) and the fight
+ * against its time limit, "Simulation complete" once the fight is decided,
+ * held a moment and faded out as the replay starts. START or O on
+ * controller 1 gives up and goes back to the launcher. */
 static uint32_t moa_screen_frames;             /* frames since the menu module came up */
+#define MOA_OUTRO_HOLD_MS 700u
+#define MOA_OUTRO_FADE_MS 400u
 
 static uint32_t moa_step_budget(const struct moa_step *st)
 {
     switch (st->kind) {
     case STEP_PRESS: return (uint32_t)st->hold + st->wait;
     case STEP_ROW:   return st->buttons == 1 ? 760u : 60u;   /* the first waits for the menu */
-    case STEP_MAP:   return 160u;
     default:         return 1u;
     }
 }
 
+static void moa_loading_show(const char *log_text, int permille, float fade)
+{
+    const char *status = moa_decided || moa_outro_ms ? "Simulation complete"
+                                                      : "Gathering battle simulation data...";
+    psx_mod_set_loading_screen(log_text, permille >= 0 ? permille / 10 : -1);
+    if (!moa_screen_ready()) {
+        uint32_t bytes = 0;
+        (void)moa_menu_tim_entry(0, &bytes);            /* reads MENU_TIM.T */
+        if (!moa_menu_tim || !moa_screen_load_font(moa_menu_tim, moa_menu_tim_bytes)) return;
+    }
+    static uint64_t last_ms;
+    const uint64_t now = moa_now_ms();
+    if (now - last_ms < 40u && fade <= 0.0f) return;    /* ~25 pictures a second */
+    last_ms = now;
+    moa_screen_units();
+    int ww = 0, wh = 0, w = 0, h = 0;
+    psx_mod_window_size(&ww, &wh);
+    const int limit = moa_manual_unit1() ? 0 : moa_time_limit_secs();
+    const uint32_t *px = moa_screen_render(ww, wh, status, permille, limit, fade, now, &w, &h);
+    if (px) psx_mod_set_loading_image(px, w, h);
+}
+
 static void moa_loading_frame(void)
 {
+    if (moa_outro_ms) {                                 /* replay underway */
+        const uint64_t t = moa_now_ms() - moa_outro_ms;
+        if (t >= MOA_OUTRO_HOLD_MS + MOA_OUTRO_FADE_MS) {
+            moa_outro_ms = 0;
+            psx_mod_set_loading_screen(NULL, 0);
+            return;
+        }
+        const float fade = t <= MOA_OUTRO_HOLD_MS ? 0.0f
+                         : (float)(t - MOA_OUTRO_HOLD_MS) / (float)MOA_OUTRO_FADE_MS;
+        moa_loading_show("AI BATTLE  Simulation complete", 1000, fade);
+        return;
+    }
     if (!moa_ff_want) { psx_mod_set_loading_screen(NULL, 0); return; }
     moa_screen_frames++;
-    if (moa_live_lock && !moa_lock) {
-        static const char *const dots[] = { "", ".", "..", "..." };
-        char t[64];
-        snprintf(t, sizeof t, "AI BATTLE  Battle in progress%s", dots[(moa_screen_frames / 30u) % 4u]);
-        psx_mod_set_loading_screen(t, -1);
+    if (moa_live_lock && !moa_lock) {                   /* the fight */
+        int permille = 300;
+        const int limit = moa_time_limit_secs();
+        if (moa_decided) permille = 1000;
+        else if (limit > 0 && moa_ai_frames_seen > 0) {
+            const uint32_t left = psx_mod_read_half(MOA_ENGINE_TIMER);
+            const uint32_t total = (uint32_t)limit * 30u;
+            if (left > 0 && left <= total) permille = 300 + (int)((total - left) * 700u / total);
+        } else if (moa_ai_frames_seen > 0) {            /* no limit: creep towards the end */
+            permille = 300 + (int)(650u - 650u * 3000u / (3000u + moa_ai_frames_seen));
+        }
+        moa_loading_show("AI BATTLE  Battle in progress", permille, 0.0f);
         return;
     }
     if (!moa_lock || !moa_script_len) {                 /* boot, up to the versus menu */
-        const uint32_t boot = moa_screen_frames * 8u / 900u;
-        psx_mod_set_loading_screen("AI BATTLE  Starting up", (int)(boot < 8u ? boot : 8u));
+        const uint32_t boot = moa_screen_frames * 40u / 900u;
+        moa_loading_show("AI BATTLE  Starting up", (int)(boot < 40u ? boot : 40u), 0.0f);
         return;
     }
     uint32_t done = 0;
@@ -1002,21 +1105,72 @@ static void moa_loading_frame(void)
         done += moa_step_time < cur ? moa_step_time : cur;
     }
     const uint32_t total = moa_script_budget ? moa_script_budget : 1u;
-    int pct = 8 + (int)((uint64_t)done * 91u / total);
-    if (pct > 99) pct = 99;
+    int permille = 40 + (int)((uint64_t)done * 260u / total);
+    if (permille > 300) permille = 300;
     const int ph = moa_script_pos < moa_script_len ? moa_script[moa_script_pos].phase : PH_START;
-    psx_mod_set_loading_screen(moa_phase_text[ph], pct);
+    moa_loading_show(moa_phase_text[ph], permille, 0.0f);
+}
+
+/* START or O pressed (not held from before) on controller 1 while the
+ * loading screen is up: back to the launcher. */
+static void moa_cancel_check(void)
+{
+    static int armed;
+    const uint16_t held = (uint16_t)~psx_mod_host_pad_buttons(0) & (MOA_PAD_START | MOA_PAD_O);
+    if (!moa_ff_want) { armed = 0; return; }
+    if (!held) { armed = 1; return; }
+    if (!armed) return;
+    armed = 0;
+    moa_return_to_launcher("moa.ai.cancelled");
+}
+
+/* Stage until the fight runs; the time limit for the first frames of the
+ * fight and of its replay (the engine starts each at 0). */
+static void moa_battle_frame(void)
+{
+    if (moa_stage_pending) {
+        if (moa_ai_frames_seen > 0) moa_stage_pending = 0;
+        else if (moa_stage_id) {
+            psx_mod_write_byte(MOA_STAGE_P1, moa_stage_id);
+            psx_mod_write_byte(MOA_STAGE_P2, moa_stage_id);
+        }
+    }
+    const int limit = moa_manual_unit1() ? 0 : moa_time_limit_secs();
+    if (!limit || psx_mod_read_word(MOA_AI_FRAME) != MOA_SIG_AI_FRAME) return;
+    static uint32_t window, seen_frames;
+    static int was_replay;
+    const int replay = psx_mod_read_byte(MOA_REPLAY_FLAG) != 0;
+    if (replay && !was_replay) window = 120u;           /* replay starts */
+    was_replay = replay;
+    if (moa_ai_frames_seen > 0 && seen_frames == 0) window = 120u;   /* fight starts */
+    seen_frames = moa_ai_frames_seen;
+    if (!replay && moa_live_lock) {                     /* the fight's countdown ran out */
+        const uint16_t left = psx_mod_read_half(MOA_ENGINE_TIMER);
+        if (left > 1u) moa_timer_ran = 1;
+        else if (moa_timer_ran && !window && !moa_time_up) {
+            moa_time_up = 1;
+            psx_mod_counter_add("moa.ai.time_up", 1);
+        }
+    }
+    if (!window) return;
+    window--;
+    if (psx_mod_read_half(MOA_ENGINE_TIMER) == 0) {
+        psx_mod_write_half(MOA_ENGINE_TIMER, (uint16_t)(limit * 30));
+        psx_mod_counter_add("moa.ai.time_limit_set", 1);
+    }
 }
 
 static void moa_frame_hook(void)
 {
     if (!moa_ai_battle_on()) return;
+    moa_cancel_check();
     moa_loading_frame();
     if (moa_ff_want && !psx_mod_fast_forward_requested()) {
         psx_mod_counter_add("moa.ai.ff_reasserted", 1);
         psx_mod_request_fast_forward(1);
     }
     moa_script_frame();
+    moa_battle_frame();
     /* AI vs AI: VS START was pressed but no fight began (the game refused a
      * build, say): stop fast forward and give the player the controller. */
     static uint32_t seen;
@@ -1041,6 +1195,8 @@ static int moa_sampler_filter(struct CPUState *cpu, uint32_t address)
         return 0;
     if (psx_mod_read_byte(MOA_REPLAY_FLAG) != 0) {
         moa_live_lock = 0;
+        moa_outro_ms = moa_now_ms();                    /* "Simulation complete", then fade */
+        if (!moa_outro_ms) moa_outro_ms = 1;
         moa_set_ff(0);
         psx_mod_counter_add("moa.ai.handover_replay", 1);
         return 0;                                       /* the player's own controller */
@@ -1049,7 +1205,11 @@ static int moa_sampler_filter(struct CPUState *cpu, uint32_t address)
     if (moa_ai_frames_seen != moa_live_ai_mark) { moa_live_ai_mark = moa_ai_frames_seen; moa_live_quiet = 0; }
     else moa_live_quiet++;
     const int fought = moa_ai_frames_seen > 0;
-    const uint16_t raw = (fought && moa_live_quiet > 60u && (moa_live_ticks % 24u) < 3u) ? MOA_PAD_START : 0;
+    /* Over: the AI stopped (an AC was destroyed) or TIME UP (the AI keeps
+     * running through the result then). */
+    const int over = fought && (moa_live_quiet > 60u || moa_time_up);
+    if (over) moa_decided = 1;
+    const uint16_t raw = (over && (moa_live_ticks % 24u) < 3u) ? MOA_PAD_START : 0;
     /* The game's own sampler still runs (it services the controller driver);
      * its result is then replaced. */
     moa_sampler_nested = 1;
@@ -1078,6 +1238,10 @@ static void moa_session_check(void)
     moa_inject[0] = moa_inject[1] = 0;
     moa_ai_frames_seen = 0;
     moa_ff_want = 0;
+    moa_outro_ms = 0;
+    moa_decided = 0;
+    moa_timer_ran = moa_time_up = 0;
+    moa_stage_pending = 0;
     moa_screen_frames = 0;
     moa_load_step = 0;
 }

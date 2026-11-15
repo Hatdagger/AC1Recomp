@@ -179,16 +179,13 @@ static void draw_run_page(LauncherModel* m, const Gfx& g, const Input& in) {
     text(g, 38.0f, 340.0f, 11.0f, kDim, "PROJECT PHANTASMA");
     text(g, 220.0f, 340.0f, 11.0f, phantasma_installed(m) ? kOn : kDim,
          phantasma_installed(m) ? "ITS OPPONENTS ARE IN THE DRAW" : "NOT INSTALLED (SEE EXTRAS)");
-    if (g_name_edit)
-        text(g, 38.0f, 362.0f, 10.0f, kHi,
-             "TYPE, OR UP / DOWN  LETTER   LEFT / RIGHT  MOVE   X  DELETE   A  DONE", 560.0f);
-    else if (cur == R_SEED)
+    if (!g_name_edit && cur == R_SEED)
         text(g, 38.0f, 362.0f, 10.0f, kDim,
              "Select for a new random seed. The same seed always makes the same AC and lineup.", 560.0f);
     if (!g_run_status.empty()) text(g, 38.0f, 384.0f, 11.0f, kWarn, g_run_status.c_str(), 560.0f);
     footer(g, "A / ENTER  SELECT      B / ESC  BACK");
 
-    if (g_name_edit) { name_input(in); return; }
+    if (g_name_edit) { name_input(g, in); return; }
     if (in.back) { run_names_lend(false); g_state.run_page = false; return; }
     if (in.confirm) activate = cur;
     switch (activate) {

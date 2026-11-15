@@ -392,6 +392,7 @@ static void open_assembly(LauncherModel* m) {
     open_build(c);
     g_edit_dirty = false;
     g_build_standalone = true;
+    open_asm(0, false);      /* straight to the game's Assembly screen */
 }
 
 /* EXTRA GARAGE > OPTION PARTS: the garage AC's optional parts on their own. */
@@ -598,6 +599,7 @@ static void draw_ai_page(LauncherModel* m, const Gfx& g, const Input& in) {
     if (g_ai_sub == AI_SUB_CARDS) { draw_ai_cards(m, g, in); return; }
     if (g_ai_sub == AI_SUB_EDIT)  { draw_ai_edit(m, g, in); return; }
     if (g_ai_sub == AI_SUB_ADV)   { draw_ai_adv(g, in); return; }
+    if (g_ai_sub == AI_SUB_ASM)   { draw_ai_asm(m, g, in); return; }
     if (g_ai_sub == AI_SUB_BUILD) { draw_ai_build(m, g, in); return; }
     if (g_ai_sub == AI_SUB_PICK)  { draw_ai_pick(g, in); return; }
     if (g_ai_sub == AI_SUB_OPTS)  { draw_ai_opts(g, in); return; }

@@ -58,7 +58,7 @@ void moa_build_normalise(uint8_t rec[13]);
 struct moa_build_check {
     int weight, ap, def_shell, def_energy;
     int leg_load, leg_max;       /* everything but the legs vs the legs' load */
-    int arm_load, arm_max;       /* hand + blade (not weapon arms) vs the core */
+    int arm_load, arm_max;       /* arms + hand + blade (weapon arms: arms) vs the core */
     int drain, output;           /* energy */
     int slots_used, slots_max;
     int leg_over, arm_over, energy_over, slots_over, missing_booster;

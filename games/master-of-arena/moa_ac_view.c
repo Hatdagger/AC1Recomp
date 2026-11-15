@@ -146,11 +146,17 @@ typedef struct acv_part {
     acv_tex tex;
 } acv_part;
 
+#define ACV_SOLO_MAX 8
 struct moa_acv {
     acr_skeleton skel;
     acr_anim_set anims;
     acv_part part[ACR_PART_KINDS];
     float radius, centre_y;          /* for framing, from the bind pose */
+    /* a part on its own (the garage model): no skeleton, one mesh an object */
+    int solo, solo_count;
+    acr_mtl solo_mtl;
+    acr_mesh solo_mesh[ACV_SOLO_MAX];
+    acv_tex solo_tex[ACR_MTL_MAX];
 };
 
 static int patterned(int kind) {
@@ -241,6 +247,8 @@ static int load_part(const char *models, int kind, int index, const uint8_t *pai
 
 void moa_acv_free(moa_acv *v) {
     if (!v) return;
+    for (int i = 0; i < v->solo_count; ++i) acr_mesh_free(&v->solo_mesh[i]);
+    for (int i = 0; i < ACR_MTL_MAX; ++i) free(v->solo_tex[i].rgba);
     for (int k = 0; k < ACR_PART_KINDS; ++k) {
         for (int i = 0; i < v->part[k].pieces; ++i) acr_mesh_free(&v->part[k].piece[i]);
         free(v->part[k].tex.rgba);
@@ -316,15 +324,110 @@ moa_acv *moa_acv_load(const char *dir, const uint8_t rec[13], const uint8_t pain
     return v;
 }
 
+/* ---- a part on its own ---- */
+
+int moa_acv_has_part_models(const char *dir) {
+    char p[1100];
+    snprintf(p, sizeof p, "%s/models/menu", dir);
+    return is_dir(p);
+}
+
+static int kind_of_folder(const char *kind) {
+    if (!strcmp(kind, "head")) return ACR_PART_HEAD;
+    if (!strcmp(kind, "core")) return ACR_PART_CORE;
+    if (!strcmp(kind, "arms")) return ACR_PART_ARMS;
+    if (!strcmp(kind, "legs")) return ACR_PART_LEGS;
+    return ACR_PART_NONE;
+}
+
+moa_acv *moa_acv_load_part(const char *dir, const char *kind, int index, const uint8_t paint[48]) {
+    char base[1100], path[1300];
+    snprintf(base, sizeof base, "%s/models/menu/%s/%02d", dir, kind, index);
+    snprintf(path, sizeof path, "%s/part.toml", base);
+    char *toml = read_text(path);
+    if (!toml) return NULL;
+    const int objects = (int)get_int(toml, toml + strlen(toml), "objects", 1);
+    free(toml);
+    moa_acv *v = (moa_acv *)calloc(1, sizeof *v);
+    if (!v) return NULL;
+    v->solo = 1;
+    snprintf(path, sizeof path, "%s/part.mtl", base);
+    char *mtl = read_text(path);
+    if (!mtl || !acr_mtl_parse(mtl, &v->solo_mtl)) { free(mtl); free(v); return NULL; }
+    free(mtl);
+    const int pk = kind_of_folder(kind);
+    for (int i = 0; i < v->solo_mtl.count; ++i) {
+        acr_material *m = &v->solo_mtl.m[i];
+        if (!m->textured || !m->texture[0]) continue;
+        snprintf(path, sizeof path, "%s/%s", base, m->texture);
+        /* only the part's own texture.png carries the AC's colours */
+        const int own = strcmp(m->texture, "texture.png") == 0;
+        load_texture(path, own ? pk : ACR_PART_NONE, own ? paint : NULL, &v->solo_tex[i]);
+    }
+    /* Which objects the garage shows: boosters come as 3, 1 and 5 nozzle
+       blocks (one is shown), arms as right and left (upper + lower), back
+       units as left and right copies. */
+    int show[ACV_SOLO_MAX], n_show = 0;
+    if (!strcmp(kind, "booster") && objects == 3) show[n_show++] = 1;
+    else if (!strcmp(kind, "arms") && objects == 4) { show[n_show++] = 0; show[n_show++] = 2; }
+    else if ((!strcmp(kind, "arms") || !strcmp(kind, "back")) && objects == 2) show[n_show++] = 0;
+    else for (int k = 0; k < objects && n_show < ACV_SOLO_MAX; ++k) show[n_show++] = k;
+    for (int i = 0; i < n_show && v->solo_count < ACV_SOLO_MAX; ++i) {
+        const int k = show[i];
+        snprintf(path, sizeof path, "%s/object%d.obj", base, k);
+        char *obj = read_text(path);
+        if (obj && acr_obj_parse(obj, &v->solo_mtl, &v->solo_mesh[v->solo_count])) v->solo_count++;
+        free(obj);
+    }
+    if (!v->solo_count) { moa_acv_free(v); return NULL; }
+    /* turn about the part's own middle */
+    float lo[3] = { 1e9f, 1e9f, 1e9f }, hi[3] = { -1e9f, -1e9f, -1e9f };
+    for (int k = 0; k < v->solo_count; ++k)
+        for (int t = 0; t < v->solo_mesh[k].tri_count * 3; ++t)
+            for (int c = 0; c < 3; ++c) {
+                const float q = v->solo_mesh[k].v[t].p[c];
+                if (q < lo[c]) lo[c] = q;
+                if (q > hi[c]) hi[c] = q;
+            }
+    for (int k = 0; k < v->solo_count; ++k)
+        for (int t = 0; t < v->solo_mesh[k].tri_count * 3; ++t) {
+            v->solo_mesh[k].v[t].p[0] -= 0.5f * (lo[0] + hi[0]);
+            v->solo_mesh[k].v[t].p[2] -= 0.5f * (lo[2] + hi[2]);
+        }
+    frame_model(v);
+    return v;
+}
+
 /* ---- posing ---- */
 
 typedef struct acv_vtx { float x, y, z, nx, ny, nz, u, v; } acv_vtx;
 
 /* Calls `fn` for every triangle of the AC posed at `time`, in model space
  * (x right, y up, z towards the viewer at yaw 0). */
-typedef void (*tri_fn)(void *ctx, const acv_vtx t[3], const acv_tex *tex, const uint8_t rgb[3]);
+typedef void (*tri_fn)(void *ctx, const acv_vtx t[3], const acv_tex *tex, const uint8_t rgb[3], int kind);
+
+static void solo_tris(const moa_acv *v, tri_fn fn, void *ctx) {
+    for (int k = 0; k < v->solo_count; ++k) {
+        const acr_mesh *mesh = &v->solo_mesh[k];
+        for (int t = 0; t < mesh->tri_count; ++t) {
+            const int mi = mesh->material[t];
+            const acr_material *mt = &v->solo_mtl.m[mi];
+            const acv_tex *tex = mt->textured && v->solo_tex[mi].rgba ? &v->solo_tex[mi] : NULL;
+            const uint8_t rgb[3] = { tex ? 128 : mt->r, tex ? 128 : mt->g, tex ? 128 : mt->b };
+            acv_vtx o[3];
+            for (int j = 0; j < 3; ++j) {
+                const acr_mesh_vertex *sv = &mesh->v[t * 3 + j];
+                o[j].x = sv->p[0]; o[j].y = sv->p[1]; o[j].z = sv->p[2];
+                o[j].nx = sv->n[0]; o[j].ny = sv->n[1]; o[j].nz = sv->n[2];
+                o[j].u = sv->uv[0]; o[j].v = 1.0f - sv->uv[1];
+            }
+            fn(ctx, o, tex, rgb, ACR_PART_NONE);
+        }
+    }
+}
 
 static void for_each_tri(const moa_acv *v, float time, tri_fn fn, void *ctx) {
+    if (v->solo) { solo_tris(v, fn, ctx); return; }
     acr_pose pose;
     if (v->anims.anim[0].frames) acr_pose_play_smooth(&v->skel, &v->anims, 0, time * 22.0f, 1, &pose);
     else acr_pose_bind(&v->skel, &pose);
@@ -378,14 +481,14 @@ static void for_each_tri(const moa_acv *v, float time, tri_fn fn, void *ctx) {
                 o[j].u = s->uv[0];
                 o[j].v = 1.0f - s->uv[1];
             }
-            fn(ctx, o, tex, rgb);
+            fn(ctx, o, tex, rgb, node->draw_kind);
         }
     }
 }
 
 typedef struct bounds { float lo[3], hi[3]; int any; } bounds;
-static void grow(void *ctx, const acv_vtx t[3], const acv_tex *tex, const uint8_t rgb[3]) {
-    (void)tex; (void)rgb;
+static void grow(void *ctx, const acv_vtx t[3], const acv_tex *tex, const uint8_t rgb[3], int kind) {
+    (void)tex; (void)rgb; (void)kind;
     bounds *b = (bounds *)ctx;
     for (int j = 0; j < 3; ++j) {
         const float p[3] = { t[j].x, t[j].y, t[j].z };
@@ -420,6 +523,11 @@ typedef struct raster {
     uint8_t *rgba;
     float *depth;
     float cy, sy, cp, sp, centre_y, scale, dist;
+    unsigned wire_mask;              /* part kinds drawn as wireframe (bit per kind) */
+    uint8_t wire_rgb[3];
+    float *lines;                    /* screen-space edges, 6 floats each */
+    size_t n_lines, cap_lines;
+    int pass;                        /* 0: fill, 1: collect wire edges */
 } raster;
 
 typedef struct svtx { float x, y, z, u, v, light; } svtx;
@@ -469,8 +577,50 @@ static void put_tri(raster *r, const svtx s[3], const acv_tex *tex, const uint8_
         }
 }
 
-static void draw_tri(void *ctx, const acv_vtx t[3], const acv_tex *tex, const uint8_t rgb[3]) {
+static void add_line(raster *r, const svtx *a, const svtx *b) {
+    /* each edge once: quads come as two triangles sharing a diagonal, and
+       neighbours share edges */
+    for (size_t i = 0; i < r->n_lines; ++i) {
+        const float *l = r->lines + 6 * i;
+        if ((fabsf(l[0] - a->x) < 0.01f && fabsf(l[1] - a->y) < 0.01f && fabsf(l[3] - b->x) < 0.01f &&
+             fabsf(l[4] - b->y) < 0.01f) ||
+            (fabsf(l[0] - b->x) < 0.01f && fabsf(l[1] - b->y) < 0.01f && fabsf(l[3] - a->x) < 0.01f &&
+             fabsf(l[4] - a->y) < 0.01f))
+            return;
+    }
+    if (r->n_lines == r->cap_lines) {
+        const size_t cap = r->cap_lines ? r->cap_lines * 2 : 512;
+        float *nl = (float *)realloc(r->lines, cap * 6 * sizeof(float));
+        if (!nl) return;
+        r->lines = nl;
+        r->cap_lines = cap;
+    }
+    float *l = r->lines + 6 * r->n_lines++;
+    l[0] = a->x; l[1] = a->y; l[2] = a->z; l[3] = b->x; l[4] = b->y; l[5] = b->z;
+}
+
+/* Lines over the filled AC: hidden where another part is in front. */
+static void draw_lines(raster *r) {
+    for (size_t i = 0; i < r->n_lines; ++i) {
+        const float *l = r->lines + 6 * i;
+        const float dx = l[3] - l[0], dy = l[4] - l[1];
+        const int steps = (int)(fmaxf(fabsf(dx), fabsf(dy))) + 1;
+        for (int k = 0; k <= steps; ++k) {
+            const float t = (float)k / (float)steps;
+            const int x = (int)floorf(l[0] + dx * t), y = (int)floorf(l[1] + dy * t);
+            if (x < 0 || y < 0 || x >= r->w || y >= r->h) continue;
+            const float z = l[2] + (l[5] - l[2]) * t;
+            if (z > r->depth[y * r->w + x] + 2.0f) continue;
+            uint8_t *o = &r->rgba[4 * (y * r->w + x)];
+            o[0] = r->wire_rgb[0]; o[1] = r->wire_rgb[1]; o[2] = r->wire_rgb[2]; o[3] = 255;
+        }
+    }
+}
+
+static void draw_tri(void *ctx, const acv_vtx t[3], const acv_tex *tex, const uint8_t rgb[3], int kind) {
     raster *r = (raster *)ctx;
+    const int wire = kind < 32 && ((r->wire_mask >> kind) & 1u);
+    if (wire != r->pass) return;
     svtx s[3];
     for (int j = 0; j < 3; ++j) {
         /* turn by yaw about y, then tilt by pitch about x */
@@ -493,14 +643,26 @@ static void draw_tri(void *ctx, const acv_vtx t[3], const acv_tex *tex, const ui
         const float d = len > 0 ? (nx * -0.45f + ny * 0.6f + nz * 0.66f) / len : 0.0f;
         s[j].light = 0.6f + 0.6f * (d > 0 ? d : 0.0f);
     }
+    if (wire) {
+        for (int j = 0; j < 3; ++j) add_line(r, &s[j], &s[(j + 1) % 3]);
+        return;
+    }
     put_tri(r, s, tex, rgb);
 }
 
 void moa_acv_render(const moa_acv *v, float yaw, float pitch, float time, int w, int h, uint8_t *rgba) {
+    moa_acv_render_ex(v, yaw, pitch, time, 1.0f, 0, NULL, w, h, rgba);
+}
+
+void moa_acv_render_ex(const moa_acv *v, float yaw, float pitch, float time, float zoom,
+                       unsigned wire_mask, const uint8_t wire_rgb[3], int w, int h, uint8_t *rgba) {
     memset(rgba, 0, (size_t)w * h * 4);
     if (!v || w <= 0 || h <= 0) return;
     raster r;
+    memset(&r, 0, sizeof r);
     r.w = w; r.h = h; r.rgba = rgba;
+    r.wire_mask = wire_mask;
+    if (wire_rgb) memcpy(r.wire_rgb, wire_rgb, 3);
     r.depth = (float *)malloc(sizeof(float) * (size_t)w * h);
     if (!r.depth) return;
     for (int i = 0; i < w * h; ++i) r.depth[i] = 1e30f;
@@ -509,8 +671,14 @@ void moa_acv_render(const moa_acv *v, float yaw, float pitch, float time, int w,
     r.dist = v->radius * 3.2f;
     /* the whole AC fits the shorter side with a little room */
     const float side = (float)(w < h ? w : h);
-    r.scale = 0.46f * side * (r.dist - v->radius) / v->radius;
+    r.scale = 0.46f * side * (r.dist - v->radius) / v->radius * (zoom > 0.1f ? zoom : 0.1f);
     for_each_tri(v, time, draw_tri, &r);
+    if (wire_mask) {
+        r.pass = 1;
+        for_each_tri(v, time, draw_tri, &r);
+        draw_lines(&r);
+    }
+    free(r.lines);
     free(r.depth);
 }
 
@@ -518,27 +686,6 @@ void moa_acv_render(const moa_acv *v, float yaw, float pitch, float time, int w,
 
 static const char *const k_cat_dir[MOA_CAT__COUNT] = {
     "head", "core", "legs", "arms", "hand", "back", "blade", "booster", "fcs", "generator"
-};
-
-/* Shown in this order when the file has them. */
-static const struct { const char *key, *label; int better; } k_fields[] = {
-    { "weight", "WEIGHT", -1 },          { "energy_drain", "ENERGY DRAIN", -1 },
-    { "ap", "AP", 1 },                   { "defense_shell", "DEF. SHELL", 1 },
-    { "defense_energy", "DEF. ENERGY", 1 },
-    { "arm_load_limit", "ARM LOAD", 1 }, { "option_slots", "OPTION SLOTS", 1 },
-    { "carry_limit", "MAX. WEIGHT", 1 }, { "drain_standing", "DRAIN (STANDING)", -1 },
-    { "stability", "STABILITY", 1 },     { "turn_speed", "TURN SPEED", 1 },
-    { "turn_accel", "TURN ACCEL.", 1 },
-    { "output", "OUTPUT", 1 },           { "capacity", "CAPACITY", 1 },
-    { "red_zone", "RED ZONE", -1 },
-    { "power", "BOOST POWER", 1 },       { "boost_drain", "BOOST DRAIN", -1 },
-    { "attack", "ATTACK", 1 },           { "ammo", "AMMO", 1 },
-    { "range", "RANGE", 1 },             { "salvo", "LOCKS AT ONCE", 1 },
-    { "energy_per_shot", "ENERGY / SHOT", -1 },
-    { "shot_speed", "SHOT SPEED", 1 },   { "impact", "IMPACT", 1 },
-    { "homing", "HOMING", 1 },           { "ammo_price", "AMMO PRICE", -1 },
-    { "max_locks", "MAX. LOCKS", 1 },
-    { "price", "PRICE", 0 },
 };
 
 static void copy_string(const char *b, const char *e, const char *key, char *out, size_t n) {
@@ -553,43 +700,171 @@ static void copy_string(const char *b, const char *e, const char *key, char *out
     out[i] = '\0';
 }
 
+/* The garage's own details pages: its rows, in its order, with its words
+ * (menu module 0x800D279C.. label lists, 0x800D2988.. value texts). Numbers
+ * come from the part record (raw words from byte 36), so installs made
+ * before these fields were named still show them; weapon rows come from the
+ * weapon detail tables the importer writes out by name. */
+static const char *const k_none_prov[2] = { "NONE", "PROVIDED" };
+static const char *const k_computer[3] = { "STANDARD", "DETAILED", "ROUGH" };
+static const char *const k_map[4] = { "AREA&PLACE NAME", "PLACE NAME DISP", "AREA MEMORY", "NO MEMORY" };
+static const char *const k_radar_type[4] = { "STANDARD", "CIRCLE", "OCTAGON", "GRID" };
+static const char *const k_weapon_lock[5] = { "WIDE & SHALLOW", "STANDARD", "SPECIAL", "NARROW & DEEP", "NONE" };
+static const char *const k_fcs_lock[5] = { "STANDARD", "SIDEWAY", "LENGTHWAY", "WIDE & SHALLOW", "NARROW & DEEP" };
+
+typedef struct det_ctx {
+    const char *b, *e;
+    long raw[48];
+    int n_raw;
+    struct moa_acv_details *out;
+} det_ctx;
+
+/* Record byte `off` (36 and up) from the raw words. */
+static long rec_u8(const det_ctx *c, int off) {
+    const int w = (off - 36) / 2;
+    if (off < 36 || w >= c->n_raw) return 0;
+    return (off & 1) ? (c->raw[w] >> 8) & 255 : c->raw[w] & 255;
+}
+static long rec_u16(const det_ctx *c, int off) {
+    const int w = (off - 36) / 2;
+    return (off >= 36 && w < c->n_raw) ? c->raw[w] & 0xFFFF : 0;
+}
+
+static struct moa_acv_field *add_field(det_ctx *c, const char *key, const char *label, int better) {
+    if (c->out->count >= MOA_ACV_FIELDS) return NULL;
+    struct moa_acv_field *f = &c->out->f[c->out->count++];
+    memset(f, 0, sizeof *f);
+    snprintf(f->key, sizeof f->key, "%s", key);
+    snprintf(f->label, sizeof f->label, "%s", label);
+    f->better = better;
+    return f;
+}
+static void num(det_ctx *c, const char *key, const char *label, long v, int better) {
+    struct moa_acv_field *f = add_field(c, key, label, better);
+    if (f) f->value = v;
+}
+static void word(det_ctx *c, const char *key, const char *label, long v, const char *const *names, int n) {
+    struct moa_acv_field *f = add_field(c, key, label, 0);
+    if (!f) return;
+    f->value = v;
+    f->is_text = 1;
+    snprintf(f->text, sizeof f->text, "%s", (v >= 0 && v < n) ? names[v] : "");
+}
+static long named(const det_ctx *c, const char *key, long fallback) {
+    return get_int(c->b, c->e, key, fallback);
+}
+
+static void weapon_rows(det_ctx *c) {
+    if (!find_key(c->b, c->e, "attack")) return;
+    word(c, "lock_class", "WEAPON LOCK", named(c, "lock_class", 4), k_weapon_lock, 5);
+    num(c, "attack", "ATTACK POWER", named(c, "attack", 0), 1);
+    num(c, "ammo", "NUMBER OF AMMO", named(c, "ammo", 0), 1);
+    struct moa_acv_field *f = add_field(c, "ammo_type", "AMMO TYPE", 0);
+    if (f) {
+        const long fl = named(c, "ammo_flags", -1);
+        const char *t = fl >= 0 ? ((fl & 0x10) ? "SOLID" : (fl & 0x20) ? "ENERGY" : "")
+                                : (named(c, "energy_damage", 0) ? "ENERGY" : "SOLID");
+        f->is_text = 1;
+        snprintf(f->text, sizeof f->text, "%s", t);
+    }
+    num(c, "ammo_price", "AMMO PRICE", named(c, "ammo_price", 0), -1);
+    num(c, "range", "RANGE", named(c, "range", 0), 1);
+    num(c, "salvo", "MAXIMUM-LOCK", named(c, "salvo", 0), 1);
+    num(c, "fire_interval", "RELOAD TIME", named(c, "fire_interval", 0), -1);
+}
+
 int moa_acv_parse_details(const char *text, int cat, struct moa_acv_details *out) {
     memset(out, 0, sizeof *out);
-    const char *e = text + strlen(text);
-    copy_string(text, e, "name", out->name, sizeof out->name);
-    copy_string(text, e, "type", out->type, sizeof out->type);
+    det_ctx c;
+    memset(&c, 0, sizeof c);
+    c.b = text;
+    c.e = text + strlen(text);
+    c.out = out;
+    copy_string(c.b, c.e, "name", out->name, sizeof out->name);
+    copy_string(c.b, c.e, "type", out->type, sizeof out->type);
     if (!out->name[0]) return 0;
-    for (size_t i = 0; i < sizeof k_fields / sizeof k_fields[0] && out->count < MOA_ACV_FIELDS; ++i) {
-        const char *v = find_key(text, e, k_fields[i].key);
-        if (!v) continue;
-        /* a generator's drain line is not written; a booster's output is "power" */
-        struct moa_acv_field *f = &out->f[out->count++];
-        snprintf(f->key, sizeof f->key, "%s", k_fields[i].key);
-        snprintf(f->label, sizeof f->label, "%s", k_fields[i].label);
-        f->value = strtol(v, NULL, 10);
-        f->better = k_fields[i].better;
-    }
-    if (cat == MOA_CAT_FCS) {
-        /* lock_class_N = [range, box w, h, inner w, h, lock time] */
-        for (int k = 0; k < 4 && out->count + 2 <= MOA_ACV_FIELDS; ++k) {
-            char key[16];
-            snprintf(key, sizeof key, "lock_class_%d", k);
-            const char *v = find_key(text, e, key);
-            if (!v || !(v = strchr(v, '['))) continue;
-            long n[6] = { 0 };
-            char *p = (char *)v + 1;
-            for (int j = 0; j < 6; ++j) { n[j] = strtol(p, &p, 10); if (*p == ',') ++p; }
-            struct moa_acv_field *f = &out->f[out->count++];
-            snprintf(f->key, sizeof f->key, "lock_range_%d", k);
-            snprintf(f->label, sizeof f->label, "LOCK RANGE %c", 'A' + k);
-            f->value = n[0];
-            f->better = 1;
-            f = &out->f[out->count++];
-            snprintf(f->key, sizeof f->key, "lock_time_%d", k);
-            snprintf(f->label, sizeof f->label, "LOCK TIME %c", 'A' + k);
-            f->value = n[5];
-            f->better = -1;
+    const char *r = find_key(c.b, c.e, "raw");
+    if (r && (r = strchr(r, '['))) {
+        char *p = (char *)r + 1;
+        while (c.n_raw < 48) {
+            char *q;
+            const long v = strtol(p, &q, 10);
+            if (q == p) break;
+            c.raw[c.n_raw++] = v;
+            p = q;
+            while (*p == ' ' || *p == ',') ++p;
+            if (*p == ']') break;
         }
+    }
+    const int index = (int)named(&c, "game_index", 0);
+    num(&c, "price", "PRICE", rec_u16(&c, 36) | rec_u16(&c, 38) << 16, 0);
+    num(&c, "weight", "WEIGHT", rec_u16(&c, 40), -1);
+    if (cat == MOA_CAT_GEN) {
+        num(&c, "output", "ENERGY OUTPUT", rec_u16(&c, 42), 1);
+        num(&c, "capacity", "MAXIMUM CHARGE", rec_u16(&c, 44), 1);
+        num(&c, "red_zone", "CHARGE REDZONE", rec_u16(&c, 46), -1);
+        return 1;
+    }
+    num(&c, "energy_drain", "ENERGY DRAIN", rec_u16(&c, 42), -1);
+    switch (cat) {
+    case MOA_CAT_HEAD: case MOA_CAT_CORE: case MOA_CAT_ARMS: case MOA_CAT_LEGS:
+        num(&c, "ap", "ARMOR POINT", rec_u16(&c, 44), 1);
+        num(&c, "defense_shell", "DEF_SHELL", rec_u16(&c, 46), 1);
+        num(&c, "defense_energy", "DEF_ENERGY", rec_u16(&c, 48), 1);
+        break;
+    default: break;
+    }
+    switch (cat) {
+    case MOA_CAT_HEAD:
+        word(&c, "computer", "COMPUTER TYPE", rec_u8(&c, 0x32), k_computer, 3);
+        word(&c, "map", "MAP TYPE", rec_u8(&c, 0x33), k_map, 4);
+        word(&c, "noise", "NOISE CANCELER", rec_u8(&c, 0x34) ? 1 : 0, k_none_prov, 2);
+        word(&c, "bio", "BIO SENSOR", rec_u8(&c, 0x35) ? 1 : 0, k_none_prov, 2);
+        word(&c, "radar", "RADAR FUNCTION", rec_u8(&c, 0x36) ? 1 : 0, k_none_prov, 2);
+        if (rec_u8(&c, 0x36)) {
+            num(&c, "radar_range", "RADAR RANGE", rec_u16(&c, 0x38), 1);
+            word(&c, "radar_type", "RADAR TYPE", rec_u8(&c, 0x3B), k_radar_type, 4);
+        }
+        break;
+    case MOA_CAT_CORE:
+        num(&c, "arm_load_limit", "MAX WEIGHT", rec_u16(&c, 0x32), 1);
+        num(&c, "vs_mg_response", "VS-MG-RESPONSE", rec_u8(&c, 0x34), 1);
+        num(&c, "vs_mg_angle", "VS-MG-ANGLE", rec_u8(&c, 0x35), 1);
+        num(&c, "option_slots", "EXTENSION SLOTS", rec_u8(&c, 0x36), 1);
+        break;
+    case MOA_CAT_LEGS:
+        num(&c, "carry_limit", "MAX WEIGHT", rec_u16(&c, 0x32), 1);
+        num(&c, "speed", "SPEED", rec_u16(&c, 0x36), 1);
+        num(&c, "stability", "STABILITY", rec_u16(&c, 0x40), 1);
+        word(&c, "jump", "JUMP FUNCTION", rec_u16(&c, 0x42) ? 1 : 0, k_none_prov, 2);
+        break;
+    case MOA_CAT_ARMS:
+        if (index >= 12) weapon_rows(&c);
+        break;
+    case MOA_CAT_HAND:
+        weapon_rows(&c);
+        break;
+    case MOA_CAT_BACK:
+        word(&c, "radar", "RADAR FUNCTION", rec_u16(&c, 0x2C) ? 1 : 0, k_none_prov, 2);
+        if (rec_u16(&c, 0x2C)) {
+            num(&c, "radar_range", "RADAR RANGE", rec_u16(&c, 0x2E), 1);
+            word(&c, "radar_type", "RADAR TYPE", rec_u16(&c, 0x30), k_radar_type, 4);
+        }
+        weapon_rows(&c);
+        break;
+    case MOA_CAT_BLADE:
+        num(&c, "charge_drain", "CHARGE DRAIN", rec_u16(&c, 0x2C), -1);
+        num(&c, "attack", "ATTACK POWER", rec_u16(&c, 0x30), 1);
+        break;
+    case MOA_CAT_BOOST:
+        num(&c, "power", "BOOST POWER", rec_u16(&c, 0x2C), 1);
+        num(&c, "boost_drain", "CHARGE DRAIN", rec_u16(&c, 0x2E), -1);
+        break;
+    case MOA_CAT_FCS:
+        num(&c, "max_locks", "MAXIMUM LOCK", rec_u8(&c, 0x2C), 1);
+        word(&c, "lock_type", "LOCK TYPE", rec_u8(&c, 0x2D), k_fcs_lock, 5);
+        break;
+    default: break;
     }
     return 1;
 }

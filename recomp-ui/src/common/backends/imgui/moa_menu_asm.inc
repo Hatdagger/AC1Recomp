@@ -3,7 +3,9 @@
  *
  *   - the 3D AC, drawn from the optional model install (Extras > INSTALL 3D
  *     AC MODELS; games/master-of-arena/moa_ac_view.c draws it in software);
- *     right stick (or Q / E, R / F) turns and tilts it
+ *     it turns slowly on its own as in the garage; right stick up / down (or
+ *     R / F, or the mouse wheel) zooms
+ *   - each part on its own (the garage's part models, same install)
  *   - TRIANGLE / Y (or I): the highlighted part's details, as the game's
  *     garage shows them
  *   - SQUARE / X (or C) in a part list: mark parts of that slot to compare;
@@ -97,12 +99,20 @@ static bool g_acv_have_key = false;
 static bool g_acv_failed = false;
 static LauncherTexture g_acv_tex = { 0, 0, 0 };
 static std::vector<uint8_t> g_acv_px;
+static moa_acv* g_part_acv = nullptr;
+static std::string g_part_key;
+static LauncherTexture g_part_tex = { 0, 0, 0 };
+static std::vector<uint8_t> g_part_px;
 static float g_acv_yaw = 0.6f, g_acv_pitch = 0.12f;
-static double g_acv_touched = -10.0;     /* last time the player turned it */
+static float g_acv_zoom = 1.25f;          /* Assembly: about the game's own framing */
+static double g_acv_turned = -1.0;       /* frame time the turn was last advanced */
 
 static void acv_reset() {
     moa_acv_free(g_acv);
     g_acv = nullptr;
+    moa_acv_free(g_part_acv);
+    g_part_acv = nullptr;
+    g_part_key.clear();
     g_acv_have_key = false;
     g_acv_failed = false;
 }
@@ -131,27 +141,30 @@ static float stick(ImGuiKey neg, ImGuiKey pos) {
     return std::fabs(v) < 0.18f ? 0.0f : v;
 }
 
-/* Right stick turns (left/right) and tilts (up/down); keyboard Q/E and R/F.
- * Left alone for a few seconds, the AC turns slowly as in the garage. */
-static void acv_input() {
-    const float dt = ImGui::GetIO().DeltaTime;
-    float turn = stick(ImGuiKey_GamepadRStickLeft, ImGuiKey_GamepadRStickRight);
-    float tilt = stick(ImGuiKey_GamepadRStickDown, ImGuiKey_GamepadRStickUp);
-    if (ImGui::IsKeyDown(ImGuiKey_Q)) turn -= 1.0f;
-    if (ImGui::IsKeyDown(ImGuiKey_E)) turn += 1.0f;
-    if (ImGui::IsKeyDown(ImGuiKey_R)) tilt += 1.0f;
-    if (ImGui::IsKeyDown(ImGuiKey_F)) tilt -= 1.0f;
+/* As in the garage the AC (and the part on its own) turns slowly by itself;
+ * the only control is zoom: right stick up / down, R / F, or the mouse wheel
+ * over the picture. Called once a frame by whatever draws the AC. */
+static void acv_input(bool zoomable, ImVec2 a, ImVec2 b) {
     const double now = ImGui::GetTime();
-    if (turn != 0.0f || tilt != 0.0f) g_acv_touched = now;
-    if (now - g_acv_touched > 4.0) turn = 0.25f;
-    g_acv_yaw += turn * 2.4f * dt;
-    g_acv_pitch += tilt * 1.4f * dt;
-    if (g_acv_pitch > 1.1f) g_acv_pitch = 1.1f;
-    if (g_acv_pitch < -0.6f) g_acv_pitch = -0.6f;
+    if (g_acv_turned == now) return;              /* both views share one turn */
+    const float dt = ImGui::GetIO().DeltaTime;
+    g_acv_turned = now;
+    g_acv_yaw += 0.6f * dt;
+    if (!zoomable) return;
+    float z = stick(ImGuiKey_GamepadRStickDown, ImGuiKey_GamepadRStickUp);
+    if (ImGui::IsKeyDown(ImGuiKey_R)) z += 1.0f;
+    if (ImGui::IsKeyDown(ImGuiKey_F)) z -= 1.0f;
+    g_acv_zoom *= std::exp(z * 1.2f * dt);
+    if (ImGui::IsMouseHoveringRect(a, b, false) && ImGui::GetIO().MouseWheel != 0.0f)
+        g_acv_zoom *= std::pow(1.12f, ImGui::GetIO().MouseWheel);
+    g_acv_zoom = std::clamp(g_acv_zoom, 0.7f, 3.0f);
 }
 
-/* Draws the AC (or why it can't) in the box at x, y (design units). */
-static void draw_acv(const Gfx& g, float x, float y, float w, float h, const moa_card& card) {
+/* Draws the AC (or why it can't) in the box at x, y (design units). The
+ * part kinds in `wire` (bit per MOA_ACV_* kind) are drawn as `wire_col`
+ * wireframe, as the garage marks the slot being changed. */
+static void draw_acv(const Gfx& g, float x, float y, float w, float h, const moa_card& card,
+                     unsigned wire = 0, ImU32 wire_col = 0, bool zoomable = false) {
     g.dl->AddRectFilled(ImVec2(g.o.x + x * g.s, g.o.y + y * g.s),
                         ImVec2(g.o.x + (x + w) * g.s, g.o.y + (y + h) * g.s), IM_COL32(4, 7, 10, 255));
     if (!models_installed()) {
@@ -164,15 +177,63 @@ static void draw_acv(const Gfx& g, float x, float y, float w, float h, const moa
         text(g, x + 10.0f, y + h * 0.5f - 8.0f, 10.0f, kWarn, "NO MODEL FOR THIS CORE / ARMS / LEGS", w - 20.0f);
         return;
     }
-    acv_input();
+    acv_input(zoomable, at(g, x, y), at(g, x + w, y + h));
     /* drawn at the window's own pixel size so it stays sharp */
     const int pw = std::max(16, (int)(w * g.s)), ph = std::max(16, (int)(h * g.s));
     g_acv_px.resize((size_t)pw * ph * 4);
-    moa_acv_render(v, g_acv_yaw, g_acv_pitch, (float)ImGui::GetTime(), pw, ph, g_acv_px.data());
+    const uint8_t rgb[3] = { (uint8_t)(wire_col & 255), (uint8_t)((wire_col >> 8) & 255),
+                             (uint8_t)((wire_col >> 16) & 255) };
+    moa_acv_render_ex(v, g_acv_yaw, g_acv_pitch, (float)ImGui::GetTime(), zoomable ? g_acv_zoom : 1.0f,
+                      wire, rgb, pw, ph, g_acv_px.data());
     launcher_texture_set_rgba(&g_acv_tex, g_acv_px.data(), pw, ph);
     if (g_acv_tex.id)
         g.dl->AddImage(tid(g_acv_tex), ImVec2(g.o.x + x * g.s, g.o.y + y * g.s),
                        ImVec2(g.o.x + (x + w) * g.s, g.o.y + (y + h) * g.s));
+}
+
+/* ---- one part on its own ---------------------------------------------------- */
+
+
+/* models/menu folder for a part category (moa_part_cat). */
+static const char* part_folder(int cat) {
+    switch (cat) {
+    case MOA_CAT_HEAD: return "head";
+    case MOA_CAT_CORE: return "core";
+    case MOA_CAT_LEGS: return "legs";
+    case MOA_CAT_ARMS: return "arms";
+    case MOA_CAT_HAND: return "hand";
+    case MOA_CAT_BACK: return "back";
+    case MOA_CAT_BLADE: return "blade";
+    case MOA_CAT_BOOST: return "booster";
+    case MOA_CAT_FCS: return "fcs";
+    case MOA_CAT_GEN: return "generator";
+    default: return "";
+    }
+}
+
+/* The part turning on its own in the box (the garage's left window).
+ * Returns false when there is no picture for it (the caller says why). */
+static bool draw_part_view(const Gfx& g, float x, float y, float w, float h, int cat, int id,
+                           const uint8_t paint[48]) {
+    if (!models_installed() || !moa_acv_has_part_models(models_dir().c_str())) return false;
+    char key[96];
+    std::snprintf(key, sizeof key, "%d/%d/", cat, id);
+    std::string k = key;
+    k.append((const char*)paint, 48);
+    if (k != g_part_key) {
+        moa_acv_free(g_part_acv);
+        g_part_acv = moa_acv_load_part(models_dir().c_str(), part_folder(cat), id, paint);
+        g_part_key = k;
+    }
+    if (!g_part_acv) return false;
+    acv_input(false, ImVec2(0, 0), ImVec2(0, 0));
+    const int pw = std::max(16, (int)(w * g.s)), ph = std::max(16, (int)(h * g.s));
+    g_part_px.resize((size_t)pw * ph * 4);
+    moa_acv_render_ex(g_part_acv, g_acv_yaw, 0.35f, 0.0f, 0.92f, 0, nullptr, pw, ph, g_part_px.data());
+    launcher_texture_set_rgba(&g_part_tex, g_part_px.data(), pw, ph);
+    if (g_part_tex.id)
+        g.dl->AddImage(tid(g_part_tex), at(g, x, y), at(g, x + w, y + h));
+    return true;
 }
 
 /* ---- details and comparison ----------------------------------------------- */

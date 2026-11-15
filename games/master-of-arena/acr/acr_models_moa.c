@@ -708,6 +708,288 @@ static int export_part(out_ctx *c, const cat_info *cat, unsigned index, const se
     return ok;
 }
 
+
+/* ---- Garage models (MENU_TMD) ------------------------------------------------ */
+
+/* The garage's Assembly screen shows each part on its own from GG/MS/MENU_TMD:
+ * one TMD per owned-part number (same ranges as the save's part counts, in a
+ * different order). They are whole models in the part's own space, so FCS,
+ * generators, option parts and blades, which have no AC model, get one too.
+ * Textures come from the part type's own archive (entry = part number), or
+ * for a few shared ones from MENU_TIM. */
+typedef struct menu_cat {
+    const char *name;      /* folder under models/menu */
+    unsigned base, count;  /* MENU_TMD entries */
+    const char *tex;       /* archive with one texture per part */
+    const char *tex2;      /* second archive (right-hand back units) or NULL */
+    int patterned;         /* AC colours (core, legs, arms, head) */
+    unsigned clut_row;     /* patterned: the row the game builds the AC's palette in */
+} menu_cat;
+
+static const menu_cat MENU_CATS[] = {
+    { "core",      3,   11, "CORE_T", NULL,    1, 486 },
+    { "legs",      14,  40, "LEG_T",  NULL,    1, 488 },
+    { "arms",      54,  24, "ARMS_T", NULL,    1, 489 },
+    { "head",      78,  18, "HEAD_T", NULL,    1, 490 },
+    { "booster",   96,  14, "BST_T",  NULL,    0, 0 },
+    { "back",      110, 60, "BWL_T",  "BWR_T", 0, 0 },
+    { "blade",     170, 6,  "WEL_T",  NULL,    0, 0 },
+    { "hand",      176, 26, "WER_T",  NULL,    0, 0 },
+    { "fcs",       202, 16, "COMP_T", NULL,    0, 0 },
+    { "option",    218, 19, "SPEC_T", NULL,    0, 0 },
+    { "generator", 237, 15, "GENE_T", NULL,    0, 0 },
+};
+#define MENU_CAT_COUNT (sizeof MENU_CATS / sizeof MENU_CATS[0])
+#define MENU_TEX_MAX 8
+
+typedef struct menu_tex {
+    uint8_t *data;         /* owns the TIM */
+    tim_info t;
+    int patterned;
+    char file[32];
+    int used;
+    unsigned row;          /* CLUT row it answers to */
+} menu_tex;
+
+/* The TIM for CLUT row `row`, among the part's own textures and MENU_TIM's
+ * shared ones (entries 0 and 1). */
+static menu_tex *menu_find_tex(menu_tex *tx, unsigned n, unsigned row) {
+    for (unsigned i = 0; i < n; ++i) {
+        if (tx[i].data && tx[i].row == row) return &tx[i];
+    }
+    return NULL;
+}
+
+static unsigned menu_load_texs(const char *unpacked, const menu_cat *mc, unsigned index, menu_tex *tx) {
+    unsigned n = 0;
+    const char *arcs[4] = { mc->tex, mc->tex2, NULL, NULL };
+    const unsigned ents[4] = { index, index, 0, 0 };
+    /* the part's own textures, then any other row its archive has (blades
+       share WEL_T 4), then MENU_TIM's shared ones */
+    for (unsigned k = 0; k < 4 + 64 && n < MENU_TEX_MAX; ++k) {
+        const char *arc = k < 4 ? arcs[k] : mc->tex;
+        const unsigned ent = k < 4 ? ents[k] : k - 4;
+        if (!arc || (k >= 4 && ent == index)) continue;
+        size_t sz = 0;
+        uint8_t *d = read_tex_entry(unpacked, arc, ent, &sz);
+        if (!d) continue;
+        menu_tex *m = &tx[n];
+        memset(m, 0, sizeof *m);
+        if (!parse_tim(d, sz, &m->t)) { free(d); continue; }
+        m->data = d;
+        m->patterned = mc->patterned && k == 0;
+        if (m->patterned) m->row = mc->clut_row;
+        else if (m->t.clut) m->row = u16(m->t.clut - 12 + 6);   /* CLUT block header: y */
+        else { free(d); continue; }
+        int dup = 0;
+        for (unsigned i = 0; i < n; ++i) if (tx[i].row == m->row) dup = 1;
+        if (dup) { free(d); continue; }
+        snprintf(m->file, sizeof m->file, k == 0 ? "texture.png" : "texture-%u.png", n);
+        ++n;
+    }
+    for (unsigned e = 0; e < 2 && n < MENU_TEX_MAX; ++e) {
+        size_t sz = 0;
+        uint8_t *d = read_tex_entry(unpacked, "MENU_TIM", e, &sz);
+        if (!d) continue;
+        menu_tex *m = &tx[n];
+        memset(m, 0, sizeof *m);
+        if (!parse_tim(d, sz, &m->t) || !m->t.clut) { free(d); continue; }
+        m->data = d;
+        m->row = u16(m->t.clut - 12 + 6);
+        int dup = 0;
+        for (unsigned i = 0; i < n; ++i) if (tx[i].row == m->row) dup = 1;
+        if (dup) { free(d); continue; }
+        snprintf(m->file, sizeof m->file, "texture-%u.png", n);
+        ++n;
+    }
+    return n;
+}
+
+/* One MENU_TMD model as model.obj + part.mtl + textures + part.toml. TMD
+ * here: header 0x41, flags, object count; objects of 7 words (vertex top,
+ * count, normal top, count, packet top, packet group count, scale), tops
+ * relative to the object table. Packets come in groups: the first word is
+ * olen, ilen, u16 count, then the first packet's words; every further packet
+ * has its own olen, ilen, flag, mode word. Vertex indices are x4. */
+static int export_menu_part(const out_ctx *c, const menu_cat *mc, unsigned index, uint32_t *count) {
+    char path[1400];
+    snprintf(path, sizeof path, "%s/GG/MS/MENU_TMD/%03u.bin", c->unpacked, mc->base + index);
+    size_t size = 0;
+    uint8_t *m = read_all(path, &size);
+    if (!m) return 1;
+    if (size < 40 || u32(m) != 0x41 || u32(m + 8) == 0 || u32(m + 8) > 16) { free(m); return 1; }
+    const unsigned nobj = u32(m + 8);
+    menu_tex tx[MENU_TEX_MAX];
+    const unsigned ntx = menu_load_texs(c->unpacked, mc, index, tx);
+    char dir[1200];
+    snprintf(dir, sizeof dir, "%s/menu/%s/%02u", c->out_dir, mc->name, index);
+    int ok = make_dirs(dir);
+    FILE *f = NULL;
+    unsigned tris = 0;
+    char used_mats[64][48];
+    unsigned n_used = 0;
+    for (unsigned o = 0; ok && o < nobj; ++o) {
+        const size_t ob = 12 + 28 * (size_t)o;
+        if (ob + 28 > size) { ok = 0; break; }
+        unsigned vbase = 0, nbase = 0, tbase = 0;
+        snprintf(path, sizeof path, "%s/object%u.obj", dir, o);
+        f = fopen(path, "wb");
+        if (!f) { ok = 0; break; }
+        fprintf(f, "# Master of Arena garage model, %s %02u object %u, imported from your disc by\n"
+                   "# acr-import. Part space, x right, y up, z back (game units).\nmtllib part.mtl\n",
+                mc->name, index, o);
+        const uint32_t vt = u32(m + ob), nv = u32(m + ob + 4), nt = u32(m + ob + 8),
+                       nn = u32(m + ob + 12), pt = u32(m + ob + 16), ng = u32(m + ob + 20);
+        if (nv > 4096 || nn > 4096 || 12 + (size_t)vt + 8 * nv > size || 12 + (size_t)nt + 8 * nn > size) {
+            fclose(f); f = NULL; ok = 0; break;
+        }
+        for (uint32_t i = 0; i < nv; ++i) {
+            const uint8_t *v = m + 12 + vt + 8 * i;
+            fprintf(f, "v %d %d %d\n", s16(v), -s16(v + 2), -s16(v + 4));
+        }
+        for (uint32_t i = 0; i < nn; ++i) {
+            const uint8_t *v = m + 12 + nt + 8 * i;
+            fprintf(f, "vn %.5f %.5f %.5f\n", s16(v) / 4096.0, -s16(v + 2) / 4096.0, -s16(v + 4) / 4096.0);
+        }
+        size_t p = 12 + (size_t)pt;
+        for (uint32_t g = 0; ok && g < ng; ++g) {
+            if (p + 4 > size) { ok = 0; break; }
+            const uint32_t h = u32(m + p);
+            const unsigned ilen = (h >> 8) & 0xFF, cnt = h >> 16;
+            p += 4;
+            if (!ilen || cnt > 4096) { ok = 0; break; }
+            unsigned mode = 0, flag = 0;
+            if (cnt > 1 && p + 4 * (size_t)ilen + 4 <= size) {
+                flag = m[p + 4 * ilen + 2];
+                mode = m[p + 4 * ilen + 3];
+            }
+            for (unsigned k = 0; ok && k < cnt; ++k) {
+                if (k) {
+                    if (p + 4 > size) { ok = 0; break; }
+                    flag = m[p + 2]; mode = m[p + 3];
+                    p += 4;
+                }
+                if (p + 4 * (size_t)ilen > size) { ok = 0; break; }
+                const uint8_t *w = m + p;
+                p += 4 * (size_t)ilen;
+                if (cnt == 1) mode = (w[3] >> 5) == 1 ? w[3] : (ilen >= 6 ? 0x24 : 0x20);
+                if ((mode >> 5) != 1) continue;               /* not a polygon */
+                const int quad = (mode & 8) != 0, tex = (mode & 4) != 0, gour = (mode & 0x10) != 0;
+                const unsigned nvx = quad ? 4u : 3u, hw = ilen * 2;
+                const unsigned idx_at = tex ? nvx * 2 : 2;
+                if (idx_at + (gour ? 2 * nvx : 1 + nvx) > hw) continue;
+                unsigned vi[4], ni[4];
+                int bad = 0;
+                for (unsigned j = 0; j < nvx; ++j) {
+                    if (gour) { ni[j] = u16(w + 2 * (idx_at + 2 * j)); vi[j] = u16(w + 2 * (idx_at + 2 * j + 1)); }
+                    else { ni[j] = u16(w + 2 * idx_at); vi[j] = u16(w + 2 * (idx_at + 1 + j)); }
+                    vi[j] /= 4;
+                    if (vi[j] >= nv || ni[j] >= nn) bad = 1;
+                }
+                if (bad) continue;
+                char mat[48];
+                menu_tex *mt = NULL;
+                unsigned tsb = 0;
+                if (tex) {
+                    const unsigned row = u16(w + 2) >> 6;
+                    tsb = u16(w + 6);
+                    mt = menu_find_tex(tx, ntx, row);
+                }
+                const int semi = (mode & 2) != 0, two = (flag & 2) != 0;
+                if (mt) {
+                    snprintf(mat, sizeof mat, "%s%s%s", mt->file, semi ? "-semi" : "", two ? "-2side" : "");
+                    mt->used = 1;
+                } else {
+                    unsigned rgb = tex ? 0x808080u : ((unsigned)w[0] << 16 | (unsigned)w[1] << 8 | w[2]);
+                    snprintf(mat, sizeof mat, "rgb-%06X%s%s", rgb, semi ? "-semi" : "", two ? "-2side" : "");
+                }
+                unsigned seen = 0;
+                for (; seen < n_used; ++seen) if (strcmp(used_mats[seen], mat) == 0) break;
+                if (seen == n_used && n_used < 64) snprintf(used_mats[n_used++], sizeof used_mats[0], "%s", mat);
+                fprintf(f, "usemtl %s\n", mat);
+                unsigned t0 = 0;
+                if (mt) {
+                    const unsigned page_x = (tsb & 15) * 64, page_y = ((tsb >> 4) & 1) * 256;
+                    for (unsigned j = 0; j < nvx; ++j) {
+                        const unsigned uv = u16(w + 4 * j);
+                        const double px = (uv & 0xFF) - 2.0 * ((double)mt->t.x - page_x);
+                        const double py = (uv >> 8) - ((double)mt->t.y - page_y);
+                        const double W = mt->t.w * 2.0, H = mt->t.h;
+                        fprintf(f, "vt %.5f %.5f\n", (px + 0.5) / W, 1.0 - (py + 0.5) / H);
+                    }
+                    t0 = tbase + 1;
+                    tbase += nvx;
+                }
+                static const unsigned order[2][3] = { { 0, 1, 2 }, { 1, 3, 2 } };
+                for (unsigned tri = 0; tri < (quad ? 2u : 1u); ++tri) {
+                    fputc('f', f);
+                    for (unsigned j = 0; j < 3; ++j) {
+                        const unsigned q = order[tri][j];
+                        if (mt) fprintf(f, " %u/%u/%u", vbase + vi[q] + 1, t0 + q, nbase + ni[q] + 1);
+                        else fprintf(f, " %u//%u", vbase + vi[q] + 1, nbase + ni[q] + 1);
+                    }
+                    fputc('\n', f);
+                    ++tris;
+                }
+            }
+        }
+        ok = (fclose(f) == 0) && ok;
+        f = NULL;
+    }
+    /* materials and textures */
+    if (ok) {
+        snprintf(path, sizeof path, "%s/part.mtl", dir);
+        f = fopen(path, "wb");
+        ok = f != NULL;
+        if (ok) {
+            fprintf(f, "# Materials for the garage model %s %02u.\n", mc->name, index);
+            for (unsigned i = 0; i < n_used; ++i) {
+                fprintf(f, "\nnewmtl %s\n", used_mats[i]);
+                if (strncmp(used_mats[i], "rgb-", 4) == 0) {
+                    const unsigned rgb = (unsigned)strtoul(used_mats[i] + 4, NULL, 16);
+                    fprintf(f, "Kd %.4f %.4f %.4f\n", ((rgb >> 16) & 255) / 255.0, ((rgb >> 8) & 255) / 255.0,
+                            (rgb & 255) / 255.0);
+                } else {
+                    char file[48];
+                    memcpy(file, used_mats[i], sizeof file);
+                    file[sizeof file - 1] = 0;
+                    char *dash = strstr(file, ".png");
+                    if (dash) dash[4] = 0;
+                    fprintf(f, "Kd 1 1 1\nmap_Kd %s\n", file);
+                }
+                if (strstr(used_mats[i], "-semi")) fprintf(f, "d 0.5\n");
+            }
+            ok = fclose(f) == 0;
+        }
+    }
+    for (unsigned i = 0; ok && i < ntx; ++i) {
+        if (!tx[i].used) continue;
+        uint8_t pal[768], alpha[256];
+        if (tx[i].patterned || !tx[i].t.clut) ramp_palette((uint8_t (*)[3])c->colours, pal);
+        else clut_palette(tx[i].t.clut, pal, alpha);
+        snprintf(path, sizeof path, "%s/%s", dir, tx[i].file);
+        ok = acr_write_png8(path, tx[i].t.w * 2, tx[i].t.h, tx[i].t.pix, pal,
+                            (tx[i].patterned || !tx[i].t.clut) ? NULL : alpha);
+    }
+    if (ok) {
+        snprintf(path, sizeof path, "%s/part.toml", dir);
+        f = fopen(path, "wb");
+        ok = f != NULL;
+        if (ok) {
+            fprintf(f, "# Master of Arena garage model (the part on its own, as the Assembly\n"
+                       "# screen shows it), imported from your disc by acr-import.\n"
+                       "category   = \"%s\"\ngame_index = %u\nmenu_entry = %u\nobjects    = %u\n"
+                       "triangles  = %u\ncolour_pattern = %d   # 1: texture.png is slot x 64 + shade\n",
+                    mc->name, index, mc->base + index, nobj, tris, mc->patterned);
+            ok = fclose(f) == 0;
+        }
+    }
+    for (unsigned i = 0; i < ntx; ++i) free(tx[i].data);
+    free(m);
+    if (ok && tris) ++*count;
+    return ok;
+}
+
 /* ---- Set files -------------------------------------------------------------- */
 
 static const char *ROLE_NAME[] = { "head", "core", "legs", "arms", "hand", "back-left",
@@ -855,6 +1137,9 @@ int acr_export_moa_models(const char *menu_module, const char *unpacked_dir, con
     for (unsigned k = 0; ok && k < CAT_COUNT; ++k)
         for (unsigned i = 0; ok && i < CATS[k].count; ++i)
             ok = export_part(&c, &CATS[k], i, sets, parts);
+    for (unsigned k = 0; ok && k < MENU_CAT_COUNT; ++k)
+        for (unsigned i = 0; ok && i < MENU_CATS[k].count; ++i)
+            ok = export_menu_part(&c, &MENU_CATS[k], i, parts);
     for (unsigned i = 0; i < SET_COUNT; ++i) free(sets[i].anim);
     free(sets);
     free(menu);

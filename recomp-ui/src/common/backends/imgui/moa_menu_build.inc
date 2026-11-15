@@ -34,12 +34,40 @@ static const char kNameChars[] =
 
 /* The builder's slots: label, record byte, may be empty. */
 static const struct { const char* label; int byte; bool optional; } kSlots[] = {
-    { "HEAD", 1, false }, { "CORE", 0, false }, { "ARMS", 2, false }, { "LEGS", 3, false },
+    { "HEAD", 1, true }, { "CORE", 0, false }, { "ARMS", 2, false }, { "LEGS", 3, false },
     { "BOOSTER", 12, true }, { "FCS", 8, false }, { "GENERATOR", 9, false },
     { "RIGHT ARM", 4, false }, { "LEFT ARM", 5, true }, { "BACK LEFT", 6, true },
     { "BACK RIGHT", 7, true },
 };
 static const int kSlotCount = (int)(sizeof kSlots / sizeof kSlots[0]);
+
+/* The game's Assembly screen's slots (ASSEMBLY section below). */
+static const struct AsmSlot {
+    const char* label;
+    int byte;
+    bool optional;      /* the list starts with No Equipment */
+    unsigned wire;      /* MOA_ACV_* kinds drawn as wireframe */
+    bool grey;          /* inside the core: grey wireframe */
+} kAsm[] = {
+    { "HEAD",          1,  true,  1u << MOA_ACV_HEAD,       false },
+    { "CORE",          0,  false, 1u << MOA_ACV_CORE,       false },
+    { "ARMS",          2,  false, 1u << MOA_ACV_ARMS,       false },
+    { "LEGS",          3,  false, 1u << MOA_ACV_LEGS,       false },
+    { "ARM WEAPON R",  4,  false, 1u << MOA_ACV_HAND,       false },
+    { "ARM WEAPON L",  5,  true,  0,                        false },
+    { "BACK WEAPON R", 7,  true,  1u << MOA_ACV_BACK_RIGHT, false },
+    { "BACK WEAPON L", 6,  true,  1u << MOA_ACV_BACK_LEFT,  false },
+    { "BOOSTERS",      12, true,  1u << MOA_ACV_BOOSTER,    false },
+    { "GENERATOR",     9,  false, 1u << MOA_ACV_CORE,       true  },
+    { "FCS",           8,  false, 1u << MOA_ACV_CORE,       true  },
+};
+static const int kAsmCount = (int)(sizeof kAsm / sizeof kAsm[0]);
+
+static int  g_asm_slot = 0;
+static bool g_asm_from_build = false;    /* B goes back to the BUILD list */
+static bool g_pick_to_asm = false;       /* the slot list was opened from here */
+
+static void open_asm(int slot, bool from_build);
 
 static bool paint_uniform();
 
@@ -375,8 +403,8 @@ static void draw_ai_build(LauncherModel* m, const Gfx& g, const Input& in) {
         text(g, 374.0f, 346.0f, 11.0f, kWarn, "LEAVE WITHOUT SAVING?");
         text(g, 374.0f, 370.0f, 10.0f, kText, "A  LEAVE      B  STAY");
     }
-    footer(g, on_slot ? "A  LIST   LEFT / RIGHT  CHANGE   Y / TRIANGLE  DETAILS   R-STICK  TURN   B  BACK"
-                      : "A  SELECT      LEFT / RIGHT  CHANGE      R-STICK  TURN AC      B  BACK");
+    footer(g, on_slot ? "A  ASSEMBLY SCREEN   LEFT / RIGHT  CHANGE   Y / TRIANGLE  DETAILS   B  BACK"
+                      : "A  SELECT      LEFT / RIGHT  CHANGE      B  BACK");
 
     if (g_name_edit) { name_input(in); return; }
     if (g_details_open) {
@@ -394,7 +422,8 @@ static void draw_ai_build(LauncherModel* m, const Gfx& g, const Input& in) {
         return;
     }
     if (in.back && !in.info) {
-        if (g_edit_dirty && !g_build_standalone) g_confirm_discard = true; else leave_build();
+        if (g_build_standalone) { open_asm(g_asm_slot, false); return; }   /* back to the Assembly screen */
+        if (g_edit_dirty) g_confirm_discard = true; else leave_build();
         return;
     }
     const int dir = in.left ? -1 : in.right ? 1 : 0;
@@ -415,14 +444,11 @@ static void draw_ai_build(LauncherModel* m, const Gfx& g, const Input& in) {
         g_name_edit = activate == B_AC ? 1 : 2;
         g_name_pos = 0;
     } else if (activate < B_OPTS) {
-        const int k = activate - B_SLOT0;
-        if (slot_locked(kSlots[k].byte)) return;
-        g_pick_byte = k;
-        const std::vector<int> v = slot_choices(kSlots[k].byte, kSlots[k].optional);
-        g_state.cursor[PAGE_AI_PICK] = 0;
-        for (size_t i = 0; i < v.size(); ++i) if (v[i] == g_edit.rec[kSlots[k].byte]) g_state.cursor[PAGE_AI_PICK] = (int)i;
-        g_state.top[PAGE_AI_PICK] = 0;
-        g_ai_sub = AI_SUB_PICK;
+        /* the game's Assembly screen, on this slot */
+        const int byte = kSlots[activate - B_SLOT0].byte;
+        int slot = 0;
+        for (int i = 0; i < kAsmCount; ++i) if (kAsm[i].byte == byte) slot = i;
+        open_asm(slot, true);
     } else if (activate == B_OPTS) { g_state.cursor[PAGE_AI_OPTS] = 0; g_ai_sub = AI_SUB_OPTS; }
     else if (activate == B_PAINT) { g_split_paint = !paint_uniform(); g_paint_section = 0;
                                     g_state.cursor[PAGE_AI_PAINT] = 0; g_state.top[PAGE_AI_PAINT] = 0; g_ai_sub = AI_SUB_PAINT; }
@@ -451,7 +477,231 @@ static void draw_ai_build(LauncherModel* m, const Gfx& g, const Input& in) {
     }
 }
 
+/* ---- ASSEMBLY: the game's own screen ----
+ *
+ * As the garage shows it: up / down picks the slot, left / right changes
+ * the part in it straight away. Left window: the slot name in the orange
+ * bar, that part on its own turning, its EP / WP and NAME. Right window:
+ * the whole AC turning, the slot being changed as a wireframe (red; grey for
+ * the generator and FCS, which sit inside the core), and the totals the
+ * garage keeps live: EP, LEGS WP, CORE WP, AP, WEIGHT. TRIANGLE lays the
+ * part's details page over both windows; it follows the part while you
+ * scroll. A opens the slot's full list, zoom is the right stick.
+ */
+
+static const ImU32 kGameBlue = IM_COL32(72, 80, 176, 255);
+static const ImU32 kWireRed  = IM_COL32(200, 36, 36, 255);
+static const ImU32 kWireGrey = IM_COL32(176, 176, 176, 255);
+
+static void open_asm(int slot, bool from_build) {
+    g_asm_slot = std::clamp(slot, 0, kAsmCount - 1);
+    g_asm_from_build = from_build;
+    g_details_open = false;
+    g_ai_sub = AI_SUB_ASM;
+}
+
+/* The slot's part: none for 255, and for the hand slot its "NO WEAPON". */
+static bool asm_empty(int byte, int id) { return id == 255 || (byte == 4 && id == 0); }
+
+static void game_box(const Gfx& g, float x, float y, float w, float h) {
+    g.dl->AddRectFilled(at(g, x, y), at(g, x + w, y + h), IM_COL32(0, 0, 0, 255));
+    g.dl->AddRect(at(g, x, y), at(g, x + w, y + h), kGameBlue, 0.0f, 0, 2.0f * g.s);
+}
+
+/* The garage's orange title bar. */
+static void game_bar(const Gfx& g, float x, float y, float w, float h, const char* label) {
+    const ImU32 dark = IM_COL32(96, 48, 12, 255), mid = IM_COL32(222, 140, 56, 255);
+    g.dl->AddRectFilledMultiColor(at(g, x, y), at(g, x + w, y + h * 0.5f), dark, dark, mid, mid);
+    g.dl->AddRectFilledMultiColor(at(g, x, y + h * 0.5f), at(g, x + w, y + h), mid, mid, dark, dark);
+    const float tw = text_width(g, 14.0f, label);
+    text(g, x + (w - tw) * 0.5f, y + (h - 14.0f) * 0.5f - 1.0f, 14.0f, kBright, label);
+}
+
+static void game_arrow(const Gfx& g, float cx, float cy, int dir, bool lit) {
+    const ImU32 c = lit ? IM_COL32(232, 150, 48, 255) : IM_COL32(110, 70, 30, 255);
+    const float r = 9.0f;
+    switch (dir) {
+    case 0: g.dl->AddTriangleFilled(at(g, cx, cy - r * 0.6f), at(g, cx + r, cy + r * 0.6f), at(g, cx - r, cy + r * 0.6f), c); break;
+    case 1: g.dl->AddTriangleFilled(at(g, cx - r, cy - r * 0.6f), at(g, cx + r, cy - r * 0.6f), at(g, cx, cy + r * 0.6f), c); break;
+    case 2: g.dl->AddTriangleFilled(at(g, cx + r * 0.6f, cy - r), at(g, cx + r * 0.6f, cy + r), at(g, cx - r * 0.6f, cy), c); break;
+    default: g.dl->AddTriangleFilled(at(g, cx - r * 0.6f, cy - r), at(g, cx + r * 0.6f, cy), at(g, cx - r * 0.6f, cy + r), c); break;
+    }
+}
+
+static void stat_pair(const Gfx& g, float x, float right, float y, const char* label, int a, int b, bool over) {
+    char buf[40];
+    std::snprintf(buf, sizeof buf, "%d / %d", a, b);
+    text(g, x, y, 11.0f, kText, label);
+    text_right(g, right, y, 11.0f, over ? kWarn : kText, buf);
+}
+
+/* The details page laid over both windows (TRIANGLE). */
+static void draw_asm_details(const Gfx& g, const char* slot_label, int cat, int id) {
+    const float x = 92.0f, y = 74.0f, w = 456.0f;
+    moa_acv_details d;
+    const bool have = !asm_empty(kAsm[g_asm_slot].byte, id) && part_details(cat, id, &d);
+    const int rows = have ? d.count + 2 : 1;
+    const float h = 30.0f + 14.0f * (float)rows;
+    g.dl->AddRectFilled(at(g, x, y), at(g, x + w, y + h), IM_COL32(14, 22, 92, 205));
+    g.dl->AddRect(at(g, x, y), at(g, x + w, y + h), IM_COL32(96, 104, 210, 255), 0.0f, 0, 1.5f * g.s);
+    const float tw = text_width(g, 14.0f, slot_label);
+    text(g, x + (w - tw) * 0.5f, y + 4.0f, 14.0f, IM_COL32(150, 150, 220, 150), slot_label);
+    const float lx = x + 18.0f, vx = x + 232.0f;
+    float yy = y + 24.0f;
+    if (!have) {
+        text(g, lx, yy, 11.0f, kText, asm_empty(kAsm[g_asm_slot].byte, id) ? "NO EQUIPMENT" : "NO DETAILS FOR THIS PART");
+        return;
+    }
+    auto line = [&](const char* label, const char* value) {
+        text(g, lx, yy, 11.0f, kBright, label);
+        text(g, vx, yy, 11.0f, kBright, value);
+        yy += 14.0f;
+    };
+    line("NAME", d.name);
+    line("TYPE", d.type);
+    char b[32];
+    for (int i = 0; i < d.count; ++i) {
+        if (d.f[i].is_text) line(d.f[i].label, d.f[i].text);
+        else { std::snprintf(b, sizeof b, "%ld", d.f[i].value); line(d.f[i].label, b); }
+    }
+}
+
+static void draw_ai_asm(LauncherModel* m, const Gfx& g, const Input& in) {
+    header(g, "ASSEMBLY", upper(g_edit.ac[0] ? g_edit.ac : "AC").c_str());
+    if (!parts_ready(m)) {
+        panel(g, 24.0f, 76.0f, 592.0f, 120.0f, "PARTS");
+        text(g, 38.0f, 96.0f, 12.0f, kWarn, "THE PART LIST COULD NOT BE READ FROM THE GAME DISC.");
+        footer(g, "B  BACK");
+        if (in.back) { g_parts_state = 0; leave_build(); }
+        return;
+    }
+    const AsmSlot& sl = kAsm[g_asm_slot];
+    const int byte = sl.byte, cat = moa_record_cat(byte), id = g_edit.rec[byte];
+    const bool locked = slot_locked(byte);
+    const bool empty = asm_empty(byte, id);
+    const moa_part* p = empty ? nullptr : moa_parts_find(&g_parts, cat, (uint8_t)id);
+    struct moa_build_check chk;
+    moa_build_check(&g_parts, g_edit.rec, g_edit.plus, &chk);
+
+    /* left window: the slot and its part */
+    const float lx = 24.0f, rx = 326.0f, top = 60.0f, w = 290.0f, h = 376.0f;
+    game_box(g, lx, top, w, h);
+    game_bar(g, lx + 4.0f, top + 4.0f, w - 8.0f, 24.0f, sl.label);
+    game_arrow(g, lx + w * 0.5f, top + 42.0f, 0, true);
+    game_arrow(g, lx + w * 0.5f, top + 236.0f, 1, true);
+    game_arrow(g, lx + 16.0f, top + 140.0f, 2, !locked);
+    game_arrow(g, lx + w - 16.0f, top + 140.0f, 3, !locked);
+    const float vx = lx + 32.0f, vy = top + 52.0f, vw = w - 64.0f, vh = 176.0f;
+    if (locked) {
+        const char* t = "NOT WITH WEAPON ARMS";
+        if (byte == 12) t = "NOT WITH CATERPILLAR LEGS";
+        text(g, lx + (w - text_width(g, 11.0f, t)) * 0.5f, vy + vh * 0.5f - 6.0f, 11.0f, kDim, t);
+    } else if (empty) {
+        const char* t = "No Equipment";
+        const float tw = text_width(g, 20.0f, t);
+        text(g, lx + (w - tw) * 0.5f + 1.5f, vy + vh * 0.5f - 9.0f, 20.0f, IM_COL32(200, 60, 0, 160), t);
+        text(g, lx + (w - tw) * 0.5f, vy + vh * 0.5f - 10.0f, 20.0f, IM_COL32(255, 196, 64, 255), t);
+    } else if (!draw_part_view(g, vx, vy, vw, vh, cat, id, g_edit.paint)) {
+        const char* t = !models_installed() ? "EXTRAS > INSTALL 3D AC MODELS"
+                                            : "INSTALL THE 3D MODELS AGAIN (EXTRAS) FOR PART PICTURES";
+        text(g, vx + 4.0f, vy + vh * 0.5f - 6.0f, 10.0f, kDim, t, vw - 8.0f);
+    }
+    g.dl->AddLine(at(g, lx, top + 252.0f), at(g, lx + w, top + 252.0f), kGameBlue, 1.5f * g.s);
+    char b[48];
+    text(g, lx + 14.0f, top + 262.0f, 11.0f, kText, "EP");
+    text(g, lx + 14.0f, top + 276.0f, 11.0f, kText, "WP");
+    if (p) {
+        std::snprintf(b, sizeof b, "%d", cat == MOA_CAT_GEN ? 0 : p->drain);
+        text_right(g, lx + w - 70.0f, top + 262.0f, 11.0f, kText, b);
+        std::snprintf(b, sizeof b, "%d", p->weight);
+        text_right(g, lx + w - 70.0f, top + 276.0f, 11.0f, kText, b);
+    } else {
+        text_right(g, lx + w - 70.0f, top + 262.0f, 11.0f, kText, "------");
+        text_right(g, lx + w - 70.0f, top + 276.0f, 11.0f, kText, "------");
+    }
+    g.dl->AddLine(at(g, lx, top + 336.0f), at(g, lx + w, top + 336.0f), kGameBlue, 1.5f * g.s);
+    text(g, lx + 14.0f, top + 350.0f, 11.0f, kText, "NAME");
+    text(g, lx + 70.0f, top + 350.0f, 11.0f, kText, locked ? "-" : p ? p->name : "NO EQUIPMENT");
+
+    /* right window: the AC, the slot as a wireframe, the totals */
+    game_box(g, rx, top, w, h);
+    draw_acv(g, rx + 2.0f, top + 2.0f, w - 4.0f, 248.0f, g_edit, sl.wire, sl.grey ? kWireGrey : kWireRed, true);
+    g.dl->AddLine(at(g, rx, top + 252.0f), at(g, rx + w, top + 252.0f), kGameBlue, 1.5f * g.s);
+    const float sx = rx + 14.0f, sr = rx + w - 14.0f;
+    stat_pair(g, sx, sr, top + 262.0f, "EP", chk.drain, chk.output, chk.energy_over);
+    stat_pair(g, sx, sr, top + 276.0f, "LEGS WP", chk.leg_load, chk.leg_max, chk.leg_over);
+    stat_pair(g, sx, sr, top + 290.0f, "CORE WP", chk.arm_load, chk.arm_max, chk.arm_over);
+    text(g, sx, top + 308.0f, 11.0f, kText, "AP");
+    std::snprintf(b, sizeof b, "%d", chk.ap);
+    text_right(g, sr, top + 308.0f, 11.0f, kText, b);
+    text(g, sx, top + 322.0f, 11.0f, kText, "WEIGHT");
+    std::snprintf(b, sizeof b, "%d", chk.weight);
+    text_right(g, sr, top + 322.0f, 11.0f, kText, b);
+    g.dl->AddLine(at(g, rx, top + 336.0f), at(g, rx + w, top + 336.0f), kGameBlue, 1.5f * g.s);
+    const char* verdict = nullptr;
+    ImU32 vcol = kWarn;
+    if (chk.missing_booster) verdict = "THESE LEGS NEED A BOOSTER.";
+    else if (chk.slots_over) verdict = "THE OPTIONAL PARTS NEED MORE SLOTS THAN THIS CORE HAS.";
+    else if (chk.blocked) verdict = "OVER THE LIMITS: THE GAME WILL NOT FIELD THIS AC WITHOUT HUMAN PLUS.";
+    else if (chk.leg_over || chk.arm_over || chk.energy_over) { verdict = "OVER THE LIMITS, ALLOWED WITH HUMAN PLUS."; vcol = kHi; }
+    if (verdict) text(g, sx, top + 344.0f, 10.0f, vcol, verdict, w - 28.0f);
+
+    if (g_details_open) draw_asm_details(g, sl.label, cat, id);
+    footer(g, g_build_standalone
+              ? "UP/DOWN  SLOT   LEFT/RIGHT  PART   Y/TRIANGLE  DETAILS   A  LIST   X  NAME, PAINT...   R-STICK  ZOOM   B  BACK"
+              : "UP/DOWN  SLOT   LEFT/RIGHT  PART   Y/TRIANGLE  DETAILS   A  LIST   R-STICK  ZOOM   B  BACK");
+
+    if (in.info) { g_details_open = !g_details_open; return; }
+    if (in.back) {
+        if (g_details_open) { g_details_open = false; return; }
+        if (g_asm_from_build) { g_ai_sub = AI_SUB_BUILD; return; }
+        leave_build();
+        return;
+    }
+    if (in.up) g_asm_slot = (g_asm_slot + kAsmCount - 1) % kAsmCount;
+    if (in.down) g_asm_slot = (g_asm_slot + 1) % kAsmCount;
+    if (in.left || in.right) step_part(byte, sl.optional, in.left ? -1 : 1);
+    if (in.alt && g_build_standalone && !g_details_open) {
+        g_asm_from_build = true;   /* the rest of the build; B comes back here */
+        g_ai_sub = AI_SUB_BUILD;
+        return;
+    }
+    if (in.confirm && !locked && !g_details_open) {
+        int k = -1;
+        for (int i = 0; i < kSlotCount; ++i) if (kSlots[i].byte == byte) k = i;
+        if (k < 0) return;
+        g_pick_byte = k;
+        g_pick_to_asm = true;
+        const std::vector<int> v = slot_choices(byte, kSlots[k].optional);
+        g_state.cursor[PAGE_AI_PICK] = 0;
+        for (size_t i = 0; i < v.size(); ++i) if (v[i] == id) g_state.cursor[PAGE_AI_PICK] = (int)i;
+        g_state.top[PAGE_AI_PICK] = 0;
+        g_ai_sub = AI_SUB_PICK;
+    }
+}
+
 /* ---- PICK ---- */
+
+/* The game's own type text for a part (SMALL MISSILE, CHAIN GUN, RADAR...),
+ * from the install's part files; the builder's grouping without them. */
+static std::string part_type_text(int cat, int id) {
+    static std::map<int, std::string> cache;
+    static int cache_state = 0;
+    if (cache_state != g_models_state) { cache.clear(); cache_state = g_models_state; }
+    const int key = cat * 256 + id;
+    auto it = cache.find(key);
+    if (it != cache.end()) return it->second;
+    std::string t;
+    moa_acv_details d;
+    if (models_installed() && moa_acv_part_details(models_dir().c_str(), cat, id, &d)) t = d.type;
+    if (t.empty()) {
+        const moa_part* p = moa_parts_find(&g_parts, cat, (uint8_t)id);
+        if (p) t = moa_part_group(cat, p->name);
+    }
+    cache[key] = t;
+    return t;
+}
+
 
 static void draw_ai_pick(const Gfx& g, const Input& in) {
     const int k = g_pick_byte;
@@ -471,8 +721,9 @@ static void draw_ai_pick(const Gfx& g, const Input& in) {
         if (v[(size_t)i] == g_edit.rec[byte]) label += "  *";
         if (marked(byte, v[(size_t)i])) label = "> " + label;
         bool hovered = false;
+        const std::string grp = p ? part_type_text(cat, v[(size_t)i]) : std::string();
         if (row(g, 25.0f, 74.0f + kRowH * (i - top), 298.0f, i == cur, true, label.c_str(),
-                p ? moa_part_group(cat, p->name) : "", false, false, &hovered))
+                grp.c_str(), false, false, &hovered))
             activate = i;
         if (hovered && (ImGui::GetIO().MouseDelta.x != 0.0f || ImGui::GetIO().MouseDelta.y != 0.0f)) cur = i;
     }
@@ -507,14 +758,15 @@ static void draw_ai_pick(const Gfx& g, const Input& in) {
     }
     if (in.info) { open_details(cat, at_id); return; }   /* TRIANGLE is not BACK here */
     if (in.alt) { toggle_mark(byte, at_id); return; }
-    if (in.back) { g_ai_sub = AI_SUB_BUILD; return; }
+    if (in.back) { g_ai_sub = g_pick_to_asm ? AI_SUB_ASM : AI_SUB_BUILD; g_pick_to_asm = false; return; }
     if (in.page_down) cur = std::max(0, cur - visible);
     if (in.page_up) cur = std::min((int)v.size() - 1, cur + visible);
     if (in.confirm) activate = cur;
     if (activate < 0 || activate >= (int)v.size()) return;
     g_edit.rec[byte] = (uint8_t)v[(size_t)activate];
     edit_changed();
-    g_ai_sub = AI_SUB_BUILD;
+    g_ai_sub = g_pick_to_asm ? AI_SUB_ASM : AI_SUB_BUILD;
+    g_pick_to_asm = false;
 }
 
 /* ---- OPTIONS ---- */

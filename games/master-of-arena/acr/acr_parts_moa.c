@@ -138,6 +138,7 @@ static void write_fit(FILE *f, const char *c, uint32_t index) {
 /* Weapon details live in separate 24-byte tables (docs/research/gen1-weapons.md). */
 #define HAND_DETAIL 0x8118Cu   /* 0x800D1F64 in the menu module */
 #define BACK_DETAIL 0x813FCu   /* 0x800D21D4 */
+#define ARMS_DETAIL 0x8100Cu   /* 0x800D1DE4: weapon arms (arms 12 and up), same layout */
 static const uint8_t *g_menu;
 static size_t g_menu_size;
 static uint8_t *g_vs;          /* VS engine (FDAT 209): shot speeds */
@@ -160,7 +161,12 @@ static int gun_speed(unsigned id, uint16_t *out) {
 }
 
 static void write_weapon(FILE *f, const char *c, uint32_t index) {
-    const uint32_t base = !strcmp(c, "hand") ? HAND_DETAIL : !strcmp(c, "back") ? BACK_DETAIL : 0;
+    uint32_t base = !strcmp(c, "hand") ? HAND_DETAIL : !strcmp(c, "back") ? BACK_DETAIL : 0;
+    if (!strcmp(c, "arms")) {
+        if (index < 12) return;
+        base = ARMS_DETAIL;
+        index -= 12;
+    }
     if (!base || !g_menu || base + 24 * (index + 1) > g_menu_size) return;
     const uint8_t *w = g_menu + base + 24 * index;
     if (w[6] == 0 && u16(w + 0x14) == 0 && u16(w + 8) == 0) return;   /* radars and the like */
@@ -172,7 +178,8 @@ static void write_weapon(FILE *f, const char *c, uint32_t index) {
     field(f, "energy_per_shot", u16(w + 0xA), NULL);
     field(f, "ammo_price", u16(w + 0xC), NULL);
     field(f, "salvo", w[0x10], "missiles locked at once");
-    field(f, "fire_interval", w[0x11], "meaning not decoded yet");
+    field(f, "fire_interval", w[0x11], "the garage shows it as RELOAD TIME");
+    field(f, "ammo_flags", w[0x12], "garage AMMO TYPE: 0x10 SOLID, 0x20 ENERGY");
     field(f, "impact", w[0x16], NULL);
     field(f, "type_id", w[7], NULL);
     /* Back cannons need a steady stance (kneel / on the ground) to fire. */
@@ -249,8 +256,11 @@ static int write_part(const char *dir, const table *t, uint32_t index, const uin
         if (acr_gen1_fixed_boost_moa(index))
             field(f, "fixed_boost", acr_gen1_fixed_boost_moa(index), "ground boost set by the game for these legs");
     }
-    if (!strcmp(c, "blade")) field(f, "attack", u16(rec + 0x2C), NULL);
-    if (!strcmp(c, "hand") || !strcmp(c, "back")) write_weapon(f, c, index);
+    if (!strcmp(c, "blade")) {
+        field(f, "charge_drain", u16(rec + 0x2C), "energy a swing takes (garage CHARGE DRAIN)");
+        field(f, "attack", u16(rec + 0x30), NULL);
+    }
+    if (!strcmp(c, "hand") || !strcmp(c, "back") || !strcmp(c, "arms")) write_weapon(f, c, index);
     if (!strcmp(c, "fcs")) write_fcs(f, rec);
     write_fit(f, c, index);
     /* Everything after the type text as 16-bit words, so fields not yet

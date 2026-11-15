@@ -138,7 +138,11 @@ void moa_build_check(const struct moa_parts *p, const uint8_t rec[13], int plus,
         if (!q) continue;
         t->weight += q->weight; t->drain += q->drain; t->ap += q->ap;
         t->def_shell += q->def_shell; t->def_energy += q->def_energy;
-        if ((cat == MOA_CAT_HAND || cat == MOA_CAT_BLADE) && !weapon_arms) t->arm_load += q->weight;
+        /* the core's arm load (garage CORE WP): the arms, plus the hand weapon
+           and blade unless they are weapon arms (XCA-00 + AN-201 + WG-XP1000 +
+           LS-2001 = 1365 / 2770, as the garage shows) */
+        if (cat == MOA_CAT_ARMS || ((cat == MOA_CAT_HAND || cat == MOA_CAT_BLADE) && !weapon_arms))
+            t->arm_load += q->weight;
         if (cat == MOA_CAT_LEGS) { t->leg_max = q->extra; leg_w = q->weight; }
         if (cat == MOA_CAT_CORE) { t->arm_max = q->extra; t->slots_max = q->slots; }
         if (cat == MOA_CAT_GEN) t->output = q->extra;

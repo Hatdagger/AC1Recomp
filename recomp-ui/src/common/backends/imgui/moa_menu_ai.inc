@@ -16,7 +16,7 @@
  */
 
 enum AiSub { AI_SUB_SETUP = 0, AI_SUB_CARDS, AI_SUB_EDIT, AI_SUB_ADV, AI_SUB_BUILD, AI_SUB_PICK,
-             AI_SUB_OPTS, AI_SUB_PAINT, AI_SUB_EMBLEM };
+             AI_SUB_OPTS, AI_SUB_PAINT, AI_SUB_EMBLEM, AI_SUB_ASM };
 static int g_ai_sub = AI_SUB_SETUP;
 
 static moa_card g_edit;                 /* the card being edited */

@@ -46,14 +46,39 @@ void moa_acv_free(moa_acv *v);
  * plays the standing animation. The background is left transparent. */
 void moa_acv_render(const moa_acv *v, float yaw, float pitch, float time, int w, int h, uint8_t *rgba);
 
+/* Same, `zoom` x the usual size (1 = the whole AC), and the part kinds in
+ * `wire_mask` (bit per ACR_PART_* kind) drawn as `wire_rgb` wireframe
+ * instead of solid, as the garage marks the slot being changed. */
+void moa_acv_render_ex(const moa_acv *v, float yaw, float pitch, float time, float zoom,
+                       unsigned wire_mask, const uint8_t wire_rgb[3], int w, int h, uint8_t *rgba);
+
+/* Wireframe kinds (ACR_PART_* in acr/acr_model.h). */
+enum { MOA_ACV_CORE = 0, MOA_ACV_HEAD, MOA_ACV_ARMS, MOA_ACV_LEGS, MOA_ACV_HAND,
+       MOA_ACV_BACK_LEFT, MOA_ACV_BACK_RIGHT, MOA_ACV_BOOSTER };
+
+/* ---- one part on its own (the garage's part models) ---- */
+
+/* 1 when the install has the garage part models (installs made before this
+ * have only the AC models: install again to get them). */
+int moa_acv_has_part_models(const char *dir);
+
+/* The part as the Assembly screen shows it, framed to fit: `kind` is the
+ * folder under models/menu ("head", "core", "arms", "legs", "booster",
+ * "back", "blade", "hand", "fcs", "option", "generator"), `index` the part's
+ * number. Head, core, arms and legs take `paint` (as moa_acv_load). Drawn
+ * with moa_acv_render; time is ignored. NULL when there is no model. */
+moa_acv *moa_acv_load_part(const char *dir, const char *kind, int index, const uint8_t paint[48]);
+
 /* ---- part details (from the install's parts/ files) ---- */
 
 #define MOA_ACV_FIELDS 24
 struct moa_acv_field {
-    char key[24];      /* as in the file: "weight", "ap", "attack"... */
-    char label[24];    /* as shown: "WEIGHT", "AP", "ATTACK"... */
+    char key[24];      /* "weight", "ap", "attack"... */
+    char label[24];    /* as the garage shows it: "WEIGHT", "ARMOR POINT"... */
     long value;
     int better;        /* +1 higher is better, -1 lower is better, 0 neither */
+    int is_text;       /* shown as `text` (TYPE words: ROUGH, PROVIDED...) */
+    char text[24];
 };
 struct moa_acv_details {
     char name[24], type[24];

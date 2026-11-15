@@ -20492,6 +20492,17 @@ session_reboot:
 #endif
         std::string mc1 = memcard1_path.string();
         std::string mc2 = memcard2_path.string();
+        /* A session card in slot 1 (MoA Arena Run: the run's own card,
+         * kept beside the player's), never written into the settings. The
+         * folder for files kept beside the card stays the player's own. */
+        std::string card_home_mc1 = mc1;
+        {
+            const char *session_card1 = std::getenv("PSX_MEMCARD1_SESSION");
+            if (session_card1 && session_card1[0] && !psx_netplay_active()) {
+                mc1 = session_card1;
+                memcard1_enabled = true;
+            }
+        }
         /* A session-only card in slot 2 (MoA AI Battle: the two units' saves),
          * never written into the player's settings. */
         {
@@ -20509,9 +20520,9 @@ session_reboot:
         /* Game plugins that keep files beside the player's memory card (MoA
          * AI Battle cards) find the folder here: slot 1's own folder when a
          * card file was chosen, else the card directory. */
-        const std::string card_home = mc1.empty()
+        const std::string card_home = card_home_mc1.empty()
             ? memcard_dir_str
-            : std::filesystem::path(mc1).parent_path().string();
+            : std::filesystem::path(card_home_mc1).parent_path().string();
 #ifdef _WIN32
         _putenv_s("PSX_MEMCARD_HOME", card_home.c_str());
 #else

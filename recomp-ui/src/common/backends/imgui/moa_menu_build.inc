@@ -216,7 +216,12 @@ static bool build_blocked() {
 
 /* ---- names ---- */
 
-static char* name_buf(int which) { return which == 1 ? g_edit.ac : g_edit.pilot; }
+/* Another page can lend its own name fields to the editor (ARENA RUN). */
+static char* g_name_alt[3] = { nullptr, nullptr, nullptr };
+static char* name_buf(int which) {
+    if (g_name_alt[which]) return g_name_alt[which];
+    return which == 1 ? g_edit.ac : g_edit.pilot;
+}
 
 /* The name editor: an on-screen keyboard (letters and digits, 8 at most).
  * D-pad / stick move, A types the key, X deletes, Y rolls a random callsign,

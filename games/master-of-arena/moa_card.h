@@ -119,6 +119,9 @@ void moa_card_to_save(const struct moa_card *card, uint8_t block[MOA_SAVE_BLOCK]
  * BASLUS-01030A, B, ... in that order (the DATA LOAD list's 1, 2, ...). */
 int moa_memcard_write_units(const char *path, const struct moa_card *const units[], int count);
 
+/* The same with save blocks already made (MOA_SAVE_BLOCK bytes each). */
+int moa_memcard_write_blocks(const char *path, const uint8_t *const blocks[], int count);
+
 /* Add the card as one more save on an existing memory card image (first free
  * block, name BASLUS-01030A..Z not already used). Other saves are untouched
  * and the previous image is kept as <path>.bak. 1 = ok, else a message. */

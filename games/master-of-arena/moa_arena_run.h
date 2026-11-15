@@ -67,7 +67,7 @@ int moa_run_start_ac(const struct moa_parts *p, uint64_t seed, uint8_t rec[13]);
 /* ---- the run file -------------------------------------------------------- */
 
 #define MOA_RUN_MAGIC   0x4E555241u   /* "ARUN" */
-#define MOA_RUN_VERSION 1u
+#define MOA_RUN_VERSION 2u
 
 struct moa_run_state {
     uint32_t magic, version;
@@ -78,6 +78,9 @@ struct moa_run_state {
     uint8_t  points;               /* P: one per win */
     uint8_t  over;                 /* 1 = lost; the file is wiped on read */
     uint8_t  pad[3];
+    char     pilot[17];            /* ASCII, as typed in the launcher */
+    char     ac[17];               /* may be empty */
+    uint8_t  pad2[2];
     struct moa_run_pick lineup[MOA_RUN_SLOTS];
     /* step 2 adds shop stock and owned parts here (version 2). */
 };
@@ -90,6 +93,22 @@ int moa_run_new(const struct moa_parts *p, const struct moa_run_source *src, int
 int moa_run_load(const char *path, struct moa_run_state *out);   /* 1 = a live run */
 int moa_run_save(const char *path, const struct moa_run_state *s);
 void moa_run_wipe(const char *path);
+
+/* ---- the run's memory card -------------------------------------------------
+ *
+ * The run is played from its own memory card in slot 1, beside the player's
+ * card ("<card>.arenarun.mcd"): one scenario save the game loads itself (LOAD
+ * GAME), with the run's AC, pilot and AC names, P as credits, and the owned
+ * parts. The player's own card is never touched. */
+
+/* "<card>.arenarun.mcd". */
+void moa_run_card_path(const char *card_path, char *out, unsigned out_size);
+
+/* The run as a scenario save block (8192 bytes). */
+void moa_run_make_save(const struct moa_run_state *s, uint8_t block[8192]);
+
+/* Write the run's memory card. 1 = ok. */
+int moa_run_write_card(const char *card_path, const struct moa_run_state *s);
 
 #ifdef __cplusplus
 }

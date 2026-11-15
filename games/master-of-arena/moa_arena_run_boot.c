@@ -7,13 +7,15 @@
  *
  *   boot -> logos and intro skipped (title opened with a0 = 1, movies
  *   "skipped"), START tapped through the title, the mode row forced to
- *   SCENARIO MODE; on LOAD GAME / NEW GAME the cursor is set to NEW GAME
- *   and X tapped (that menu ignores START); then START and X in turn through
- *   the name entry (defaults kept) -> the hub opens: the run's AC goes into
- *   the garage, the overlay fades and the player takes over.
+ *   SCENARIO MODE; on LOAD GAME / NEW GAME the cursor is set to LOAD GAME
+ *   and X tapped (that menu ignores START), then X through the load screens
+ *   (slot 1, the one save, "Load the saved data?" yes) -> the hub opens,
+ *   the overlay fades and the player takes over.
  *
- * Every run session is a new scenario game: the run itself lives in the run
- * file (PSX_MOA_RUN_FILE), never in the player's own scenario save.
+ * Slot 1 holds the run's own card for the session (PSX_MEMCARD1_SESSION,
+ * written by the launcher: moa_run_write_card), so the game loads the run's
+ * AC, names, P and parts itself, and in-game saves go to that card. The
+ * player's own card is not in the machine.
  *
  * If the hub does not come up in time the overlay is dropped and the
  * player is given the menus, so a wrong step can never leave a black screen.
@@ -62,8 +64,6 @@
 #define RUN_HUB_RESUME       0x80056528u
 #define RUN_SIG_HUB_RESUME   0x27BDFFE8u
 
-#define RUN_GARAGE_PARTS     0x80036FB0u  /* 12 part ids, versus-menu order */
-#define RUN_GARAGE_OPTIONS   0x8003EA70u
 
 #define RUN_HUB_TIMEOUT      (60u * 90u)  /* frames; fast forward makes this short */
 #define RUN_FADE_FRAMES      24u
@@ -74,7 +74,7 @@ static int run_at_hub;                    /* the player has the hub */
 static uint32_t run_ticks, run_frames, run_fade;
 static struct moa_run_state run_state;
 static int run_state_ok;
-enum { STAGE_TITLE = 0, STAGE_NEWGAME, STAGE_NAMES };
+enum { STAGE_TITLE = 0, STAGE_LOADGAME, STAGE_LOADING };
 static int run_stage;
 static uint32_t run_newgame_seen;          /* run_frames when that menu last ran */
 
@@ -97,16 +97,11 @@ static void run_set_ff(int on)
  * player's order (as moa_card_parts in moa_ai_battle.c). */
 static void run_apply_state(void)
 {
+    /* The save carries the run; the run file is read for what comes next
+     * (results, P, the arena). */
     const char *path = getenv("PSX_MOA_RUN_FILE");
     run_state_ok = path && path[0] && moa_run_load(path, &run_state);
-    if (!run_state_ok) { psx_mod_counter_add("moa.run.file_missing", 1); return; }
-    const uint8_t *r = run_state.start_ac;
-    const uint8_t booster = r[3] >= 27u && r[3] != 0xFFu ? 0xFFu : r[12];
-    const uint8_t p[12] = { r[0], booster, r[1], r[2], r[5], r[4], r[6], r[7], r[9], r[8], 0xFFu, r[3] };
-    for (unsigned i = 0; i < 12; i++) psx_mod_write_byte(RUN_GARAGE_PARTS + i, p[i]);
-    psx_mod_write_half(RUN_GARAGE_OPTIONS, 0);
-    /* Step 1 still to do here: money -> P, owned parts, arena rank. */
-    psx_mod_counter_add("moa.run.state_applied", 1);
+    if (!run_state_ok) psx_mod_counter_add("moa.run.file_missing", 1);
 }
 
 static void run_reach_hub(const char *why)
@@ -169,9 +164,9 @@ static void run_newgame_entry(struct CPUState *cpu, uint32_t address)
     if (!run_autopilot || !run_on() || psx_mod_read_word(address) != RUN_SIG_NEWGAME) return;
     const uint32_t st = cpu->gpr[4];
     if (st < 0x80000000u || st >= 0x80200000u) return;
-    psx_mod_write_byte(st + RUN_NEWGAME_CURSOR, 1);      /* NEW GAME, never the player's save */
-    if (run_stage != STAGE_NEWGAME) psx_mod_counter_add("moa.run.new_game", 1);
-    run_stage = STAGE_NEWGAME;
+    psx_mod_write_byte(st + RUN_NEWGAME_CURSOR, 0);      /* LOAD GAME: the run's card */
+    if (run_stage != STAGE_LOADGAME) psx_mod_counter_add("moa.run.load_game", 1);
+    run_stage = STAGE_LOADGAME;
     run_newgame_seen = run_frames;
 }
 
@@ -181,15 +176,13 @@ static void run_menu_input_entry(struct CPUState *cpu, uint32_t address)
     if (!run_autopilot || !run_on()) return;
     const uint32_t w = psx_mod_read_word(address);
     if (w != RUN_SIG_INPUT_A && w != RUN_SIG_INPUT_B) return;
-    if (run_stage == STAGE_NEWGAME && run_frames - run_newgame_seen > 10u)
-        run_stage = STAGE_NAMES;                         /* that menu has closed */
-    /* One button held for 3 samples out of every 24: START on the title, X
-     * on NEW GAME, then START and X in turn through the name entry.
-     * CONFIRM the name entry on a test run. */
+    if (run_stage == STAGE_LOADGAME && run_frames - run_newgame_seen > 10u)
+        run_stage = STAGE_LOADING;                       /* that menu has closed */
+    /* One button held for 3 samples out of every 24: START on the title,
+     * then X on LOAD GAME and through the load screens (all defaults: slot 1,
+     * the card's one save, yes). */
     const uint32_t t = run_ticks++;
-    uint16_t b = RUN_PAD_START;
-    if (run_stage == STAGE_NEWGAME) b = RUN_PAD_X;
-    else if (run_stage == STAGE_NAMES) b = ((t / 24u) & 1u) ? RUN_PAD_X : RUN_PAD_START;
+    const uint16_t b = run_stage == STAGE_TITLE ? RUN_PAD_START : RUN_PAD_X;
     psx_mod_write_half(RUN_PAD_BUFFER + 2u, (t % 24u) < 3u ? (uint16_t)~b : (uint16_t)0xFFFFu);
 }
 

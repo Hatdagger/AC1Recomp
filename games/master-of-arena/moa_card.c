@@ -708,7 +708,7 @@ static void mc_frame(uint8_t *fr, uint32_t state, uint32_t size, const char *nam
     fr[127] = x;
 }
 
-int moa_memcard_write_units(const char *path, const struct moa_card *const units[], int count)
+int moa_memcard_write_blocks(const char *path, const uint8_t *const blocks[], int count)
 {
     if (count < 0 || count > 15) return 0;
     uint8_t *mc = (uint8_t *)calloc(1, 131072);
@@ -719,7 +719,7 @@ int moa_memcard_write_units(const char *path, const struct moa_card *const units
             char name[16];
             snprintf(name, sizeof name, "BASLUS-01030%c", 'A' + (i - 1));
             mc_frame(mc + i * 128, 0x51, 8192, name);
-            moa_card_to_save(units[i - 1], mc + i * 8192);
+            memcpy(mc + i * 8192, blocks[i - 1], 8192);
         } else {
             mc_frame(mc + i * 128, 0xA0, 0, NULL);
         }
@@ -740,6 +740,21 @@ int moa_memcard_write_units(const char *path, const struct moa_card *const units
         if (fclose(f) != 0) ok = 0;
     }
     free(mc);
+    return ok;
+}
+
+int moa_memcard_write_units(const char *path, const struct moa_card *const units[], int count)
+{
+    if (count < 0 || count > 15) return 0;
+    uint8_t *saves = (uint8_t *)malloc((size_t)(count ? count : 1) * 8192);
+    const uint8_t *blocks[15];
+    if (!saves) return 0;
+    for (int i = 0; i < count; i++) {
+        moa_card_to_save(units[i], saves + (size_t)i * 8192);
+        blocks[i] = saves + (size_t)i * 8192;
+    }
+    const int ok = moa_memcard_write_blocks(path, blocks, count);
+    free(saves);
     return ok;
 }
 

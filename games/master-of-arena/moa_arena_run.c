@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "moa_phantasma.h"
+#include "moa_card.h"
 
 /* ---- sources ------------------------------------------------------------------
  *
@@ -245,4 +246,97 @@ int moa_run_save(const char *path, const struct moa_run_state *s)
 void moa_run_wipe(const char *path)
 {
     remove(path);
+}
+
+/* ---- the run's memory card ------------------------------------------------------ */
+
+void moa_run_card_path(const char *card, char *out, unsigned n)
+{
+    snprintf(out, n, "%s.arenarun.mcd", card ? card : "memcard1");
+}
+
+static const struct { uint16_t at, n; uint8_t b[64]; } k_new_game[] = {
+#include "moa_arena_run_save.inc"
+};
+
+/* Save layout (from a NEW GAME save and the same save after buying a head). */
+#define RS_ACNAME_SHOWN 388u      /* copies the DATA LOAD list shows */
+#define RS_PILOT_SHOWN  406u
+#define RS_CREDITS_SHOWN 428u
+#define RS_CREDITS      456u      /* u32 */
+#define RS_ACNAME       460u
+#define RS_PILOT        478u
+#define RS_NAME_BYTES   18u
+#define RS_OWNED        640u      /* one count per part, by category base */
+#define RS_SHOP         896u      /* 1 = on sale (0 once owned) */
+#define RS_SUM          384u
+#define RS_SUM_FROM     432u
+#define RS_SUM_BYTES    3240u
+
+/* First index of each category in the owned and shop tables. */
+static int owned_base(int cat)
+{
+    switch (cat) {
+    case MOA_CAT_HEAD: return 0;    case MOA_CAT_CORE: return 18;
+    case MOA_CAT_ARMS: return 29;   case MOA_CAT_LEGS: return 53;
+    case MOA_CAT_GEN: return 93;    case MOA_CAT_FCS: return 108;
+    case MOA_CAT_BOOST: return 143; case MOA_CAT_BACK: return 157;
+    case MOA_CAT_HAND: return 217;  case MOA_CAT_BLADE: return 243;
+    }
+    return -1;
+}
+
+void moa_run_make_save(const struct moa_run_state *s, uint8_t b[8192])
+{
+    static const uint8_t k_paint[12] = { 32, 36, 28, 16, 20, 12, 18, 24, 12, 12, 18, 12 };
+    static struct moa_card c;
+    memset(&c, 0, sizeof c);
+    c.format = 4;
+    memcpy(c.rec, s->start_ac, 13);
+    snprintf(c.pilot, sizeof c.pilot, "%s", s->pilot);
+    snprintf(c.ac, sizeof c.ac, "%s", s->ac);
+    for (int i = 0; i < 48; i++) c.paint[i] = k_paint[i % 12];
+    moa_card_to_save(&c, b);
+    for (uint32_t at = RS_ACNAME; at <= RS_PILOT; at += RS_PILOT - RS_ACNAME) {
+        uint32_t i = 0;                       /* the game ends a name with one '>' */
+        while (i + 1 < RS_NAME_BYTES && b[at + i] != '>') i += 2;
+        if (!s->ac[0] && at == RS_ACNAME) i = 0;
+        b[at + i] = '>';
+        memset(b + at + i + 1, 0, RS_NAME_BYTES - i - 1);
+    }
+    /* What a new game sets, then the run on top. */
+    for (size_t k = 0; k < sizeof k_new_game / sizeof k_new_game[0]; k++)
+        memcpy(b + k_new_game[k].at, k_new_game[k].b, k_new_game[k].n);
+    memset(b + RS_OWNED, 0, 256);
+    for (int r = 0; r < 13; r++) {
+        const int base = owned_base(moa_record_cat(r));
+        if (base < 0 || s->start_ac[r] == 255) continue;
+        b[RS_OWNED + base + s->start_ac[r]]++;
+        if (moa_record_cat(r) != MOA_CAT_BACK)       /* back weapons stay on sale */
+            b[RS_SHOP + base + s->start_ac[r]] = 0;
+    }
+    /* The new game's own starter parts, not in this AC, go on sale. */
+    static const uint8_t k_starter[] = { 5, 18, 30, 56, 93, 108, 143, 157, 197, 218, 243 };
+    for (size_t i = 0; i < sizeof k_starter; i++)
+        if (!b[RS_OWNED + k_starter[i]]) b[RS_SHOP + k_starter[i]] = 1;
+    const uint32_t p = s->points;
+    for (int i = 0; i < 4; i++) {
+        b[RS_CREDITS + i] = (uint8_t)(p >> (8 * i));
+        b[RS_CREDITS_SHOWN + i] = (uint8_t)(p >> (8 * i));
+    }
+    memcpy(b + RS_ACNAME_SHOWN, b + RS_ACNAME, RS_NAME_BYTES);
+    memcpy(b + RS_PILOT_SHOWN, b + RS_PILOT, RS_NAME_BYTES);
+    uint32_t sum = 0;
+    for (uint32_t i = 0; i < RS_SUM_BYTES; i++) sum += 0xFFFFFFFFu - b[RS_SUM_FROM + i];
+    for (int i = 0; i < 4; i++) b[RS_SUM + i] = (uint8_t)(sum >> (8 * i));
+}
+
+int moa_run_write_card(const char *card_path, const struct moa_run_state *s)
+{
+    static uint8_t block[8192];
+    char path[1100];
+    moa_run_card_path(card_path, path, sizeof path);
+    moa_run_make_save(s, block);
+    const uint8_t *blocks[1] = { block };
+    return moa_memcard_write_blocks(path, blocks, 1);
 }

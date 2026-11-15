@@ -88,6 +88,12 @@
  * The run card holds one save, BASLUS-01030A (launcher), so the autosave
  * writes file 0 on port 0 and only when the list still names that file;
  * index -1 would add a new file each time. */
+/* The main arena's lock: the hub's Arena entry opens arena 0 with this byte
+ * as the lock (0x800BA6C4 -> 0x800BB93C a1 -> state + 0x80 + 0x5E). A new
+ * game holds it set until the story opens the arena ("You may not enter
+ * this Arena now." / "Arena license suspended."); a run clears it. */
+#define RUN_ARENA_LOCK       0x8004B686u
+
 #define RUN_SAVE             0x8007155Cu
 #define RUN_SIG_SAVE         0x27BDFF98u  /* addiu sp,sp,-104 */
 #define RUN_SAVE_LIST        0x801F9DB8u
@@ -193,7 +199,12 @@ static int run_at_hub;                    /* the player has the hub */
 static uint32_t run_ticks, run_frames, run_fade;
 static struct moa_run_state run_state;
 static int run_state_ok;
-enum { STAGE_TITLE = 0, STAGE_LOADGAME, STAGE_LOADING };
+enum { STAGE_TITLE = 0, STAGE_LOADGAME, STAGE_LOADING, STAGE_BACK };
+/* At the hub: one O press (one menu back), at normal speed so the hub's
+ * music starts as it would, then hand over behind the loading screen. */
+#define RUN_BACK_FRAMES      90u
+#define RUN_PAD_CIRCLE       0x2000u
+static uint32_t run_back_start;
 static int run_stage;
 static uint32_t run_newgame_seen;          /* run_frames when that menu last ran */
 static int run_result_seen;                /* this fight's result is booked */
@@ -227,13 +238,21 @@ static void run_apply_state(void)
     if (!run_state_ok) psx_mod_counter_add("moa.run.file_missing", 1);
 }
 
-static void run_reach_hub(const char *why)
+static void run_finish_handover(void)
 {
-    if (!run_autopilot) return;
     run_autopilot = 0;
     run_at_hub = 1;
     run_apply_state();
     run_fade = RUN_FADE_FRAMES;
+    psx_mod_counter_add("moa.run.handover", 1);
+}
+
+static void run_reach_hub(const char *why)
+{
+    if (!run_autopilot || run_stage == STAGE_BACK) return;
+    run_stage = STAGE_BACK;
+    run_back_start = run_frames;
+    run_ticks = 0;
     psx_mod_request_fast_forward(0);
     psx_mod_counter_add(why, 1);
 }
@@ -305,6 +324,11 @@ static void run_menu_input_entry(struct CPUState *cpu, uint32_t address)
      * then X on LOAD GAME and through the load screens (all defaults: slot 1,
      * the card's one save, yes). */
     const uint32_t t = run_ticks++;
+    if (run_stage == STAGE_BACK) {               /* one O press, once */
+        psx_mod_write_half(RUN_PAD_BUFFER + 2u,
+                           (t >= 6u && t < 9u) ? (uint16_t)~RUN_PAD_CIRCLE : (uint16_t)0xFFFFu);
+        return;
+    }
     const uint16_t b = run_stage == STAGE_TITLE ? RUN_PAD_START : RUN_PAD_X;
     psx_mod_write_half(RUN_PAD_BUFFER + 2u, (t % 24u) < 3u ? (uint16_t)~b : (uint16_t)0xFFFFu);
 }
@@ -601,7 +625,13 @@ static int run_hub_pick_filter(struct CPUState *cpu, uint32_t address)
     if (RUN_HUB_ALLOWED & (1u << entry)) return 0;
     const uint32_t flags = psx_mod_read_word(st + RUN_HUB_FLAGS);
     if (flags >= 0x80000000u && flags < 0x80200000u) psx_mod_write_byte(flags + 1u, 1);
-    psx_mod_write_word(st + 0x78u, RUN_HUB_NEXT);
+    /* Back to the hub the way a closing submenu returns: the game's own
+     * resume (re-opens the hub's menu). The old way set the hub's next
+     * state to RUN_HUB_NEXT, which left it waiting on a submenu (hang). */
+    if (psx_mod_read_word(RUN_HUB_RESUME) == RUN_SIG_HUB_RESUME)
+        (void)psx_mod_call_guest(cpu, RUN_HUB_RESUME, cpu->gpr[31], 0u, 0u, 0u, 0u);
+    else
+        psx_mod_write_word(st + 0x78u, RUN_HUB_NEXT);
     psx_mod_counter_add("moa.run.hub_blocked", 1);
     return 1;
 }
@@ -621,9 +651,18 @@ static void run_frame_hook(void)
 {
     if (!run_on()) return;
     run_apply_fixes();
+    if (run_at_hub && psx_mod_read_byte(RUN_ARENA_LOCK)) {
+        psx_mod_write_byte(RUN_ARENA_LOCK, 0);
+        psx_mod_counter_add("moa.run.arena_unlocked", 1);
+    }
     if (run_loss_wait && !--run_loss_wait) {
         psx_mod_counter_add("moa.run.over", 1);
         psx_mod_request_return_to_launcher();
+    }
+    if (run_autopilot && run_stage == STAGE_BACK) {
+        if (++run_frames - run_back_start >= RUN_BACK_FRAMES) run_finish_handover();
+        else psx_mod_set_loading_screen("ARENA RUN  Preparing your run", 98);
+        return;
     }
     if (run_autopilot) {
         if (!psx_mod_fast_forward_requested()) psx_mod_request_fast_forward(1);

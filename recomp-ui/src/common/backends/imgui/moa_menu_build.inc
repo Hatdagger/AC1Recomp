@@ -111,6 +111,15 @@ static void edit_changed() {
     g_edit_dirty = true;
 }
 
+/* Two-slot back units (index 52 and up) fill both back slots as one item:
+ * the part sits in one back byte, the other stays empty. */
+static bool two_slot_back(int id) { return id >= 52 && id != 255; }
+static int asm_eff_byte(int byte) {
+    if (byte != 6 && byte != 7) return byte;
+    const int other = byte == 6 ? 7 : 6;
+    return (!two_slot_back(g_edit.rec[byte]) && two_slot_back(g_edit.rec[other])) ? other : byte;
+}
+
 static void step_part(int byte, bool optional, int dir) {
     if (slot_locked(byte)) return;
     const std::vector<int> v = slot_choices(byte, optional);
@@ -119,6 +128,10 @@ static void step_part(int byte, bool optional, int dir) {
     for (size_t i = 0; i < v.size(); ++i) if (v[i] == g_edit.rec[byte]) at = (int)i;
     at = (at + dir + (int)v.size()) % (int)v.size();
     g_edit.rec[byte] = (uint8_t)v[(size_t)at];
+    if (byte == 6 || byte == 7) {   /* as the game: a two-slot unit empties the other side */
+        const int other = byte == 6 ? 7 : 6;
+        if (two_slot_back(g_edit.rec[byte]) || two_slot_back(g_edit.rec[other])) g_edit.rec[other] = 255;
+    }
     edit_changed();
 }
 
@@ -576,7 +589,9 @@ static void draw_ai_asm(LauncherModel* m, const Gfx& g, const Input& in) {
         return;
     }
     const AsmSlot& sl = kAsm[g_asm_slot];
-    const int byte = sl.byte, cat = moa_record_cat(byte), id = g_edit.rec[byte];
+    const int byte = asm_eff_byte(sl.byte), cat = moa_record_cat(byte), id = g_edit.rec[byte];
+    unsigned wire = sl.wire;
+    if (two_slot_back(id)) wire = (1u << MOA_ACV_BACK_LEFT) | (1u << MOA_ACV_BACK_RIGHT);
     const bool locked = slot_locked(byte);
     const bool empty = asm_empty(byte, id);
     const moa_part* p = empty ? nullptr : moa_parts_find(&g_parts, cat, (uint8_t)id);
@@ -625,7 +640,7 @@ static void draw_ai_asm(LauncherModel* m, const Gfx& g, const Input& in) {
 
     /* right window: the AC, the slot as a wireframe, the totals */
     game_box(g, rx, top, w, h);
-    draw_acv(g, rx + 2.0f, top + 2.0f, w - 4.0f, 248.0f, g_edit, sl.wire, sl.grey ? kWireGrey : kWireRed, true);
+    draw_acv(g, rx + 2.0f, top + 2.0f, w - 4.0f, 248.0f, g_edit, wire, sl.grey ? kWireGrey : kWireRed, true);
     g.dl->AddLine(at(g, rx, top + 252.0f), at(g, rx + w, top + 252.0f), kGameBlue, 1.5f * g.s);
     const float sx = rx + 14.0f, sr = rx + w - 14.0f;
     stat_pair(g, sx, sr, top + 262.0f, "EP", chk.drain, chk.output, chk.energy_over);
@@ -647,7 +662,7 @@ static void draw_ai_asm(LauncherModel* m, const Gfx& g, const Input& in) {
     if (verdict) text(g, sx, top + 344.0f, 10.0f, vcol, verdict, w - 28.0f);
 
     if (g_details_open) draw_asm_details(g, sl.label, cat, id);
-    footer(g, "UP/DOWN  SLOT   LEFT/RIGHT  PART   Y/TRIANGLE  DETAILS   A  LIST   R-STICK  ZOOM   B  BACK");
+    footer(g, "UP/DOWN  SLOT   LEFT/RIGHT  PART   Y/TRIANGLE  DETAILS   R-STICK  ZOOM   B  BACK");
 
     if (in.info) { g_details_open = !g_details_open; return; }
     if (in.back) {
@@ -658,18 +673,9 @@ static void draw_ai_asm(LauncherModel* m, const Gfx& g, const Input& in) {
     }
     if (in.up) g_asm_slot = (g_asm_slot + kAsmCount - 1) % kAsmCount;
     if (in.down) g_asm_slot = (g_asm_slot + 1) % kAsmCount;
-    if (in.left || in.right) step_part(byte, sl.optional, in.left ? -1 : 1);
-    if (in.confirm && !locked && !g_details_open) {
-        int k = -1;
-        for (int i = 0; i < kSlotCount; ++i) if (kSlots[i].byte == byte) k = i;
-        if (k < 0) return;
-        g_pick_byte = k;
-        g_pick_to_asm = true;
-        const std::vector<int> v = slot_choices(byte, kSlots[k].optional);
-        g_state.cursor[PAGE_AI_PICK] = 0;
-        for (size_t i = 0; i < v.size(); ++i) if (v[i] == id) g_state.cursor[PAGE_AI_PICK] = (int)i;
-        g_state.top[PAGE_AI_PICK] = 0;
-        g_ai_sub = AI_SUB_PICK;
+    if (in.left || in.right) {
+        if (byte != sl.byte) { g_edit.rec[sl.byte] = g_edit.rec[byte]; g_edit.rec[byte] = 255; }
+        step_part(sl.byte, sl.optional, in.left ? -1 : 1);
     }
 }
 

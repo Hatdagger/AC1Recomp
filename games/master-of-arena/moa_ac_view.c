@@ -278,11 +278,15 @@ static moa_acv *load_ac(const char *dir, const uint8_t rec[13], const uint8_t pa
     if (t) acr_anim_set_parse(t, &v->skel, &v->anims);   /* without it: the bind pose */
     free(t);
     const int weapon_arms = rec[2] >= 12;
+    /* Two-slot back units (52 and up) sit in one back byte but are drawn on both sides. */
+    int back_l = rec[6] == 255 ? -1 : rec[6], back_r = rec[7] == 255 ? -1 : rec[7];
+    if (back_l >= 52) back_r = back_l;
+    else if (back_r >= 52) back_l = back_r;
     const int index[ACR_PART_KINDS] = {
         [ACR_PART_CORE] = rec[0], [ACR_PART_HEAD] = rec[1], [ACR_PART_ARMS] = rec[2], [ACR_PART_LEGS] = rec[3],
         [ACR_PART_HAND] = weapon_arms ? -1 : (rec[4] == 255 ? 0 : rec[4]),   /* 0: the empty hand */
-        [ACR_PART_BACK_LEFT] = rec[6] == 255 ? -1 : rec[6],
-        [ACR_PART_BACK_RIGHT] = rec[7] == 255 ? -1 : rec[7],
+        [ACR_PART_BACK_LEFT] = back_l,
+        [ACR_PART_BACK_RIGHT] = back_r,
         [ACR_PART_BOOSTER] = rec[12] == 255 ? -1 : rec[12],
     };
     for (int kind = 0; kind < ACR_PART_KINDS; ++kind)
@@ -369,7 +373,7 @@ moa_acv *moa_acv_load_part(const char *dir, const char *kind, int index, const u
        units as left and right copies. */
     int show[ACV_SOLO_MAX], n_show = 0;
     if (!strcmp(kind, "booster") && objects == 3) show[n_show++] = 1;
-    else if (!strcmp(kind, "arms") && objects == 4) { show[n_show++] = 0; show[n_show++] = 2; }
+    else if (!strcmp(kind, "arms") && objects == 4) show[n_show++] = 0;   /* 2 is the same arm again */
     else if ((!strcmp(kind, "arms") || !strcmp(kind, "back")) && objects == 2) show[n_show++] = 0;
     else for (int k = 0; k < objects && n_show < ACV_SOLO_MAX; ++k) show[n_show++] = k;
     for (int i = 0; i < n_show && v->solo_count < ACV_SOLO_MAX; ++i) {

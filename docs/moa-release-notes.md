@@ -26,10 +26,19 @@ This is a test release. Please report problems in this repository's Issues
   panel now shows your public IP address and port under the LAN address, so
   friends outside your network know what to join (the UDP port has to be
   forwarded to your PC).
-- **Assembly (preview, untested):** a new ASSEMBLY screen on the launcher's
-  main menu shows your AC in 3D (install the models once from EXTRAS: "INSTALL
-  3D AC MODELS (OPTIONAL)"), with part details, a compare panel and saving the
-  AC to your memory card.
+- **Assembly (preview):** a new ASSEMBLY screen on the launcher's main menu
+  builds an AC and shows it in 3D. Install the models once from EXTRAS:
+  "INSTALL 3D AC MODELS (OPTIONAL)" (read from your own disc, about 20 MB).
+  Turn the AC with the right stick, see each part's figures with Triangle,
+  mark up to three parts with Square to compare them (green better, red
+  worse), and save the AC to your memory card as a new save (it never
+  overwrites one; a new card is made if you don't have one yet). Load it in
+  game from VS mode: AC SETUP > SYSTEM > DATA LOAD.
+
+  ![Assembly](https://raw.githubusercontent.com/Hatdagger/AC1Recomp/master/docs/readme/assembly.png)
+  ![Part list](https://raw.githubusercontent.com/Hatdagger/AC1Recomp/master/docs/readme/assembly-parts.png)
+  ![Part details](https://raw.githubusercontent.com/Hatdagger/AC1Recomp/master/docs/readme/assembly-details.png)
+  ![3D model install](https://raw.githubusercontent.com/Hatdagger/AC1Recomp/master/docs/readme/extras-3d-models.png)
 - **Phantasma missions no longer advance Master of Arena's story:** finishing
   one used to move MoA's chapter forward, unlocking MoA missions and mail
   early. Now only Phantasma's own progress changes.

@@ -38,7 +38,7 @@ there.
 
 ## 2. Launcher
 
-<!-- Launcher screenshot goes here: docs/readme/launcher.png -->
+![The launcher](docs/readme/launcher.png)
 
 A launcher in Master of Arena's own style, made for a **gamepad**
 (Steam Deck and handheld PCs included). No mouse needed.
@@ -50,17 +50,42 @@ A launcher in Master of Arena's own style, made for a **gamepad**
   - **Names are picked for you** from the game's arena pilot names, so
     there's nothing to type.
   - Each player plays on their own screen, with their own AC and memory card.
+- **Assembly:** build an AC with your AC shown in 3D (see below).
 - **AI Battle:** pick two AC "cards" and watch the computer fly both (see below).
 - **Mods:** switch features on and off, or install new ones.
 - **Extras:** *Install data from Project Phantasma* builds the Phantasma
   content on your PC from your own disc (it finds the disc by itself).
   *Reinstall additional content* removes it and builds it again.
+  *Install 3D AC models (optional)* reads the AC models from your Master of
+  Arena disc (about 20 MB, kept in the `acmodels` folder) for Assembly.
 - **Updates:** checks GitHub for a new release and installs it, only when you
   ask.
 
 ---
 
-## 3. AI Battle (computer vs computer)
+## 3. Assembly (preview)
+
+![Assembly](docs/readme/assembly.png)
+
+Launcher → **Assembly**. Build an AC outside the game and see it in 3D.
+
+- Install the models once first: **Extras** → *Install 3D AC models
+  (optional)*.
+- Turn the AC with the right stick (or Q/E and R/F on a keyboard).
+- **Triangle / Y** shows a part's full figures. In a part list, **Square / X**
+  marks up to three parts to compare: green is better, red is worse than the
+  fitted part.
+- The build checks the game's own rules (weight, energy, option slots) and
+  says if the game won't field the AC.
+- **Save to memory card** adds the AC as a new save on your card (it never
+  overwrites one). In game, load it in **VS mode: AC Setup → System → Data
+  Load**. It can also be saved as an AI Battle card.
+
+![Part list with figures](docs/readme/assembly-parts.png)
+
+---
+
+## 4. AI Battle (computer vs computer)
 
 Pick two ACs and watch the computer fly both, using the game's own arena AI.
 
@@ -80,7 +105,7 @@ Pick two ACs and watch the computer fly both, using the game's own arena AI.
 
 ---
 
-## 4. Project Phantasma arena
+## 5. Project Phantasma arena
 
 ![Project Phantasma arena](docs/readme/pp-arena.png)
 
@@ -96,7 +121,7 @@ Pick two ACs and watch the computer fly both, using the game's own arena AI.
 
 ---
 
-## 5. Project Phantasma missions (work in progress)
+## 6. Project Phantasma missions (work in progress)
 
 ![Mission list with a Phantasma mission](docs/readme/missions.png)
 ![Phantasma missions in game](docs/readme/pp-missions-gameplay.png)
@@ -104,22 +129,21 @@ Pick two ACs and watch the computer fly both, using the game's own arena AI.
 **The goal:** play all 17 Project Phantasma missions inside Master of Arena,
 with their own briefings, maps and enemies, and with any AC you build.
 
-**Where it is today (0.4.1):**
+**Where it is today (0.8.3):**
 
 - Installed together with the arena (same Extras button).
-- The next Phantasma mission sits at the top of the **Mission** list as
-  **"PP: …"**. Master of Arena's own missions show **"M: …"**.
-- Missions unlock **one at a time**, in order.
+- In game, **Missions** opens a short list first: *Armored Core* (not
+  installed yet), *Project Phantasma* and *Master of Arena*. Pick one to see
+  its missions.
+- While the missions are being tested, the Phantasma list shows all of them
+  that work. Playing them no longer moves Master of Arena's own story forward.
 - **12 of 17 missions are in.** Missions 1, 7, 9, 11 and 14 are left out for
   now because they freeze or don't display correctly.
-- No replay list yet. Once you've finished them, the Phantasma missions leave
-  the list.
 - Progress is saved in `Phantasma Missions.txt` in the **Memory Card** folder,
   one progress per memory card (every save on the card shares it).
 - A few long mission names are shortened to fit the list.
 
-**Planned:** a separate Phantasma mission list (like Arena's two lists), the
-missing missions, and replays after the last mission.
+**Planned:** the missing missions, and replays after the last mission.
 
 ---
 
@@ -131,6 +155,7 @@ missing missions, and replays after the last mission.
 | your `.cue` + `.bin` | Your Master of Arena Disc 1 (and optionally Project Phantasma) |
 | `Memory Card/` | Memory cards, AI Battle cards (`.png`) and Phantasma mission progress |
 | `Mods/` | Mods |
+| `acmodels/` | 3D AC models for Assembly (only after the optional install) |
 | `RecompData/` | Everything else the game needs |
 
 ---

@@ -406,6 +406,8 @@ int stbi_write_png_to_func(void (*func)(void *, void *, int), void *context,
 #define SAVE_CLUT     0xC80                    /* 16 x 15-bit colours */
 #define SAVE_PLUS     0xDEC                    /* Human PLUS state; [0] = level */
 #define SAVE_VALID    0xE58                    /* 1 = a save the loader accepts */
+#define SAVE_MONEY    0x1C8                    /* u32 credits (RAM 0x8003EA74) */
+#define SAVE_OWNED    0x280                    /* 256 owned-part counts (RAM 0x80036FEC) */
 
 /* Names are Shift-JIS, two bytes a character (the name editor offers full-width
  * letters, digits, kana and symbols), eight characters at most, ended by '>'
@@ -828,6 +830,167 @@ int moa_memcard_add_unit(const char *path, const struct moa_card *card, char *er
         if (fclose(f) != 0) ok = 0;
     }
     if (!ok && err) snprintf(err, err_size, "the memory card could not be written (backup kept)");
+    free(mc);
+    return ok;
+}
+
+/* ---- the garage AC in a story save -------------------------------------------- */
+
+/* The game's owned-parts numbering (menu 0x800996AC: a u16 base per category
+ * at 0x800530C4, plus the part's id): head 0, core 18, arms 29, legs 53,
+ * generator 93, FCS 108, optional parts 124, booster 143, back 157, hand
+ * weapons 217 (0 = NO WEAPON) and the blades after the 26 hand weapons, 243.
+ * Checked against real saves: every equipped part's flag, and a bought head. */
+int moa_owned_index(int byte, int id)
+{
+    if (id < 0 || id == 0xFF) return -1;
+    int base, n;
+    switch (byte) {
+    case 0:  base = 18;  n = 11; break;    /* core */
+    case 1:  base = 0;   n = 18; break;    /* head */
+    case 2:  base = 29;  n = 24; break;    /* arms */
+    case 3:  base = 53;  n = 40; break;    /* legs */
+    case 4:  base = 217; n = 26; break;    /* hand weapon */
+    case 5:  base = 243; n = 6;  break;    /* blade */
+    case 6: case 7: base = 157; n = 60; break;   /* back */
+    case 8:  base = 108; n = 16; break;    /* FCS */
+    case 9:  base = 93;  n = 15; break;    /* generator */
+    case 10: case 11: base = 124; n = 19; break; /* optional part number */
+    case 12: base = 143; n = 14; break;    /* booster */
+    default: return -1;
+    }
+    return id < n ? base + id : -1;
+}
+
+static int read_card_image(const char *path, uint8_t *mc)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    const size_t got = fread(mc, 1, 131072, f);
+    fclose(f);
+    return got == 131072 && mc[0] == 'M' && mc[1] == 'C';
+}
+
+/* A story save: a used directory slot named BASLUS-01030?, a valid Scenario
+ * block, and parts owned (the launcher's versus units own none). */
+static int is_story(const uint8_t *mc, int slot, int *owned)
+{
+    const uint8_t *fr = mc + slot * 128;
+    if ((fr[0] & 0xF0) != 0x50 || memcmp(fr + 10, "BASLUS-01030", 12) != 0) return 0;
+    const uint8_t *b = mc + slot * 8192;
+    if (b[0] != 'S' || b[1] != 'C' || b[SAVE_VALID] != 1) return 0;
+    int n = 0;
+    for (int i = 0; i < 256; i++) n += b[SAVE_OWNED + i] != 0;
+    if (owned) *owned = n;
+    return n > 0;
+}
+
+int moa_memcard_list_story(const char *path, struct moa_story_save *out, int max)
+{
+    uint8_t *mc = (uint8_t *)malloc(131072);
+    if (!mc) return -1;
+    if (!read_card_image(path, mc)) { free(mc); return -1; }
+    int n = 0;
+    for (int i = 1; i < 16 && n < max; i++) {
+        int owned = 0;
+        if (!is_story(mc, i, &owned)) continue;
+        const uint8_t *b = mc + i * 8192;
+        struct moa_story_save *s = &out[n++];
+        memset(s, 0, sizeof *s);
+        s->slot = i;
+        memcpy(s->file, mc + i * 128 + 10, 13);
+        save_name(b + SAVE_PILOT, s->pilot);
+        save_name(b + SAVE_ACNAME, s->ac);
+        s->money = (uint32_t)b[SAVE_MONEY] | (uint32_t)b[SAVE_MONEY + 1] << 8 |
+                   (uint32_t)b[SAVE_MONEY + 2] << 16 | (uint32_t)b[SAVE_MONEY + 3] << 24;
+        s->owned = owned;
+    }
+    free(mc);
+    return n;
+}
+
+static void save_checksum(uint8_t *b)
+{
+    /* As moa_card_to_save: the loader's sum over +432, 3240 bytes, at +384. */
+    uint32_t sum = 0;
+    for (int i = 0; i < 3240; i++) sum += 0xFFFFFFFFu - b[432 + i];
+    b[384] = (uint8_t)sum; b[385] = (uint8_t)(sum >> 8);
+    b[386] = (uint8_t)(sum >> 16); b[387] = (uint8_t)(sum >> 24);
+}
+
+int moa_memcard_fit_story(const char *path, int slot, const struct moa_card *card, int *added,
+                          char *err, size_t err_size)
+{
+    if (err && err_size) err[0] = '\0';
+    if (added) *added = 0;
+    uint8_t *mc = (uint8_t *)malloc(131072);
+    if (!mc) return 0;
+    if (!read_card_image(path, mc)) {
+        if (err) snprintf(err, err_size, "the memory card could not be read");
+        free(mc);
+        return 0;
+    }
+    if (slot < 1 || slot > 15 || !is_story(mc, slot, NULL)) {
+        if (err) snprintf(err, err_size, "that is not a story save");
+        free(mc);
+        return 0;
+    }
+    char bak[1100];
+    snprintf(bak, sizeof bak, "%s.bak", path);
+    FILE *f = fopen(bak, "wb");
+    int ok = f && fwrite(mc, 1, 131072, f) == 131072;
+    if (f && fclose(f) != 0) ok = 0;
+    if (!ok) {
+        if (err) snprintf(err, err_size, "the backup copy could not be written");
+        free(mc);
+        return 0;
+    }
+    uint8_t *b = mc + slot * 8192;
+    uint8_t r[13];
+    memcpy(r, card->rec, 13);
+    /* the builder's rules (moa_build_normalise): weapon arms have no hand
+       weapon or blade, caterpillars no booster, 12 option bits */
+    if (r[2] >= 12 && r[2] != 0xFF) { r[4] = 0; r[5] = 0xFF; }
+    if (r[3] >= 27 && r[3] != 0xFF) r[12] = 0xFF;
+    r[11] &= 0x0F;
+    /* Owned parts: everything fitted, then every optional part fitted. */
+    int n = 0;
+    for (int byte = 0; byte < 13; byte++) {
+        if (byte == 10 || byte == 11) continue;
+        const int k = moa_owned_index(byte, r[byte]);
+        if (byte == 4 && r[byte] == 0) continue;           /* NO WEAPON */
+        if (k >= 0 && b[SAVE_OWNED + k] == 0) { b[SAVE_OWNED + k] = 1; n++; }
+    }
+    const unsigned mask = r[10] | (unsigned)r[11] << 8;
+    for (int o = 0; o < 12; o++) {
+        if (!(mask & (1u << o))) continue;
+        const int k = moa_owned_index(10, o);
+        if (k >= 0 && b[SAVE_OWNED + k] == 0) { b[SAVE_OWNED + k] = 1; n++; }
+    }
+    /* The AC itself, in the save's garage order (as moa_card_to_save). */
+    const uint8_t booster = (r[3] >= 27 && r[3] != 0xFF) ? 0xFF : r[12];
+    const uint8_t parts[12] = { r[0], booster, r[1], r[2], r[5], r[4],
+                                r[6], r[7], r[9], r[8], 0xFF, r[3] };
+    memcpy(b + SAVE_PARTS, parts, 12);
+    b[SAVE_OPTIONS] = r[10];
+    b[SAVE_OPTIONS + 1] = r[11];
+    save_put_name(b + SAVE_ACNAME, card->ac[0] ? card->ac : "AC");
+    for (int i = 0; i < 48; i++) b[SAVE_PAINT + i] = card->paint[i] > 64 ? 64 : card->paint[i];
+    for (int i = 0; i < 2048; i++)
+        b[SAVE_EMBLEM + i] = (uint8_t)((card->emblem[2 * i] & 15) | ((card->emblem[2 * i + 1] & 15) << 4));
+    for (int i = 0; i < 16; i++) {
+        b[SAVE_CLUT + 2 * i] = (uint8_t)(card->palette[i] & 255);
+        b[SAVE_CLUT + 2 * i + 1] = (uint8_t)((card->palette[i] >> 8) & 0x7F);
+    }
+    save_checksum(b);
+    f = fopen(path, "wb");
+    ok = 0;
+    if (f) {
+        ok = fwrite(mc, 1, 131072, f) == 131072;
+        if (fclose(f) != 0) ok = 0;
+    }
+    if (!ok && err) snprintf(err, err_size, "the memory card could not be written (backup kept)");
+    if (ok && added) *added = n;
     free(mc);
     return ok;
 }

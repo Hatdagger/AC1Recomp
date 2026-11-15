@@ -339,7 +339,7 @@ static void draw_ai_build(LauncherModel* m, const Gfx& g, const Input& in) {
         else if (i == B_AI) { label = "AI"; value = card_ai_label(g_edit); }
         else if (i == B_SAVE) { label = g_build_standalone ? "KEEP IN GARAGE" : "SAVE CARD"; enabled = !chk.blocked; }
         else if (i == B_SAVE_NEW) { label = g_build_standalone ? "SAVE AS NEW AI CARD" : "SAVE AS NEW CARD"; enabled = !chk.blocked; }
-        else { label = "SAVE TO MEMORY CARD"; value = "FOR VS"; enabled = !chk.blocked && !m->in_session; }
+        else { label = "SAVE AS VERSUS UNIT"; value = "VS MODE"; enabled = !chk.blocked && !m->in_session; }
         bool hovered = false;
         if (row(g, 25.0f, 74.0f + kRowH * (i - top), 298.0f, i == cur, enabled, label.c_str(),
                 value.c_str(), false, false, &hovered) && !g_name_edit && !g_confirm_discard)

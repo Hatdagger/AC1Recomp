@@ -141,6 +141,8 @@ typedef struct acv_part {
     int present, pieces;
     acr_mtl mtl;
     acr_mesh piece[12];
+    int has_joint[12];
+    int joint[12][3];          /* part.toml: the bind position the export took off */
     acv_tex tex;
 } acv_part;
 
@@ -202,8 +204,24 @@ static int load_part(const char *models, int kind, int index, const uint8_t *pai
     char *toml = read_text(path);
     if (!toml) return 0;
     const int pieces = (int)get_int(toml, toml + strlen(toml), "pieces", 0);
+    if (pieces <= 0) { free(toml); return 0; }
+    /* Each piece's joint (the bind position its vertices were moved by, in
+       the set it was exported from). */
+    {
+        int k = 0;
+        for (const char *b = strstr(toml, "[[piece]]"); b && k < 12; ++k) {
+            const char *next = strstr(b + 9, "[[piece]]");
+            const char *e = next ? next : b + strlen(b);
+            const char *v = find_key(b, e, "joint");
+            if (v && (v = strchr(v, '[')) && v < e) {
+                char *q = (char *)v + 1;
+                for (int c = 0; c < 3; ++c) { p->joint[k][c] = (int)strtol(q, &q, 10); if (*q == ',') ++q; }
+                p->has_joint[k] = 1;
+            }
+            b = next;
+        }
+    }
     free(toml);
-    if (pieces <= 0) return 0;
     snprintf(path, sizeof path, "%s/part.mtl", dir);
     char *mtl = read_text(path);
     if (!mtl || !acr_mtl_parse(mtl, &p->mtl)) { free(mtl); return 0; }
@@ -233,7 +251,8 @@ void moa_acv_free(moa_acv *v) {
 
 static void frame_model(moa_acv *v);
 
-moa_acv *moa_acv_load(const char *dir, const uint8_t rec[13], const uint8_t paint[48]) {
+/* The AC itself, framing not set. */
+static moa_acv *load_ac(const char *dir, const uint8_t rec[13], const uint8_t paint[48]) {
     if (rec[0] == 255 || rec[2] == 255 || rec[3] == 255) return NULL;
     const int set = pick_set(dir, rec[0], rec[2], rec[3]);
     if (set < 0) return NULL;
@@ -261,7 +280,39 @@ moa_acv *moa_acv_load(const char *dir, const uint8_t rec[13], const uint8_t pain
     for (int kind = 0; kind < ACR_PART_KINDS; ++kind)
         if (index[kind] >= 0) load_part(models, kind, index[kind], paint, &v->part[kind]);
     if (!v->part[ACR_PART_CORE].present || !v->part[ACR_PART_LEGS].present) { moa_acv_free(v); return NULL; }
-    frame_model(v);
+    return v;
+}
+
+/* Like the game's garage camera, the framing never changes with the parts:
+ * it is measured once per install on a plain mid-size AC (the builder's
+ * default, unarmed) with room around it, so a tall head (HD-12-RADAR) or a
+ * big back weapon sticks out further instead of shrinking and moving the
+ * whole AC. */
+static char  s_frame_dir[1100];
+static float s_frame_radius, s_frame_centre_y;
+
+static int fixed_frame(const char *dir) {
+    if (s_frame_dir[0] && strcmp(s_frame_dir, dir) == 0) return 1;
+    static const uint8_t ref[13] = { 0, 6, 0, 8, 255, 255, 255, 255, 255, 255, 0, 0, 0 };
+    moa_acv *r = load_ac(dir, ref, NULL);
+    if (!r) return 0;
+    frame_model(r);
+    s_frame_radius = r->radius * 1.08f;        /* room for taller parts */
+    s_frame_centre_y = r->centre_y;
+    moa_acv_free(r);
+    snprintf(s_frame_dir, sizeof s_frame_dir, "%s", dir);
+    return 1;
+}
+
+moa_acv *moa_acv_load(const char *dir, const uint8_t rec[13], const uint8_t paint[48]) {
+    moa_acv *v = load_ac(dir, rec, paint);
+    if (!v) return NULL;
+    if (fixed_frame(dir)) {
+        v->radius = s_frame_radius;
+        v->centre_y = s_frame_centre_y;
+    } else {
+        frame_model(v);                        /* no reference AC: fit this one */
+    }
     return v;
 }
 
@@ -286,6 +337,19 @@ static void for_each_tri(const moa_acv *v, float time, tri_fn fn, void *ctx) {
         if (!p->present || node->draw_piece >= p->pieces) continue;
         const acr_mesh *mesh = &p->piece[node->draw_piece];
         const float *M = mat[i];
+        /* The pose matrices take off this set's bind position for the node,
+           but the vertices were moved by the bind position in the set the part
+           was exported from. They differ where the hierarchy differs: weapon
+           arm sets hang the hips (legs piece 0) under a root joint, so the
+           hips floated above the head. Put back the difference (model space:
+           y and z negated). */
+        float d[3] = { 0, 0, 0 };
+        if (p->has_joint[node->draw_piece]) {
+            const int *jt = p->joint[node->draw_piece];
+            d[0] = (float)(node->pos[0] + jt[0]);
+            d[1] = -(float)(node->pos[1] + jt[1]);
+            d[2] = -(float)(node->pos[2] + jt[2]);
+        }
         for (int t = 0; t < mesh->tri_count; ++t) {
             const acr_material *mt = &p->mtl.m[mesh->material[t]];
             const acv_tex *tex = NULL;
@@ -297,12 +361,18 @@ static void for_each_tri(const moa_acv *v, float time, tri_fn fn, void *ctx) {
             const uint8_t rgb[3] = { tex ? 128 : mt->r, tex ? 128 : mt->g, tex ? 128 : mt->b };
             acv_vtx o[3];
             for (int j = 0; j < 3; ++j) {
-                const acr_mesh_vertex *s = &mesh->v[t * 3 + j];
-                /* model space keeps the AC's right hand at -x: mirror it */
-                o[j].x = -(M[0] * s->p[0] + M[1] * s->p[1] + M[2] * s->p[2] + M[3]);
+                const acr_mesh_vertex *s0 = &mesh->v[t * 3 + j];
+                acr_mesh_vertex sv = *s0;
+                sv.p[0] += d[0]; sv.p[1] += d[1]; sv.p[2] += d[2];
+                const acr_mesh_vertex *s = &sv;
+                /* Model space is game space turned half a turn about x (a
+                   rotation, not a mirror), and the camera below projects it
+                   the way the game does: no flip, or the rifle ends up in the
+                   left hand and the emblem on the wrong shoulder. */
+                o[j].x = M[0] * s->p[0] + M[1] * s->p[1] + M[2] * s->p[2] + M[3];
                 o[j].y = M[4] * s->p[0] + M[5] * s->p[1] + M[6] * s->p[2] + M[7];
                 o[j].z = M[8] * s->p[0] + M[9] * s->p[1] + M[10] * s->p[2] + M[11];
-                o[j].nx = -(M[0] * s->n[0] + M[1] * s->n[1] + M[2] * s->n[2]);
+                o[j].nx = M[0] * s->n[0] + M[1] * s->n[1] + M[2] * s->n[2];
                 o[j].ny = M[4] * s->n[0] + M[5] * s->n[1] + M[6] * s->n[2];
                 o[j].nz = M[8] * s->n[0] + M[9] * s->n[1] + M[10] * s->n[2];
                 o[j].u = s->uv[0];

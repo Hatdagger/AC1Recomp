@@ -124,6 +124,35 @@ int moa_memcard_write_units(const char *path, const struct moa_card *const units
  * and the previous image is kept as <path>.bak. 1 = ok, else a message. */
 int moa_memcard_add_unit(const char *path, const struct moa_card *card, char *err, size_t err_size);
 
+/* ---- the garage AC in a Scenario (story) save ---- */
+
+/* One Scenario save on a memory card image: a save the player made in story
+ * mode (it owns parts), not a versus unit. */
+struct moa_story_save {
+    int slot;                /* directory slot 1..15 */
+    char file[16];           /* "BASLUS-01030A" */
+    char pilot[17], ac[17];
+    uint32_t money;
+    int owned;               /* parts owned */
+};
+
+/* The story saves on a memory card image, up to `max`. -1 = unreadable. */
+int moa_memcard_list_story(const char *path, struct moa_story_save *out, int max);
+
+/* Owned-parts index the game uses for record byte `byte` holding `id`
+ * (menu 0x800996AC; blades follow the 26 hand weapons), or -1. Option bit
+ * `byte` 10 / 11 is given as option number 0..11 in `id`. */
+int moa_owned_index(int byte, int id);
+
+/* Fit the garage AC into the story save in directory slot `slot`: its parts,
+ * optional parts, paint, emblem and AC name; any part the save does not own
+ * is added to its owned parts (no money taken). The pilot name, money,
+ * progress and Human PLUS stay as they were. The previous image is kept as
+ * <path>.bak. `added` (may be NULL) gets how many parts were added. 1 = ok,
+ * else a message in `err`. */
+int moa_memcard_fit_story(const char *path, int slot, const struct moa_card *card, int *added,
+                          char *err, size_t err_size);
+
 /* Draw a card (format 4, or 3 when it carries no AI) and write it as PNG. */
 int moa_card_write_png(const struct moa_card *card, const char *path);
 

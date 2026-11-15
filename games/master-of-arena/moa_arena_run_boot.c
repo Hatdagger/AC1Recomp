@@ -25,7 +25,9 @@
 #include "mod_plugins.h"
 #include "cpu_state.h"
 
+#include <stdarg.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -100,7 +102,7 @@
 #define RUN_SAVE_COUNT       0x801B1CE4u  /* half */
 #define RUN_SAVE_LETTER      0x460u
 #define RUN_ARENA            0u           /* the run's opponents replace arena 0 */
-#define RUN_CREDITS          0x8003EA94u  /* u32, save +456 (moa_ai_battle.c) */
+#define RUN_CREDITS          0x8003EA74u  /* u32: the save routine copies it to save +456 (0x80071BBC); 0x8003EA94 is the fight-count byte */
 #define RUN_LOSS_FRAMES      (60u * 4u)   /* the result is shown, then the launcher */
 
 /* Hub: X on an entry calls 0x80056414 (a0 = hub state). It reads the
@@ -117,7 +119,10 @@
 #define RUN_HUB_FLAGS        0xACu
 #define RUN_HUB_NEXT         0x80057C2Cu
 #define RUN_HUB_ARENA        5
-#define RUN_HUB_ALLOWED      ((1u << 0) | (1u << 3) | (1u << RUN_HUB_ARENA))  /* guess: 0 garage, 3 shop */
+/* Known: 2 Missions, 5 Arena, 6 Ex Arena; 0/3 are Garage and System, Shop is
+ * 1, 4 or 7 (test 2). Until the run log names them, only Missions and Ex
+ * Arena are blocked. */
+#define RUN_HUB_ALLOWED      (0xFFu & ~((1u << 2) | (1u << 6)))
 
 /* Arena engine: the controller sampler runs only while the engine (a fight
  * or its replay) is up, so SELECT, which offers leaving the fight without
@@ -209,6 +214,24 @@ static int run_stage;
 static uint32_t run_newgame_seen;          /* run_frames when that menu last ran */
 static int run_result_seen;                /* this fight's result is booked */
 static int run_save_pending;               /* a win waits for the autosave */
+
+/* A plain log beside the run file (<run file>.log), for test reports: the
+ * mod counters are only visible through the debug server. */
+static void run_log(const char *fmt, ...)
+{
+    const char *path = getenv("PSX_MOA_RUN_FILE");
+    if (!path || !path[0]) return;
+    char name[1024];
+    snprintf(name, sizeof name, "%s.log", path);
+    FILE *f = fopen(name, "a");
+    if (!f) return;
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(f, fmt, ap);
+    va_end(ap);
+    fputc('\n', f);
+    fclose(f);
+}
 static uint32_t run_loss_wait;             /* frames until the launcher reopens */
 static const char *run_file_path(void) { return getenv("PSX_MOA_RUN_FILE"); }
 
@@ -245,6 +268,8 @@ static void run_finish_handover(void)
     run_apply_state();
     run_fade = RUN_FADE_FRAMES;
     psx_mod_counter_add("moa.run.handover", 1);
+    run_log("handover: run file loaded %d, P %u", run_state_ok,
+            run_state_ok ? (unsigned)run_state.run.points : 0u);
 }
 
 static void run_reach_hub(const char *why)
@@ -340,6 +365,12 @@ static void run_hub_entry(struct CPUState *cpu, uint32_t address)
     run_reach_hub("moa.run.hub_reached");
 }
 
+static uint8_t run_rank_now(uint32_t st)
+{
+    const uint32_t r = psx_mod_read_word(st + 0x80u + 0x54u);
+    return (r >= 0x80000000u && r < 0x80200000u) ? psx_mod_read_byte(r) : 0xFFu;
+}
+
 /* Autosave to the run card with the game's own save, once the result
  * routine has applied a win (rank, flags, credits). */
 static void run_autosave(struct CPUState *cpu)
@@ -348,24 +379,36 @@ static void run_autosave(struct CPUState *cpu)
     run_save_pending = 0;
     if (psx_mod_read_word(RUN_SAVE) != RUN_SIG_SAVE) {
         psx_mod_counter_add("moa.run.save_skip_code", 1);
+        run_log("autosave: skipped, save routine not in memory");
         return;
     }
-    if (psx_mod_read_half(RUN_SAVE_COUNT) < 1u ||
-        psx_mod_read_byte(RUN_SAVE_LIST + RUN_SAVE_LETTER) != (uint8_t)'A') {
-        psx_mod_counter_add("moa.run.save_skip_list", 1);
-        return;
-    }
+    /* File 0 takes its name letter from the card list; the list may be gone
+     * by now (menu memory is reused), so give it the run card's letter for
+     * the call and put the old byte back after. */
+    const uint32_t letter_at = RUN_SAVE_LIST + RUN_SAVE_LETTER;
+    const uint8_t old_letter = psx_mod_read_byte(letter_at);
+    const uint16_t count = psx_mod_read_half(RUN_SAVE_COUNT);
+    psx_mod_write_byte(letter_at, (uint8_t)'A');
     const uint32_t ok = psx_mod_call_guest(cpu, RUN_SAVE, cpu->gpr[31], 0u, 0u, 0u, 0u);
+    psx_mod_write_byte(letter_at, old_letter);
     psx_mod_counter_add((ok & 0xFFu) ? "moa.run.save_ok" : "moa.run.save_fail", 1);
+    run_log("autosave: result %u (list letter was 0x%02X, count %u)",
+            (unsigned)(ok & 0xFFu), old_letter, (unsigned)count);
 }
 
 /* A fight's result in the run's arena: a new win pays 1 P, a loss ends the
  * run (the file keeps it for Retry) and hands back to the launcher. */
 static void run_result_entry(struct CPUState *cpu, uint32_t address)
 {
-    if (!run_on() || !run_at_hub || !run_state_ok ||
-        psx_mod_read_word(address) != RUN_SIG_RESULT)
+    if (!run_on() || psx_mod_read_word(address) != RUN_SIG_RESULT) return;
+    if (!run_at_hub || !run_state_ok) {
+        static int told;
+        if (psx_mod_read_byte(RUN_FIGHT_DONE) && !told) {
+            told = 1;
+            run_log("result: not booked (at hub %d, run file loaded %d)", run_at_hub, run_state_ok);
+        }
         return;
+    }
     if (!psx_mod_read_byte(RUN_FIGHT_DONE)) {
         run_result_seen = 0;
         run_autosave(cpu);                     /* the result is applied now */
@@ -375,13 +418,19 @@ static void run_result_entry(struct CPUState *cpu, uint32_t address)
     run_result_seen = 1;
     const uint32_t st = cpu->gpr[4];
     if (st < 0x80000000u || st >= 0x80200000u) return;
-    if (psx_mod_read_byte(st + RUN_STATE_ARENA) != RUN_ARENA) return;
+    const uint8_t arena = psx_mod_read_byte(st + RUN_STATE_ARENA);
+    run_log("result: arena %u, opponent %u, won %u, lost %u, rank %u, P %u",
+            arena, psx_mod_read_byte(RUN_FIGHT_OPPONENT),
+            psx_mod_read_half(RUN_FIGHT_WON), psx_mod_read_half(RUN_FIGHT_WON + 2u),
+            (unsigned)run_rank_now(st), (unsigned)run_state.run.points);
+    if (arena != RUN_ARENA) return;
     const char *path = run_file_path();
     if (!psx_mod_read_half(RUN_FIGHT_WON)) {
         moa_run_lose(&run_state);
         (void)moa_run_save(path, &run_state);
         run_loss_wait = RUN_LOSS_FRAMES;
         psx_mod_counter_add("moa.run.loss", 1);
+        run_log("loss: run over");
         return;
     }
     /* Only a first win over that opponent counts (refights pay nothing). */
@@ -390,16 +439,18 @@ static void run_result_entry(struct CPUState *cpu, uint32_t address)
     if (flags < 0x80000000u || flags >= 0x80200000u || who >= MOA_RUN_SLOTS ||
         psx_mod_read_byte(flags + who) == 1u) {
         psx_mod_counter_add("moa.run.refight", 1);
+        run_log("win: refight, nothing paid");
         return;
     }
     const uint32_t had = run_state.run.points;
     if (!moa_run_win(&run_state)) return;
     /* P is the game's credits. Step 1 has nothing to spend them on, so the
      * credits are the run's P: if not, leave them (and say so). */
-    if (psx_mod_read_word(RUN_CREDITS) == had)
-        psx_mod_write_word(RUN_CREDITS, run_state.run.points);
-    else
-        psx_mod_counter_add("moa.run.credits_mismatch", 1);
+    const uint32_t credits = psx_mod_read_word(RUN_CREDITS);
+    if (credits != had) psx_mod_counter_add("moa.run.credits_mismatch", 1);
+    psx_mod_write_word(RUN_CREDITS, run_state.run.points);
+    run_log("win: P %u -> %u (credits were %u)", (unsigned)had,
+            (unsigned)run_state.run.points, (unsigned)credits);
     (void)moa_run_save(path, &run_state);
     psx_mod_counter_add("moa.run.win", 1);
     run_save_pending = 1;
@@ -622,6 +673,7 @@ static int run_hub_pick_filter(struct CPUState *cpu, uint32_t address)
         "moa.run.hub_entry_6", "moa.run.hub_entry_7" };
     if (entry < 0 || entry > 7) return 0;
     psx_mod_counter_add(k_names[entry], 1);
+    run_log("hub: entry %d picked", entry);
     if (RUN_HUB_ALLOWED & (1u << entry)) return 0;
     const uint32_t flags = psx_mod_read_word(st + RUN_HUB_FLAGS);
     if (flags >= 0x80000000u && flags < 0x80200000u) psx_mod_write_byte(flags + 1u, 1);
@@ -633,6 +685,7 @@ static int run_hub_pick_filter(struct CPUState *cpu, uint32_t address)
     else
         psx_mod_write_word(st + 0x78u, RUN_HUB_NEXT);
     psx_mod_counter_add("moa.run.hub_blocked", 1);
+    run_log("hub: entry %d blocked", entry);
     return 1;
 }
 

@@ -607,8 +607,8 @@ static void draw_garage_page(LauncherModel* m, const Gfx& g, const Input& in) {
     text(g, rx + 12.0f, top + 296.0f, 10.0f, kText, info[cur], rw - 24.0f);
 
     if (naming) {
-        footer(g, "UP / DOWN  LETTER   LEFT / RIGHT  MOVE   X  DELETE   A  DONE  (or type)");
-        name_input(in);
+        footer(g, "TYPE A NAME: LETTERS AND DIGITS, 8 AT MOST");
+        name_input(g, in);
         if (!g_name_edit) garage_name_done();
         return;
     }

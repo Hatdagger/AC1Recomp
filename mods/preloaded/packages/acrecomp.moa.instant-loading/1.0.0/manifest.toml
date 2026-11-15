@@ -1,0 +1,25 @@
+format_version = 5
+id = "acrecomp.moa.instant-loading"
+version = "1.0.0"
+name = "Master of Arena: Fast Loading"
+author = "AC1Recomp"
+description = "The emulated CD drive delivers game data much faster (16 sectors a frame instead of 2.5), so loading screens are far shorter. Music, voice and movie streaming keep their real timing. No disc or game data is modified. Off during online play."
+resolver = "declarative"
+save_compatibility = "shared"
+
+[[target]]
+game_id = "SLUS-01030"
+
+[[target]]
+game_id = "SLUS-01081"
+
+[[feature]]
+id = "instant-loading"
+name = "Fast loading"
+description = "Speeds up the emulated drive for game data. Turn off for original load times."
+group = "Quality of Life"
+default_enabled = true
+
+[[plugin]]
+feature = "instant-loading"
+id = "moa.instant-loading"

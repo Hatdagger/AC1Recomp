@@ -451,7 +451,7 @@ int main(void) {
     /* --- trusted-mod guest regions are tracked like RAM --- */
     {
         static const uint32_t APERTURE = 0x809D0004u;   /* GPU DMA aperture   */
-        static const uint32_t MODMEM   = 0x9F000040u;   /* Expansion 1 memory */
+        static const uint32_t MODMEM   = 0x81000040u;   /* mod data memory */
         int32_t x, y; uint16_t z;
         produce_at(APERTURE);
         CHECK(lookup(APERTURE & 0x00FFFFFFu, PACKED, 160, 80, &x, &y, &z) ==

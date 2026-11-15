@@ -1,0 +1,299 @@
+# Master of Arena builds for players: a Linux AppImage (Steam Deck and other
+# Linux PCs) and the Windows "Armored Core Moa" folder.
+#
+# Runs on every push to the launcher branch and on request; both are kept as
+# build artifacts on the run's page. A tag named moa-vX.Y.Z also publishes them
+# as a GitHub release (the Windows folder zipped).
+
+name: Master of Arena builds
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [moa-launcher]
+    tags: ['moa-v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: moa-builds-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  appimage:
+    name: linux-x64 AppImage
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Verify committed game C
+        run: |
+          set -euo pipefail
+          for pattern in 'games/master-of-arena/generated/*_dispatch.c' \
+                         'games/master-of-arena/generated/*_full_*.c' \
+                         'games/master-of-arena/game.toml'; do
+            if ! git ls-files "${pattern}" | grep -q .; then
+              echo "::error::${pattern} is not committed"
+              exit 1
+            fi
+          done
+          if git ls-files -- . ':!psxrecomp' ':!recomp-ui' | grep -iE '\.(cue|iso|img|chd|mcd|mcr|psxmod)$|(^|/)SCPH' | grep -q .; then
+            echo "::error::a disc image, memory card, mod package or BIOS dump is tracked"
+            exit 1
+          fi
+
+      - name: Release number matches MOA_VERSION
+        if: startsWith(github.ref, 'refs/tags/moa-v') || (github.ref == 'refs/heads/moa-launcher' && contains(github.event.head_commit.message, '[release moa-v'))
+        env:
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if [[ "${GITHUB_REF}" == refs/heads/* ]]; then
+            tag="$(printf '%s' "${COMMIT_MESSAGE}" | grep -oE '\[release moa-v[0-9][^]]*\]' | head -1 | sed -E 's/\[release (.*)\]/\1/')"
+          fi
+          want="moa-v$(tr -d '[:space:]' < MOA_VERSION)"
+          if [[ "${tag}" != "${want}" ]]; then
+            echo "::error::release ${tag} but MOA_VERSION says ${want}; the update check compares these"
+            exit 1
+          fi
+
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config rsync \
+            libgl1-mesa-dev libxtst-dev \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
+            libxfixes-dev libxi-dev libxss-dev libxkbcommon-dev \
+            libwayland-dev libdecor-0-dev wayland-protocols libegl1-mesa-dev \
+            libasound2-dev libpulse-dev libpipewire-0.3-dev libudev-dev libdbus-1-dev \
+            zip unzip file libfuse2t64 \
+            libvulkan-dev glslc
+
+      - name: Cache SDL3 source
+        uses: actions/cache@v4
+        with:
+          path: .cache/sdl3-src
+          key: sdl3-3.4.10-src
+
+      - name: Prefetch SDL3 source
+        run: |
+          set -euo pipefail
+          OUT=".cache/sdl3-src"
+          if [[ ! -f "${OUT}/CMakeLists.txt" ]]; then
+            bash psxrecomp/tools/ci/prefetch_sdl3.sh --out-dir "${OUT}"
+          fi
+          echo "PSX_SDL3_SOURCE_DIR=$(cd "${OUT}" && pwd)" >>"$GITHUB_ENV"
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: moa-appimage
+          max-size: 2G
+
+      - name: Configure and build
+        run: |
+          set -euo pipefail
+          export VULKAN_SDK=/usr
+          cmake -S . -B build-ci -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DPSXRECOMP_REQUIRE_GAME_C=ON \
+            -DPSXRECOMP_FORCE_SETUP_HOST=OFF \
+            -DPSXRECOMP_ALLOW_NO_BIOS=OFF \
+            -DPSX_SETUP_WIZARD=ON \
+            -DGLSLC_EXE="$(command -v glslc)" \
+            -DFETCHCONTENT_SOURCE_DIR_SDL3="${PSX_SDL3_SOURCE_DIR}" \
+            2>&1 | tee build-ci-configure.log
+          cmake --build build-ci --target psx-master-of-arena -j"$(nproc)"
+          ls -la build-ci | head -60
+
+      - name: Build recompiler tools
+        run: |
+          set -euo pipefail
+          scripts/build_recompiler_tools.sh "$PWD/build-recompiler"
+          ls -la build-recompiler | head -30
+
+      - name: Cache compiler bundle downloads
+        uses: actions/cache@v4
+        with:
+          path: .cache/toolchain-dl
+          key: moa-toolchain-dl-linux-v1
+
+      - name: Wrap as AppImage
+        run: |
+          set -euo pipefail
+          MOA_RECOMP_DIR="$PWD/build-recompiler" SKIP_BUILD=1 scripts/build_appimage_moa.sh build-ci
+          ls -la dist/
+          sha256sum dist/*.AppImage
+
+      - name: Upload AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: armored-core-moa-linux-x64-appimage
+          path: dist/*.AppImage
+          if-no-files-found: error
+          retention-days: 30
+
+  windows:
+    name: windows-x64 folder
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: 'msys2 {0}'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-vulkan-headers
+            mingw-w64-x86_64-shaderc
+            mingw-w64-x86_64-python
+            curl
+            zip
+            unzip
+            tar
+
+      - name: Cache SDL3 source
+        uses: actions/cache@v4
+        with:
+          path: .cache/sdl3-src
+          key: sdl3-3.4.10-src
+
+      - name: Prefetch SDL3 source
+        run: |
+          set -euo pipefail
+          OUT=".cache/sdl3-src"
+          if [[ ! -f "${OUT}/CMakeLists.txt" ]]; then
+            bash psxrecomp/tools/ci/prefetch_sdl3.sh --out-dir "${OUT}"
+          fi
+          echo "PSX_SDL3_SOURCE_DIR=$(cygpath -m "${OUT}")" >>"$GITHUB_ENV"
+
+      - name: Configure and build
+        run: |
+          set -euo pipefail
+          export VULKAN_SDK=/mingw64
+          unset CMAKE_PREFIX_PATH SDL3_DIR ZLIB_ROOT || true
+          cmake -S . -B build-ci -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DPSXRECOMP_REQUIRE_GAME_C=ON \
+            -DPSXRECOMP_FORCE_SETUP_HOST=OFF \
+            -DPSXRECOMP_ALLOW_NO_BIOS=OFF \
+            -DPSX_SETUP_WIZARD=ON \
+            -DGLSLC_EXE="$(command -v glslc)" \
+            -DFETCHCONTENT_SOURCE_DIR_SDL3="${PSX_SDL3_SOURCE_DIR}" \
+            2>&1 | tee build-ci-configure.log
+          cmake --build build-ci --target psx-master-of-arena -j"$(nproc)"
+          cmake --build build-ci --target psx-moa-shell -j"$(nproc)"
+
+      - name: Build recompiler tools
+        run: |
+          set -euo pipefail
+          scripts/build_recompiler_tools.sh "$PWD/build-recompiler"
+          ls -la build-recompiler | head -30
+
+      - name: Cache compiler bundle downloads
+        uses: actions/cache@v4
+        with:
+          path: .cache/toolchain-dl
+          key: moa-toolchain-dl-win-v1
+
+      - name: Lay out the release folder
+        run: |
+          set -euo pipefail
+          MOA_RECOMP_DIR="$PWD/build-recompiler" MOA_MINGW_BIN=/mingw64/bin \
+          PSX_RELEASE_STAGE_PYTHON=/mingw64/bin/python3 \
+            scripts/package_moa_windows.sh build-ci "dist/Armored Core Moa"
+          echo "--- imports"
+          objdump -p "dist/Armored Core Moa/RecompData/ArmoredCoreMasterOfArena.exe" | grep "DLL Name" | sort -u
+          objdump -p "dist/Armored Core Moa/Armored Core Moa.exe" | grep "DLL Name" | sort -u
+          echo "--- layout"
+          (cd dist && find "Armored Core Moa" -maxdepth 3 | sort | head -120)
+          # Nothing of the player's or of the build may ship.
+          if find "dist/Armored Core Moa" -path '*/overlay_toolchain' -prune -o -type f \( -iname '*.cue' -o -iname '*.chd' -o -iname '*.iso' \
+               -o -iname '*.mcd' -o -iname '*.mcr' -o -iname '*.c' -o -iname 'CMakeCache.txt' \) -print | grep -q .; then
+            echo "::error::the release folder contains a disc image, memory card or build file"
+            exit 1
+          fi
+
+      - name: Upload folder
+        uses: actions/upload-artifact@v4
+        with:
+          name: armored-core-moa-windows-x64
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Publish release
+    # A tag push, or a push to the launcher branch whose commit message holds
+    # "[release moa-vX.Y.Z]" (the release then creates the tag itself).
+    if: startsWith(github.ref, 'refs/tags/moa-v') || (github.ref == 'refs/heads/moa-launcher' && contains(github.event.head_commit.message, '[release moa-v'))
+    needs: [appimage, windows]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Download builds
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Work out the release tag
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if [[ "${GITHUB_REF}" == refs/heads/* ]]; then
+            tag="$(printf '%s' "${COMMIT_MESSAGE}" | grep -oE '\[release moa-v[0-9][^]]*\]' | head -1 | sed -E 's/\[release (.*)\]/\1/')"
+          fi
+          test -n "$tag"
+          echo "RELEASE_TAG=$tag" >> "$GITHUB_ENV"
+        env:
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          tag="${RELEASE_TAG}"
+          mkdir -p out
+          cp artifacts/armored-core-moa-linux-x64-appimage/*.AppImage \
+             "out/Armored-Core-MoA-${tag#moa-}-linux-x64.AppImage"
+          (cd artifacts/armored-core-moa-windows-x64 && \
+             zip -qr9 "$GITHUB_WORKSPACE/out/Armored-Core-MoA-${tag#moa-}-windows-x64.zip" "Armored Core Moa")
+          ls -la out
+          sha256sum out/* | tee out/SHA256SUMS.txt
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "${RELEASE_TAG}" out/* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --target "${GITHUB_SHA}" \
+            --title "Armored Core: Master of Arena ${RELEASE_TAG#moa-}" \
+            --notes-file docs/moa-release-notes.md \
+            --prerelease

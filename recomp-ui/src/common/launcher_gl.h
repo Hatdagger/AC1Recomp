@@ -32,6 +32,10 @@ LauncherTexture launcher_texture_load_colorkey(const char* path, int tolerance);
 
 void launcher_texture_free(LauncherTexture* t);
 
+// Create (id 0) or refresh a texture from an RGBA8 buffer drawn by the
+// program itself (the Assembly screen's AC preview).
+void launcher_texture_set_rgba(LauncherTexture* t, const unsigned char* pixels, int w, int h);
+
 // Decode an image file to a tightly-packed RGBA8 buffer, WITHOUT touching GL.
 // For the one consumer that needs pixels rather than a texture: the window /
 // taskbar icon, which SDL wants as a surface. Returns NULL on failure; on

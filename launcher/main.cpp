@@ -1071,7 +1071,7 @@ static void panel_game(int g) {
             std::snprintf(label, sizeof(label), "Disc %d image", (int)i + 1);
             path_row(label, s.edit[i].data(), true, false, "Select a .cue / .chd file");
         }
-        note("Switch discs while playing from the in-game menu (SYSTEM SETUP > Disc).");
+        note("Only one disc is needed: pick either disc and start with it.");
     } else if (!s.edit.empty()) {
         path_row("Disc image", s.edit[0].data(), true, false, "Select a .cue / .chd file");
     }

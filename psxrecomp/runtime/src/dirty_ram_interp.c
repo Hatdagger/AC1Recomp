@@ -3153,6 +3153,13 @@ static int dirty_ram_dispatch_inner(CPUState* cpu, uint32_t addr, uint32_t stop_
         if (!forced && g_psx_mod_function_entry_hooks && psx_mod_function_entry(cpu, addr))
             return 1;
     }
+    {
+        extern uint32_t g_psx_mod_function_replacements;
+        extern int psx_mod_try_function_replacement(CPUState *cpu, uint32_t address);
+        if (!forced && g_psx_mod_function_replacements &&
+            psx_mod_try_function_replacement(cpu, addr))
+            return 1;
+    }
 
     /* Per-PC entry counter (visible via dirty_ram_stats). */
     DirtyRamPcEntry *pc_entry = forced ? NULL : pc_table_get_or_insert(phys);
@@ -3548,8 +3555,12 @@ static int dirty_ram_dispatch_inner(CPUState* cpu, uint32_t addr, uint32_t stop_
                 {
                     extern uint32_t g_psx_mod_function_entry_hooks;
                     extern int psx_mod_function_entry(CPUState *, uint32_t);
-                    if (g_psx_mod_function_entry_hooks &&
-                        psx_mod_function_entry(cpu, target)) {
+                    extern uint32_t g_psx_mod_function_replacements;
+                    extern int psx_mod_try_function_replacement(CPUState *, uint32_t);
+                    if ((g_psx_mod_function_entry_hooks &&
+                         psx_mod_function_entry(cpu, target)) ||
+                        (g_psx_mod_function_replacements &&
+                         psx_mod_try_function_replacement(cpu, target))) {
                         g_dirty_ram_blocks_run++;
                         if (pc_entry) pc_entry->insns += (uint64_t)insns_executed;
                         g_dirty_interp_chain_target = cpu->pc;

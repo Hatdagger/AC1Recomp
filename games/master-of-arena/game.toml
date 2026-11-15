@@ -4,7 +4,7 @@
 [game]
 name = "Armored Core: Master of Arena"
 id = "SLUS-01030"
-players = 1
+players = 2
 exe = "games/master-of-arena/disc/SLUS_010.30"
 # Verified as one program on N images (verify_disc_set.py).
 # Disc 1 boots; the rest are data. The runtime builds its disc
@@ -44,6 +44,48 @@ known_crc32 = [
 seeds = "games/master-of-arena/seeds/ghidra_funcs.txt"
 out_dir = "games/master-of-arena/generated"
 strict = true
+
+# Function entries the game's own hooks attach to (moa_link_netplay.c,
+# moa_ai_battle.c). Disc-loaded code that is compiled calls the hook check
+# only at the entries listed here; interpreted code checks every entry. All
+# engines load at the same address, so each hook verifies the code in memory.
+mod_function_entry_funcs = [
+    # menu
+    "0x800A69C8", "0x800B0CB4", "0x800B2D7C", "0x800639A4", "0x800AF590",
+    "0x800AB500", "0x80054B54", "0x800AAE94",
+    # link versus engine (netplay)
+    "0x80051F3C", "0x80055428", "0x80055578", "0x80067FE4", "0x80053FE4",
+    "0x80053808", "0x80053498", "0x80052C80", "0x80052EE4", "0x800532FC",
+    # arena engine (AI Battle)
+    "0x80055768", "0x8008DC98", "0x8008D4AC", "0x8007F69C",
+    # menu: save checksum (AI Battle keeps the settings on DATA LOAD)
+    "0x80070F1C",
+    # boot exe: archive sector read (instant loading, mod_builtin_moa_loading.c)
+    "0x800167A0",
+]
+
+# Instruction hooks of the game's plugins (psxrecomp/runtime/src/
+# mod_builtin_moa_*.c). Compiled disc-loaded code calls the instruction hook
+# check only at the addresses listed here (interpreted code checks them all),
+# so every hook address must be in this list or it never runs once its code
+# is compiled.
+mod_instruction_sites = [
+    # single disc
+    "0x800C4D50",
+    # Project Phantasma arena (menu)
+    "0x800BB93C", "0x800C01E8", "0x800C0460", "0x800BD5B8", "0x800BB9F4",
+    "0x800BBEE8", "0x800BA8AC",
+    # Project Phantasma missions: mission screen (menu), mission loads (engine)
+    "0x8009417C", "0x800943AC",
+    "0x800556B8", "0x800556D4", "0x80055874", "0x80055894",
+    # Project Phantasma missions: chosen slot, results, leaving the screen (menu)
+    "0x800976C0", "0x80094068", "0x800940C8", "0x80095730",
+    # mission source picker (menu: mission fade, Ex Arena category list)
+    "0x800943D8", "0x800BA6B8", "0x800BA6E0", "0x800BA750", "0x800BAFC8",
+    "0x800BB4C4", "0x800BB5B0", "0x800BB1B0", "0x800BB398", "0x800BB3B0",
+    "0x800BB864", "0x800BB7E8", "0x800BB920", "0x800BB6D8", "0x800BB5FC",
+    "0x800BA784",
+]
 
 [runtime]
 window_title = "Armored Core: Master of Arena Recompiled"

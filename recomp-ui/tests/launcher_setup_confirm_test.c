@@ -155,6 +155,12 @@ static void test_confirm_flushes_a_roster_through_discs_cb(const char* dir) {
     expect(launcher_model_discs_ready_count(m) == 2, "both discs located");
     expect(launcher_model_can_finish_setup(m), "a complete set can be confirmed");
 
+    /* Either disc alone is enough: remove disc 2 and the set still confirms. */
+    remove(p2);
+    expect(launcher_model_discs_ready_count(m) == 1, "only disc 1 located");
+    expect(launcher_model_can_finish_setup(m), "one located disc can be confirmed");
+    { FILE* f = fopen(p2, "wb"); if (f) fclose(f); }
+
     launcher_model_finish_setup(m);
 
     expect(!m->setup_wizard_open, "Confirm closes the wizard");

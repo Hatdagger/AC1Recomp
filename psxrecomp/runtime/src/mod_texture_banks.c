@@ -25,6 +25,8 @@ void psx_mod_set_texture_bank_resolver(PSXModTextureBankResolver resolver) {
     resolve_bank = resolver;
 }
 
+#define PSX_TEXTURE_BANK_BUDGET_BYTES (24u * 1024u * 1024u)
+
 int psx_mod_define_texture_bank(uint16_t id, uint32_t w, uint32_t h,
                                 const uint16_t* pixels) {
     uint32_t bytes;
@@ -34,7 +36,9 @@ int psx_mod_define_texture_bank(uint16_t id, uint32_t w, uint32_t h,
     if (bank->pixels)
         return bank->width == w && bank->height == h &&
                memcmp(bank->pixels, pixels, bytes) == 0;
-    if (bytes > 256u * 1024u * 1024u - bank_bytes) return 0;
+    /* Xbox-class video budget (docs/MEMORY_BUDGET.md): 24 MiB of retained
+     * texture banks on top of the PS1's own 1 MiB VRAM. */
+    if (bytes > PSX_TEXTURE_BANK_BUDGET_BYTES - bank_bytes) return 0;
     bank->pixels = (uint16_t*)malloc(bytes);
     if (!bank->pixels) return 0;
     memcpy(bank->pixels, pixels, bytes);

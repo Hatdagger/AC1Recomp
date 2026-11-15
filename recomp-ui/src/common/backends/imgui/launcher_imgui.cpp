@@ -29,6 +29,11 @@
 
 #include "launcher_sdlcompat.h"   // pulls the right SDL header + event shim
 
+#if defined(RECOMP_LAUNCHER_MOA_MENU) && RECOMP_LAUNCHER_MOA_MENU
+/* Before the menu's anonymous namespace: a C++ header included inside it would
+ * declare its functions there. */
+#include "../../../../../games/master-of-arena/moa_update.h"
+#endif
 #include "imgui.h"
 #include "launcher_nav.h"
 #if defined(LNG_SDL3)
@@ -47,6 +52,8 @@
 #include "imgui_impl_opengl3.h"
 
 #include <atomic>
+#include <mutex>
+#include <thread>
 #if defined(_MSC_VER)
   #include <intrin.h>
 #endif
@@ -73,6 +80,8 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <cfloat>
+#include <cmath>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -2765,7 +2774,13 @@ void panel_save_draw(LauncherModel* m, const LauncherTheme* th) {
         // No outer "MEMORY CARDS" card/eyebrow: the small per-slot cards ARE the
         // UI. Fixed width (same as player cards); wider windows add columns
         // instead of stretching the pair across the column.
+#if defined(RECOMP_LAUNCHER_MEMCARD_SLOTS)
+        // Title override: only this many slots are the player's to manage
+        // (e.g. slot 2 is fixed offline and is the guest's card in netplay).
+        const int slots = RECOMP_LAUNCHER_MEMCARD_SLOTS;
+#else
         const int slots = (prof->save.slots > 0 && prof->save.slots <= 2) ? prof->save.slots : 2;
+#endif
         const float gap = px(th->spacing_sm);
         const float avail = ImGui::GetContentRegionAvail().x;
         const float cw = dash_card_width(avail, gap, slots);
@@ -13176,10 +13191,10 @@ static void draw_setup_disc_frame(LauncherModel* m, const LauncherTheme& th,
     const int ready = launcher_model_discs_ready_count(m);
 
     ImGui::AlignTextToFramePadding();
-    ImGui::TextColored(col(ready >= count ? th.good : th.warn),
+    ImGui::TextColored(col(ready >= 1 ? th.good : th.warn),
                        "%d of %d located", ready, count);
     ImGui::SameLine();
-    ImGui::TextColored(col(th.text_muted), "- all discs are required.");
+    ImGui::TextColored(col(th.text_muted), "- either disc is enough.");
     ImGui::SameLine();
     setup_help_marker(th, long_note);
 
@@ -14140,6 +14155,35 @@ static void draw_launch_commit_progress(const LauncherTheme& th) {
     ImGui::PopStyleColor();
 }
 
+#if defined(RECOMP_LAUNCHER_MOA_MENU) && RECOMP_LAUNCHER_MOA_MENU
+/* Title front end: a controller-first menu that owns the dashboard, settings
+ * and mods views (see moa_menu.inc). Everything else stays the stock page. */
+static bool moa_menu_open_folder(const std::string& dir) {
+    std::string url, error;
+    if (!launcher_directory_url(dir.c_str(), url, error)) return false;
+#if defined(LNG_SDL3)
+    return SDL_OpenURL(url.c_str());
+#else
+    return SDL_OpenURL(url.c_str()) == 0;
+#endif
+}
+/* The stock room page's dialogs, for the menu's own room page: match
+ * settings, the missing-disc prompt, and the room's mod plan. */
+static void moa_menu_lobby_popups(LauncherModel* m, const LauncherTheme& th,
+                                  const RecompLauncherCNetplayCallbacks* np,
+                                  const LobbySnapshot& s) {
+    draw_lobby_settings_popup(m, th, np, s);
+    draw_lobby_game_rom_popup(m, th, s);
+#if RECOMP_UI_ENABLE_MODS
+    draw_lobby_mods_popup(m, th, np, s.is_host);
+    if (!m->netplay_lobby_mods_open && !s.local_rom_missing)
+        draw_lobby_mod_files_popup(m, th, np, s.is_host);
+#endif
+}
+
+#include "moa_menu.inc"
+#endif
+
 void draw_ui(LauncherModel* m, const LauncherTheme& th, int logical_w, int logical_h) {
     ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->Pos);
@@ -14175,6 +14219,12 @@ void draw_ui(LauncherModel* m, const LauncherTheme& th, int logical_w, int logic
         }
     }
 
+    bool title_menu = false;
+#if defined(RECOMP_LAUNCHER_MOA_MENU) && RECOMP_LAUNCHER_MOA_MENU
+    title_menu = moa_menu::owns_view(m);
+    if (title_menu) moa_menu::draw(m, th);
+#endif
+    if (!title_menu) {   /* stock header, page body and footer */
     // ---- Marquee header: brand · GAME TITLE · subtitle .......... [nav] ----
     ImVec2 hp = ImGui::GetCursorScreenPos();
     // Vertically center the brand mark against the two-line title block (game
@@ -14338,6 +14388,7 @@ void draw_ui(LauncherModel* m, const LauncherTheme& th, int logical_w, int logic
     end_container();
 
     draw_footer(m, th, footer_h);
+    }   /* !title_menu */
     if (launch_commit_pending()) {
         /* PLAY queued a job in the footer. Finish this drawing stack without
          * any later modal/provider/model callbacks; start only after return. */

@@ -125,7 +125,11 @@
  * v30: the two lines merged. OverlayCallbacks keeps the master layout, which
  *      already holds every release-line callback; shards built against either
  *      v28 or v29 are rejected and recompiled. */
-#define PSX_OVERLAY_ABI_VERSION 30
+/* v32: mod_try_function_replacement forwarder. v30 shards referenced
+ *      psx_mod_try_function_replacement with no definition, so any shard
+ *      holding a hooked entry failed to link or load; they are rejected and
+ *      recompiled. (v31 is skipped: it names an unrelated X6 line.) */
+#define PSX_OVERLAY_ABI_VERSION 32
 
 /* Process-lifetime overlay candidate capacity.  Every accepted manifest F
  * record consumes one slot, even when another DLL carries an identical
@@ -387,6 +391,9 @@ typedef struct OverlayCallbacks {
     int32_t (*nclip_exact_sign)(int32_t native_mac0, uint32_t pc);
     /* Guarded pre-instruction mod callback (ABI v27). */
     void (*mod_instruction)(CPUState*, uint32_t, uint32_t);
+    /* Native function-replacement dispatcher (ABI v32). Shards call it at
+     * every hooked function entry, right after mod_function_entry. */
+    int (*mod_try_function_replacement)(CPUState *cpu, uint32_t address);
 } OverlayCallbacks;
 
 #ifdef __cplusplus

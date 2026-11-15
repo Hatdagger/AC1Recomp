@@ -191,6 +191,9 @@ double gl_renderer_post_aa_gpu_us(void);   /* debug builds, PSX_POST_AA_TIME=N: 
 
 /* Clear to black + swap (display-disabled frame). */
 void gl_renderer_present_blank(void);
+/* A host-made 0xAARRGGBB picture stretched over the whole window (plugin
+ * loading screen). */
+void gl_renderer_present_image(const uint32_t *pixels, int w, int h);
 
 /* §33: re-present the last Live frame captured before Swap (or from a VRAM
  * snapshot when interpolation owned the last present). Used during rollback

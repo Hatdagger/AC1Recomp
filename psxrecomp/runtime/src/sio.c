@@ -2155,6 +2155,14 @@ uint32_t sio_read(uint32_t addr) {
     case 0x1F80104E: /* SIO_BAUD */
         return sio_baud;
 
+#if defined(PSX_SIO1_IDLE_STAT)
+    case 0x1F801054: /* SIO1_STAT: the serial (link cable) port is not
+                      * emulated. A title can pin the status word an idle,
+                      * unconnected port reports (constant, so it is
+                      * deterministic for netplay and savestates). */
+        return (uint32_t)(PSX_SIO1_IDLE_STAT);
+#endif
+
     default:
         return 0;
     }

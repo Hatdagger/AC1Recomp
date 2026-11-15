@@ -1183,8 +1183,15 @@ void launcher_model_set_disc_path(LauncherModel* m, int idx, const char* path) {
         if (!m->import_sbi_cb(disc, path, imported, sizeof(imported), m->setup_error, sizeof(m->setup_error))) return;
         path = imported;
     }
+    /* If the currently selected slot has no usable image yet, locating a
+     * different disc must adopt it: a set needs only ONE disc, so a player who
+     * only has disc 2 would otherwise be left with nothing mounted. */
+    const bool selected_unusable = !launcher_model_disc_ready(m, m->disc_selected);
     safe_copy(m->disc_path_override[idx], sizeof(m->disc_path_override[idx]),
               (path && path[0]) ? path : "");
+    if (idx != m->disc_selected && selected_unusable &&
+        launcher_model_disc_ready(m, idx))
+        m->disc_selected = idx;
     /* Locating the SELECTED disc is also a statement about what is mounted, so
      * rebind the ROM and let verification re-run. Locating any other slot is
      * pure bookkeeping and must NOT disturb the current mount or verdict --
@@ -2992,9 +2999,11 @@ const char* launcher_model_setup_bios_regen_blocker(const LauncherModel* m) {
         return "Generate is unavailable (project/SDK not found)";
     if (!m->rom_present || !m->rom_full[0] || strcmp(m->rom_size, "--") == 0)
         return "Select a disc image first";
+    /* Any one located disc of the set is enough (Master of Arena plays from
+     * either disc; the runtime mounts whichever one is selected). */
     if (m->num_discs > 1 &&
-        launcher_model_discs_ready_count(m) < m->num_discs)
-        return "Locate every disc of the set first";
+        launcher_model_discs_ready_count(m) < 1)
+        return "Locate a disc of the set first";
     if (m->profile && m->profile->verify.mode == 1 &&
         (m->verify.verdict == 0 || m->verify.verdict == 3))
         return "Disc image not accepted";
@@ -3024,12 +3033,10 @@ bool launcher_model_can_finish_setup(const LauncherModel* m) {
      * Codegen hosts may also require a successful prepare/rebuild. */
     if (!m->rom_present || !m->rom_full[0]) return false;
     if (m->has_bios && !m->setup_bios_ok) return false;
-    /* A set is all-or-nothing: building one disc at a time is not supported, so
-     * a partially located set cannot produce a working install. Letting the
-     * wizard close on one located disc would defer that failure to whenever the
-     * player first needs disc 2. */
+    /* A set only needs ONE located disc: the discs are data-identical apart
+     * from their disc id and the runtime plays either one on its own. */
     if (m->num_discs > 1 &&
-        launcher_model_discs_ready_count(m) < m->num_discs)
+        launcher_model_discs_ready_count(m) < 1)
         return false;
     if (m->prepare_required_before_continue && !m->setup_prepare_satisfied)
         return false;
@@ -3038,7 +3045,11 @@ bool launcher_model_can_finish_setup(const LauncherModel* m) {
      * accept valid dumps whose track layout differs from the online policy. */
     if (m->profile && m->profile->verify.mode == 1) {
         if (m->verify.verdict == 0 || m->verify.verdict == 3) return false;
-        if (m->netplay_supported && !m->verify.netplay_ok) return false;
+        /* The online TOC fingerprint is per-disc and only describes one disc
+         * of a set; it must not block local setup when the player has the
+         * other disc. */
+        if (m->netplay_supported && m->num_discs <= 1 &&
+            !m->verify.netplay_ok) return false;
     }
     return true;
 }

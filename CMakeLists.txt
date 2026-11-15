@@ -42,10 +42,13 @@ endif()
 # picker; releases are compiled from the committed generated/ C, so it never
 # needs to generate or rebuild anything on a player's machine.
 # recomp-ui submodule present (PSX_RECOMP_UI defaults ON).
-# Full netplay UI — enable after adding recomp-ui + testing:
-# if(EXISTS "${PSXRECOMP_ROOT}/lib/recomp-net/CMakeLists.txt")
-#     set(PSX_NETPLAY ON CACHE BOOL "…" FORCE)
-# endif()
+# Netplay (rollback / delay-sync over the lobby, LAN or direct IP). PSX_NETPLAY
+# must be set BEFORE runtime.cmake is included: that is where recomp-net, the
+# lobby client and rbengine are wired. Only Master of Arena opts in below.
+if(EXISTS "${PSXRECOMP_ROOT}/lib/recomp-net/CMakeLists.txt")
+    set(PSX_NETPLAY ON CACHE BOOL
+        "Link recomp-net rollback/delay-sync netplay (needs recomp-net)" FORCE)
+endif()
 set(PSX_SETUP_WIZARD ON CACHE BOOL
     "Advertise first-run setup wizard + Generate & rebuild in recomp-ui" FORCE)
 include("${PSXRECOMP_ROOT}/runtime/runtime.cmake")
@@ -99,13 +102,90 @@ psxrecomp_add_game_runtime(psx-master-of-arena
     WINDOW_TITLE "Armored Core: Master of Arena"
     EXE_NAME "ArmoredCoreMasterOfArena"
     DEFAULT_GAME_CONFIG_PATH "games/master-of-arena/game.toml"
-    MAX_PLAYERS 1
+    ENABLE_NETPLAY_IF_PRESENT
+    NETPLAY_LOBBY_URL "ws://netplay.retcomm.net:8765"
+    # Two seats: the stock split-screen versus on pads 1 and 2, and the
+    # netplay seat ceiling for link versus.
+    MAX_PLAYERS 2
     APP_ICON "${CMAKE_CURRENT_SOURCE_DIR}/assets/psxrecomp.ico"
     GEN_MARKER "games/master-of-arena/generated/SLUS_010.30_dispatch.c"
     GEN_FULL_GLOB "games/master-of-arena/generated/SLUS_010.30_full_*.c"
     CODEGEN_SETUP_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/codegen_setup.c"
     CODEGEN_SETUP_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena"
 )
+# Versus needs each player's own AC: the guest (seat 2, player 2) brings its
+# slot-1 memory card as the match's slot-2 card by default, on LAN and online.
+if(TARGET psx-master-of-arena)
+    target_compile_definitions(psx-master-of-arena PRIVATE
+        PSX_NET_GUEST_MEMCARD_SHARE_DEFAULT=1
+        # Netplay never writes a player's own card: the host's slot 1 is a
+        # match-only file as well (the guest's cards already are).
+        PSX_NET_HOST_TEMP_CARD=1
+        # The serial (link cable) port is not emulated; pin its status word.
+        # Bit 7: the title menu then offers "VS Mode" (the versus setup with
+        # both players' garages) instead of "VS Mode (Link)". Bit 8: the link
+        # engine's "partner present" poll passes at once (the netplay match
+        # runs that engine with the cable replaced, see moa_link_netplay.c).
+        # Bits 0 and 2: transmitter idle.
+        PSX_SIO1_IDLE_STAT=0x0185
+        # Player 1 uses whatever game controller is connected; the keyboard
+        # stays live beside it.
+        PSX_P1_AUTO_GAMEPAD=1
+        # Memory card slot 2 is fixed (default card offline, the guest's card
+        # in netplay) and is not shown in the launcher.
+        PSX_MEMCARD2_FIXED=1
+        RECOMP_LAUNCHER_MEMCARD_SLOTS=1
+        # Controller-first system menu in place of the stock dashboard,
+        # settings and mods pages (recomp-ui moa_menu.inc).
+        RECOMP_LAUNCHER_MOA_MENU=1)
+    # Netplay runs the link versus engine in place of the cable.
+    target_sources(psx-master-of-arena PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_link_netplay.c"
+        # AI Battle: the arena opponent AI flies both ACs (offline only).
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_ai_battle.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_screen.c"
+        # AI Battle cards (Raven Card Builder images) -> builds.
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_card.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_parts.c"
+        # Assembly: the 3D AC preview, from the optional model install
+        # (acr/: the Armored-CoreR importer and model code).
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_ac_view.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/acr/acr_disc.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/acr/acr_import.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/acr/acr_models_moa.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/acr/acr_motion_moa.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/acr/acr_parts_moa.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/acr/acr_gen1_fit.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/acr/acr_gen1_compile.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/acr/acr_model.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/acr/acr_png.c"
+        # Extras: the Project Phantasma arena, built from the player's discs.
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_phantasma.c"
+        # Updates: look for a newer release and install it when asked.
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_update.cpp")
+    # The release this build is (MOA_VERSION holds the number; a release's
+    # tag must be moa-v plus the same number, which the build workflow checks).
+    file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/MOA_VERSION" _moa_version LIMIT_COUNT 1)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/MOA_VERSION")
+    target_compile_definitions(psx-master-of-arena PRIVATE MOA_VERSION="${_moa_version}")
+endif()
+
+# Windows release front door: "Armored Core Moa.exe" starts the game from
+# RecompData/ and points it at the player's Memory Card/ and Mods/ folders
+# (launcher/moa_shell.c; scripts/package_moa_windows.sh lays the folder out).
+if(WIN32)
+    add_executable(psx-moa-shell WIN32 launcher/moa_shell.c)
+    set_target_properties(psx-moa-shell PROPERTIES OUTPUT_NAME "Armored Core Moa")
+    if(MINGW)
+        target_link_options(psx-moa-shell PRIVATE -municode -static)
+    endif()
+    if(CMAKE_RC_COMPILER AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/psxrecomp.ico")
+        set(_moa_shell_rc "${CMAKE_CURRENT_BINARY_DIR}/psx-moa-shell_app_icon.rc")
+        file(WRITE "${_moa_shell_rc}"
+             "IDI_ICON1 ICON \"${CMAKE_CURRENT_SOURCE_DIR}/assets/psxrecomp.ico\"\n")
+        target_sources(psx-moa-shell PRIVATE "${_moa_shell_rc}")
+    endif()
+endif()
 
 # Hub launcher: game picker, per-game disc and shared settings.
 set(AC_IMGUI "${CMAKE_CURRENT_SOURCE_DIR}/recomp-ui/src/third_party/imgui")
@@ -150,11 +230,15 @@ configure_file(
     "${CMAKE_CURRENT_BINARY_DIR}/games/master-of-arena/game.toml"
     COPYONLY)
 
+# Every game target stages the custom UI assets: build.sh builds Master of
+# Arena alone, so the staging cannot hang off another game's target.
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/ui")
-    add_custom_command(TARGET psx-armored-core POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${CMAKE_CURRENT_SOURCE_DIR}/assets/ui"
-            "$<TARGET_FILE_DIR:psx-armored-core>/assets/ui"
-        COMMENT "Staging custom UI assets"
-        VERBATIM)
+    foreach(_PSX_AC_UI_TARGET psx-armored-core psx-project-phantasma psx-master-of-arena)
+        add_custom_command(TARGET ${_PSX_AC_UI_TARGET} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CMAKE_CURRENT_SOURCE_DIR}/assets/ui"
+                "$<TARGET_FILE_DIR:${_PSX_AC_UI_TARGET}>/assets/ui"
+            COMMENT "Staging custom UI assets"
+            VERBATIM)
+    endforeach()
 endif()

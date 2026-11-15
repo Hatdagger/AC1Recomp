@@ -2607,6 +2607,8 @@ static void init_callbacks(void) {
             extern int psx_mod_function_entry(CPUState *cpu, uint32_t address);
             s_callbacks.ws_screen_x_bound = psx_ws_screen_x_bound;
             s_callbacks.mod_function_entry = psx_mod_function_entry;
+            extern int psx_mod_try_function_replacement(CPUState *cpu, uint32_t address);
+            s_callbacks.mod_try_function_replacement = psx_mod_try_function_replacement;
             extern void psx_mod_instruction(CPUState*, uint32_t, uint32_t);
             s_callbacks.mod_instruction = psx_mod_instruction;
         }

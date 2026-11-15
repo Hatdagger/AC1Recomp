@@ -1,12 +1,15 @@
 #!/bin/sh
-# Builds the launcher and all three games for Linux and Windows (MinGW cross-compile).
+# Builds Armored Core: Master of Arena for Linux and Windows (MinGW cross-compile).
 # Usage: ./build.sh [linux|windows|all]   (default: all)
 # Outputs: build-release/ (Linux) and build-windows/ (Windows), runnable files only.
 # CMake/Ninja state stays in build/linux and build/windows.
 set -eu
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-TARGETS="psx-armored-core psx-project-phantasma psx-master-of-arena psx-launcher"
+# This build is Master of Arena only. The other targets still exist in
+# CMakeLists.txt; to build them as well:
+#   AC1RECOMP_TARGETS="psx-armored-core psx-project-phantasma psx-master-of-arena psx-launcher" ./build.sh
+TARGETS="${AC1RECOMP_TARGETS:-psx-master-of-arena}"
 JOBS=$(nproc)
 
 # One target at a time: their shared asset staging races when linked in parallel.
@@ -48,6 +51,24 @@ build_windows() {
         [ -f "/usr/x86_64-w64-mingw32/bin/$dll" ] && cp "/usr/x86_64-w64-mingw32/bin/$dll" "$out/"
     done
 }
+
+# On a Windows PC (MSYS2 or Git Bash): build natively and lay the result out
+# as the player-facing "Armored Core Moa" folder in the project root.
+build_windows_native() {
+    work="${AC1RECOMP_WORK_DIR:-$ROOT_DIR/build/linux}"
+    cmake -S "$ROOT_DIR" -B "$work" -G Ninja -DCMAKE_BUILD_TYPE=Release
+    build_targets "$work"
+    cmake --build "$work" --target psx-moa-shell -j"$JOBS"
+    bash "$ROOT_DIR/scripts/package_moa_windows.sh" "$work" \
+        "${AC1RECOMP_WINDOWS_DIR:-$ROOT_DIR/Armored Core Moa}"
+}
+
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+        case "${1:-all}" in
+            all|windows) build_windows_native; exit 0 ;;
+        esac ;;
+esac
 
 case "${1:-all}" in
     linux) build_linux ;;

@@ -80,6 +80,7 @@ extern "C" int fntrace_is_game_started(void);
 
 /* Declared in mod_plugins.h; see active_function_entry_hooks() below. */
 uint32_t g_psx_mod_function_entry_hooks = 0;
+uint32_t g_psx_mod_function_replacements = 0;
 uint32_t g_psx_mod_guest_functions = 0;
 uint32_t g_psx_mod_instruction_hooks = 0;
 /* Guest vblanks seen by the mod runtime: the plugin counters' time base. */
@@ -299,12 +300,39 @@ std::vector<ActiveFunctionEntryHook>& game_netplay_entry_hooks() {
     return value;
 }
 
+/* The game's own hooks for an offline feature (see
+ * psx_game_register_offline_function_entry). Kept apart from the netplay
+ * table: these never run in a netplay session. */
+std::vector<ActiveFunctionEntryHook>& game_offline_entry_hooks() {
+    static std::vector<ActiveFunctionEntryHook> value;
+    return value;
+}
+
 void update_function_entry_count() {
     g_psx_mod_function_entry_hooks = (uint32_t)(
-        active_function_entry_hooks().size() + game_netplay_entry_hooks().size());
+        active_function_entry_hooks().size() + game_netplay_entry_hooks().size() +
+        game_offline_entry_hooks().size());
+}
+
+/* Native function replacements (docs/MOD_FUNCTION_REPLACEMENTS.md). They
+ * belong to the active plan, so they are cleared with its hooks. */
+struct FunctionReplacement {
+    uint32_t key = 0;
+    PSXModFunctionReplacementCallback callback = nullptr;
+};
+constexpr size_t kMaxFunctionReplacements = 64;
+std::array<FunctionReplacement, kMaxFunctionReplacements>& function_replacements() {
+    static std::array<FunctionReplacement, kMaxFunctionReplacements> value{};
+    return value;
+}
+
+void clear_function_replacements() {
+    function_replacements().fill(FunctionReplacement{});
+    g_psx_mod_function_replacements = 0;
 }
 
 void clear_function_entry_hooks() {
+    clear_function_replacements();
     active_function_entry_hooks().clear();
     update_function_entry_count();
     active_guest_functions().clear();
@@ -2739,6 +2767,36 @@ extern "C" int psx_mod_disc_file_extent(const char* path, uint32_t* lba,
     } catch (...) { return 0; }
 }
 
+/* Effective-disc user-data sectors by LBA (instant loading). The reader stays
+ * open between calls and reopens only when the mounted image changes; the OS
+ * page cache keeps the image in memory after the first read. */
+extern "C" int psx_mod_read_disc_sectors(uint32_t lba, uint32_t count,
+                                         void* buffer) {
+    using namespace PSXRecompV4;
+    if (!buffer || !count || count > 4096u) return 0;
+    try {
+        static std::unique_ptr<PS1::ISOReader> reader;
+        static std::string open_path;
+        const auto& s = state();
+        const auto& mount = s.effective_disc_path.empty() ? s.disc_path : s.effective_disc_path;
+        if (mount.empty()) return 0;
+        const std::string path = mount.string();
+        if (!reader || open_path != path) {
+            reader.reset();
+            open_path.clear();
+            auto fresh = std::make_unique<PS1::ISOReader>();
+            if (!fresh->Open(path)) return 0;
+            reader = std::move(fresh);
+            open_path = path;
+        }
+        uint8_t* out = static_cast<uint8_t*>(buffer);
+        for (uint32_t i = 0; i < count; ++i)
+            if (!read_effective_user_sector(*reader, lba + i, out + size_t(i) * 2048u))
+                return 0;
+        return 1;
+    } catch (...) { return 0; }
+}
+
 namespace PSXRecompV4 {
 /* Whole effective sectors, including the bytes after end-of-file in the last
  * sector: a sector-granular read by the game receives exactly these. */
@@ -3083,6 +3141,48 @@ extern "C" int psx_mod_finish_function(CPUState* cpu) {
     return 1;
 }
 
+static int mod_plan_hooks_parked_for_replacement(void);
+extern "C" int psx_mod_set_function_replacement(
+    uint32_t address, PSXModFunctionReplacementCallback callback) {
+    using namespace PSXRecompV4;
+    if (!address || (address & 3u)) return 0;
+    const uint32_t key = function_entry_key(address);
+    auto& table = function_replacements();
+    FunctionReplacement* free_slot = nullptr;
+    for (auto& entry : table) {
+        if (entry.callback && entry.key == key) {
+            entry.callback = callback;           /* replace, or remove on NULL */
+            if (!callback) { entry.key = 0; --g_psx_mod_function_replacements; }
+            return 1;
+        }
+        if (!entry.callback && !free_slot) free_slot = &entry;
+    }
+    if (!callback) return 1;                     /* removing a missing entry */
+    if (!free_slot) return 0;                    /* registry full */
+    free_slot->key = key;
+    free_slot->callback = callback;
+    ++g_psx_mod_function_replacements;
+    return 1;
+}
+
+extern "C" int psx_mod_try_function_replacement(CPUState* cpu, uint32_t address) {
+    using namespace PSXRecompV4;
+    if (!g_psx_mod_function_replacements || !cpu) return 0;
+    if (mod_plan_hooks_parked_for_replacement()) return 0;
+    const uint32_t key = function_entry_key(address);
+    for (const auto& entry : function_replacements()) {
+        if (!entry.callback || entry.key != key) continue;
+        const uint32_t ra = cpu->gpr[31];      /* the callback may clobber $ra */
+        ++function_entry_depth;
+        const int handled = entry.callback(cpu, address);
+        --function_entry_depth;
+        if (!handled) return 0;
+        cpu->pc = ra;
+        return 1;
+    }
+    return 0;
+}
+
 extern "C" int psx_mod_register_guest_function_plugin(
     const char* id, uint32_t address, PSXModFunctionEntryCallback callback) {
     return id && PSXRecompV4::mod_register_guest_function_plugin(id, address, callback);
@@ -3093,6 +3193,9 @@ extern "C" int psx_mod_local_view_scope(void);
  * shared simulation never runs them. */
 static int mod_plan_hooks_parked(void) {
     return PSXRecompV4::state().netplay_view_plan && !psx_mod_local_view_scope();
+}
+static int mod_plan_hooks_parked_for_replacement(void) {
+    return mod_plan_hooks_parked();
 }
 
 extern "C" int psx_mod_dispatch_guest_function(CPUState* cpu, uint32_t address) {
@@ -3162,12 +3265,36 @@ extern "C" int psx_mod_function_entry(CPUState* cpu, uint32_t address) {
     return game_netplay_function_entry(cpu, address);
 }
 
+static int register_game_hook(std::vector<PSXRecompV4::ActiveFunctionEntryHook>& table,
+                              uint32_t address,
+                              PSXModFunctionEntryCallback callback,
+                              PSXModFunctionFilterCallback filter);
+
 static int register_game_netplay_hook(uint32_t address,
                                       PSXModFunctionEntryCallback callback,
                                       PSXModFunctionFilterCallback filter) {
+    return register_game_hook(PSXRecompV4::game_netplay_entry_hooks(), address,
+                              callback, filter);
+}
+
+extern "C" int psx_game_register_offline_function_entry(
+    uint32_t address, PSXModFunctionEntryCallback callback) {
+    return callback ? register_game_hook(PSXRecompV4::game_offline_entry_hooks(),
+                                         address, callback, nullptr) : 0;
+}
+
+extern "C" int psx_game_register_offline_function_filter(
+    uint32_t address, PSXModFunctionFilterCallback filter) {
+    return filter ? register_game_hook(PSXRecompV4::game_offline_entry_hooks(),
+                                       address, nullptr, filter) : 0;
+}
+
+static int register_game_hook(std::vector<PSXRecompV4::ActiveFunctionEntryHook>& table,
+                              uint32_t address,
+                              PSXModFunctionEntryCallback callback,
+                              PSXModFunctionFilterCallback filter) {
     using namespace PSXRecompV4;
     if (!address || (!callback && !filter)) return 0;
-    auto& table = game_netplay_entry_hooks();
     const uint32_t key = function_entry_key(address);
     for (const auto& hook : table)
         if (hook.key == key && hook.callback == callback && hook.filter == filter) return 1;
@@ -3194,6 +3321,23 @@ extern "C" int psx_game_register_netplay_function_filter(
  * offline too, to test a title's netplay path without opening a session. */
 static int game_netplay_function_entry(CPUState* cpu, uint32_t address) {
     using namespace PSXRecompV4;
+    if (!psx_netplay_active()) {
+        /* Offline feature hooks of the game itself: never in a session. */
+        const auto& offline = game_offline_entry_hooks();
+        if (!offline.empty()) {
+            const uint32_t okey = function_entry_key(address);
+            auto oit = std::lower_bound(
+                offline.begin(), offline.end(), okey,
+                [](const ActiveFunctionEntryHook& hook, uint32_t k) { return hook.key < k; });
+            for (; oit != offline.end() && oit->key == okey; ++oit) {
+                if (oit->callback) oit->callback(cpu, address);
+                if (oit->filter && oit->filter(cpu, address)) {
+                    cpu->pc = cpu->gpr[31];
+                    return 1;
+                }
+            }
+        }
+    }
     const auto& table = game_netplay_entry_hooks();
     if (table.empty()) return 0;
     if (!psx_netplay_active()) {

@@ -6501,6 +6501,35 @@ void gl_renderer_present(const uint32_t *pixels, int src_w, int src_h, int linea
     s_last_present_path = GL_PRES_CPU;
 }
 
+/* A host-made picture (a plugin's loading screen) stretched over the whole
+ * drawable: the caller renders it at the window's aspect. Filtered, no
+ * scanlines, no gamma; the OSD is drawn on top as usual. */
+void gl_renderer_present_image(const uint32_t *pixels, int w, int h) {
+    GL_RT_SYNC("present_image");
+    if (!s_ctx || !pixels || w <= 0 || h <= 0) return;
+    interp_reset_history();
+    int ww = 0, wh = 0; SDL_GL_GetDrawableSize(s_win, &ww, &wh);
+    glDisable(GL_SCISSOR_TEST);
+    glViewport(0, 0, ww, wh);
+    glClearColor(0.f,0.f,0.f,1.f); glClear(GL_COLOR_BUFFER_BIT);
+    p_glActiveTexture(PSXGL_TEXTURE0);
+    upload_present_tex(pixels, w, h, 1);
+    p_glUseProgram(s_present_prog); p_glUniform1i(s_present_uTex, 0);
+    present_set_gamma(s_present_uGamma, 0);
+    present_set_sharp(0, w, h, ww, wh);
+    PRESENT_SCANLINE(0.0f, 0, 0);
+    {
+        float u0 = 0.5f / (float)w, v0 = 0.5f / (float)h;
+        p_glUniform4f(s_present_uUvRect, u0, v0, 1.f - u0, 1.f - v0);
+    }
+    p_glBindVertexArray(s_present_vao); glDrawArrays(GL_TRIANGLES, 0, 3);
+    p_glBindVertexArray(0); p_glUseProgram(0);
+    gl_swap_with_osd();
+    s_probe_swap++;
+    present_force_consumed();
+    s_last_present_path = GL_PRES_CPU;
+}
+
 void gl_renderer_present_blank(void) {
     GL_RT_SYNC("present_blank");
     if (!s_ctx) return;

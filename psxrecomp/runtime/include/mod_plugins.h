@@ -60,6 +60,21 @@ extern uint32_t g_psx_mod_instruction_hooks;
 int psx_mod_register_function_filter_plugin(
     const char* id, uint32_t address, PSXModFunctionFilterCallback callback);
 int psx_mod_function_entry(struct CPUState* cpu, uint32_t address);
+/* Trusted opt-in native function replacements (docs/MOD_FUNCTION_REPLACEMENTS.md).
+ * Register during an opt-in plugin's activation. The callback validates and,
+ * only after completing every caller-visible effect, returns nonzero; the
+ * dispatcher then publishes the caller's $ra (captured at entry) as cpu->pc.
+ * Returning zero runs the original body and must leave all state untouched.
+ * Bounded at 64 word-aligned nonzero addresses; segment aliases share an
+ * entry; re-registering replaces; a NULL callback removes. Cleared with the
+ * mod plan. Emulation thread only. Generated code calls the try function at
+ * every [recompiler] mod_function_entry_funcs entry, after the entry hooks. */
+typedef int (*PSXModFunctionReplacementCallback)(struct CPUState* cpu,
+                                                 uint32_t address);
+int psx_mod_set_function_replacement(uint32_t address,
+                                     PSXModFunctionReplacementCallback callback);
+int psx_mod_try_function_replacement(struct CPUState* cpu, uint32_t address);
+extern uint32_t g_psx_mod_function_replacements;
 /* Trusted game code (not a mod package) may hook guest functions for netplay
  * only. These are independent of the mod package plan, which every online
  * match clears, and run only while netplay is active; offline execution stays
@@ -69,6 +84,41 @@ int psx_game_register_netplay_function_entry(
     uint32_t address, PSXModFunctionEntryCallback callback);
 int psx_game_register_netplay_function_filter(
     uint32_t address, PSXModFunctionFilterCallback filter);
+/* The same for an offline feature of the game itself (a mode the stock game
+ * does not have). These run only while no netplay session is active, so a
+ * match stays stock; the game gates them on its own state (a launch option,
+ * the engine in memory). Same contract as the netplay forms. */
+int psx_game_register_offline_function_entry(
+    uint32_t address, PSXModFunctionEntryCallback callback);
+int psx_game_register_offline_function_filter(
+    uint32_t address, PSXModFunctionFilterCallback filter);
+/* Offline only. Ask for uncapped fast forward (presenting every 8th frame)
+ * while a game feature runs unattended, and clear the request when the player
+ * should take over. Ignored under netplay; cleared when a session ends. */
+void psx_mod_request_fast_forward(int on);
+int psx_mod_fast_forward_requested(void);
+/* Offline only. A loading screen over an unattended stretch: while `text` is
+ * set, the game picture is hidden behind a black screen showing `text` and,
+ * for percent 0..100, a progress bar (percent < 0: no bar). NULL or "" ends
+ * it. Cleared when a session ends. */
+void psx_mod_set_loading_screen(const char *text, int percent);
+/* Offline only. A picture for the loading screen, 0xAARRGGBB, stretched over
+ * the whole window instead of the black screen and OSD text (the text passed
+ * above is then only logged). Copied; NULL clears it. Render it at the
+ * window's aspect from psx_mod_window_size. */
+void psx_mod_set_loading_image(const uint32_t *argb, int w, int h);
+/* The output window's size in pixels; 0x0 when there is none (headless). */
+void psx_mod_window_size(int *w, int *h);
+/* Port `slot`'s buttons as the host controller holds them, PSX layout,
+ * active low (0xFFFF = nothing held). Independent of what the guest reads. */
+uint16_t psx_mod_host_pad_buttons(int slot);
+/* Offline only. End the session and reopen the launcher (on its dashboard);
+ * starting from the launcher begins a new session. Takes effect at the next
+ * scheduler escape point. */
+void psx_mod_request_return_to_launcher(void);
+/* Statically linked per-frame callback: runs once per guest frame after input
+ * sampling (main.cpp). */
+void mod_register_frame_hook(void (*hook)(void));
 /* Complete a guest function from its trusted entry callback after supplying
  * its full result. Valid only for that callback's CPU. Publishes pc=$ra and
  * prevents the original body from executing. Nested callbacks have separate
@@ -113,6 +163,10 @@ int psx_mod_read_disc_file(const char* path, void* buffer, uint32_t capacity,
 /* Effective-disc LBA and byte size of a file (directory records patched by
  * active mods apply, so a relocated file reports its new extent). */
 int psx_mod_disc_file_extent(const char* path, uint32_t* lba, uint32_t* size);
+/* `count` 2048-byte user-data sectors of the effective disc from `lba`, without
+ * touching guest CD state or timing. Form 2 (XA/STR) sectors fail. Emulation
+ * thread only. */
+int psx_mod_read_disc_sectors(uint32_t lba, uint32_t count, void* buffer);
 /* Experimental retained-texture service (currently OpenGL only). IDs are
  * nonzero, stable game-owned identities, NOT GL names. Banks are immutable
  * 16-bit PS1 texels/indices with a caller-selected row pitch (width).

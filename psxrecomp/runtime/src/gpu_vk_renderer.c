@@ -41,6 +41,7 @@ int  vk_renderer_present_vram(int a,int b,int c,int d,int e,int f){(void)a;(void
 int  vk_renderer_present_wide(int a,int b,int c,int d){(void)a;(void)b;(void)c;(void)d;return 0;}
 void vk_renderer_present_cpu(const uint32_t*p,int w,int h,int l,int f){(void)p;(void)w;(void)h;(void)l;(void)f;}
 void vk_renderer_present_blank(void){}
+void vk_renderer_present_image(const uint32_t*p,int w,int h){(void)p;(void)w;(void)h;}
 void vk_renderer_sync_cpu(void){}
 void vk_renderer_restage_vram_after_savestate(void){}
 void vk_renderer_set_present_mode(int m){(void)m;}
@@ -2094,6 +2095,50 @@ void vk_renderer_present_cpu(const uint32_t *pixels, int src_w, int src_h,
      * movie frame is cheap, and it is what makes the persistent staging safe). */
     p_vkQueueWaitIdle(s_queue);
     perf_snapshot_present();
+}
+
+/* A host-made picture (a plugin's loading screen) stretched over the whole
+ * swapchain, filtered; shares the CPU-present staging cache. */
+void vk_renderer_present_image(const uint32_t *pixels, int src_w, int src_h) {
+    if (!s_ctx_ok || !pixels || src_w <= 0 || src_h <= 0) { vk_renderer_present_blank(); return; }
+    flush_tex_batch(); flush_geometry(); gpu_sync();
+    if (s_cpres_w != src_w || s_cpres_h != src_h) {
+        p_vkQueueWaitIdle(s_queue);
+        cpres_cache_free();
+        if (!make_staging((VkDeviceSize)src_w * src_h * 4,
+                          &s_cpres_buf, &s_cpres_mem, &s_cpres_map)) {
+            vk_renderer_present_blank(); return;
+        }
+        if (!make_image(VK_FORMAT_B8G8R8A8_UNORM, src_w, src_h,
+                        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                        VK_IMAGE_ASPECT_COLOR_BIT, &s_cpres_img, &s_cpres_imem, NULL)) {
+            cpres_cache_free(); vk_renderer_present_blank(); return;
+        }
+        s_cpres_w = src_w; s_cpres_h = src_h;
+        s_cpres_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    }
+    memcpy(s_cpres_map, pixels, (size_t)src_w * src_h * 4);
+    VkImage sc; VkCommandBuffer cb; uint32_t idx, fr;
+    if (!acquire_present(&sc, &cb, &idx, &fr)) return;
+    img_to(cb, s_cpres_img, &s_cpres_layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    VkBufferImageCopy bc = {0};
+    bc.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT; bc.imageSubresource.layerCount = 1;
+    bc.imageExtent.width = src_w; bc.imageExtent.height = src_h; bc.imageExtent.depth = 1;
+    p_vkCmdCopyBufferToImage(cb, s_cpres_buf, s_cpres_img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bc);
+    img_to(cb, s_cpres_img, &s_cpres_layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    img_barrier(cb, sc, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                0, VK_ACCESS_TRANSFER_WRITE_BIT,
+                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    VkImageBlit blit = {0};
+    blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT; blit.srcSubresource.layerCount = 1;
+    blit.srcOffsets[1].x = src_w; blit.srcOffsets[1].y = src_h; blit.srcOffsets[1].z = 1;
+    blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT; blit.dstSubresource.layerCount = 1;
+    blit.dstOffsets[1].x = (int)s_sc_extent.width; blit.dstOffsets[1].y = (int)s_sc_extent.height;
+    blit.dstOffsets[1].z = 1;
+    p_vkCmdBlitImage(cb, s_cpres_img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, sc, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                     1, &blit, VK_FILTER_LINEAR);
+    finish_present(cb, sc, idx, fr);
+    p_vkQueueWaitIdle(s_queue);
 }
 
 /* GPU-direct native-wide present: blit the displayed buffer's wide surface

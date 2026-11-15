@@ -674,6 +674,92 @@ static bool host_hotkey_input_focused(void) {
 
 static int g_fast_forward_speed = 4;  /* [hotkeys] fast_forward_speed, 2..16 */
 
+/* Fast forward a trusted plugin asks for (MoA AI Battle sets up and plays its
+ * match unattended). Uncapped while set; cleared at every session start. */
+static int g_mod_fast_forward = 0;
+extern "C" void psx_mod_request_fast_forward(int on) {
+    const int v = on ? 1 : 0;
+    if (v != g_mod_fast_forward) {
+        std::fprintf(stdout, "psxrecomp: plugin fast forward %s\n", v ? "requested" : "released");
+        std::fflush(stdout);
+    }
+    g_mod_fast_forward = v;
+}
+extern "C" int psx_mod_fast_forward_requested(void) { return g_mod_fast_forward; }
+
+/* An offline session a trusted plugin ends: back to the launcher, which opens
+ * on its dashboard, then a new session from whatever is started there. */
+static int g_offline_launcher_return = 0;
+extern "C" void psx_mod_request_return_to_launcher(void) {
+    g_offline_launcher_return = 1;
+    psx_request_return_to_lobby();   /* the same scheduler escape */
+}
+
+/* A plugin's loading screen: while set, the game picture is replaced by a
+ * black screen with the message and a progress bar in the OSD box, redrawn
+ * about ten times a second of wall time. */
+static int g_mod_loading = 0;
+static int mod_loading_image_ready(void);
+static uint64_t s_mod_loading_last_ms = 0;
+static char s_mod_loading_text[200];
+extern "C" void psx_mod_set_loading_screen(const char *text, int percent) {
+    if (!text || !text[0] || psx_netplay_active()) {
+        if (g_mod_loading) {
+            g_mod_loading = 0;
+            s_mod_loading_text[0] = '\0';
+            host_osd_set_status(NULL);
+        }
+        psx_mod_set_loading_image(NULL, 0, 0);
+        return;
+    }
+    char buf[sizeof s_mod_loading_text];
+    if (percent >= 0) {
+        if (percent > 100) percent = 100;
+        char bar[33];
+        const int cells = 30, full = percent * cells / 100;
+        for (int i = 0; i < cells; i++) bar[i] = i < full ? '#' : '.';
+        bar[cells] = '\0';
+        std::snprintf(buf, sizeof buf, "%s\n[%s] %3d%%", text, bar, percent);
+    } else {
+        std::snprintf(buf, sizeof buf, "%s", text);
+    }
+    g_mod_loading = 1;
+    if (std::strcmp(buf, s_mod_loading_text) != 0) {
+        if (std::getenv("PSX_LOADING_SCREEN_LOG")) { std::fprintf(stdout, "loading: %s\n", buf); std::fflush(stdout); }
+        std::snprintf(s_mod_loading_text, sizeof s_mod_loading_text, "%s", buf);
+        host_osd_set_status(mod_loading_image_ready() ? NULL : s_mod_loading_text);
+    }
+}
+
+/* The loading screen's picture (psx_mod_set_loading_image). */
+static std::mutex s_mod_image_mtx;
+static std::vector<uint32_t> s_mod_image;
+static int s_mod_image_w = 0, s_mod_image_h = 0;
+static int mod_loading_image_ready(void) {
+    std::lock_guard<std::mutex> lk(s_mod_image_mtx);
+    return s_mod_image_w > 0;
+}
+extern "C" void psx_mod_set_loading_image(const uint32_t *argb, int w, int h) {
+    std::lock_guard<std::mutex> lk(s_mod_image_mtx);
+    if (!argb || w <= 0 || h <= 0 || w > 4096 || h > 4096) {
+        s_mod_image.clear(); s_mod_image_w = s_mod_image_h = 0;
+        return;
+    }
+    s_mod_image.assign(argb, argb + (size_t)w * (size_t)h);
+    if (!s_mod_image_w) host_osd_set_status(NULL);
+    s_mod_image_w = w; s_mod_image_h = h;
+}
+extern "C" void psx_mod_window_size(int *w, int *h) {
+    int ww = 0, wh = 0;
+    if (sdl_window) SDL_GetWindowSize(sdl_window, &ww, &wh);
+    if (w) *w = ww;
+    if (h) *h = wh;
+}
+extern "C" uint16_t psx_mod_host_pad_buttons(int slot) {
+    if (slot < 0 || slot >= PSX_MAX_PLAYERS) return 0xFFFFu;
+    return sio_get_pad_buttons_slot(slot);
+}
+
 static int manual_fast_forward_multiplier(void) {
     static int env_value = -2; /* -2 = unread, -1 = max/unbounded, 0 = not set */
     if (env_value == -2) {
@@ -3040,6 +3126,63 @@ static std::filesystem::path resolve_persisted_disc_path(
     const std::filesystem::path& path, const std::filesystem::path& exe_dir) {
     if (path.empty()) return {};
     return normalize_disc_path_for_launch(PSXRecompV4::host_resolve(exe_dir, path));
+}
+
+/* First run, or the remembered image is gone: adopt a disc image of THIS game
+ * that sits beside the executable (or in a disc folder there) instead of
+ * asking for one. Candidates are identified by the serial on the disc itself,
+ * never by file name. The game's own id (disc 1 of a set) is preferred, then
+ * the other discs of the set; a cue or CHD is preferred over a bare image. */
+static std::filesystem::path discover_game_disc_near(
+    const std::filesystem::path& exe_dir, const std::string& game_id,
+    std::string* serial_out) {
+    namespace fs = std::filesystem;
+    std::vector<std::string> serials;
+    if (!game_id.empty()) serials.push_back(uppercase_ascii(game_id));
+    for (const auto& kv : g_disc_serials) {
+        const std::string up = uppercase_ascii(kv.second);
+        if (std::find(serials.begin(), serials.end(), up) == serials.end())
+            serials.push_back(up);
+    }
+    if (serials.empty()) return {};
+    static const char* kSubdirs[] = { "", "disc", "discs", "iso", "roms", "games" };
+    static const char* kExts[] = { ".cue", ".chd", ".iso", ".img", ".bin" };
+    fs::path best;
+    int best_rank = 1 << 30;
+    std::string best_serial;
+    for (const char* sub : kSubdirs) {
+        const fs::path dir = sub[0] ? (exe_dir / sub) : exe_dir;
+        std::error_code ec;
+        if (!fs::is_directory(dir, ec)) continue;
+        int seen = 0;
+        for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+            if (++seen > 512) break;
+            std::error_code fec;
+            if (!it->is_regular_file(fec)) continue;
+            const fs::path cand = it->path();
+            std::string ext = cand.extension().string();
+            for (char& c : ext) c = (char)std::tolower((unsigned char)c);
+            int ext_rank = -1;
+            for (int i = 0; i < (int)(sizeof kExts / sizeof kExts[0]); ++i)
+                if (ext == kExts[i]) { ext_rank = i; break; }
+            if (ext_rank < 0) continue;
+            const PSXRecompV4::DiscIdentity id = PSXRecompV4::identify_disc(
+                cand, std::string(), /*expected_crc*/0, /*has_expected_crc*/false,
+                /*compute_crc*/false);
+            if (!id.opened || !id.has_header) continue;
+            const std::string serial = uppercase_ascii(id.detected_serial);
+            const auto pos = std::find(serials.begin(), serials.end(), serial);
+            if (pos == serials.end()) continue;
+            const int rank = (int)(pos - serials.begin()) * 16 + ext_rank;
+            if (rank < best_rank) {
+                best_rank = rank;
+                best = cand;
+                best_serial = serial;
+            }
+        }
+    }
+    if (serial_out) *serial_out = best_serial;
+    return best;
 }
 
 /* Which image of a MULTI-DISC set to mount, given the roster this build was
@@ -9752,17 +9895,36 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
         psx_keybinds_host_keys(keys, host_keys);
         const bool kb_turbo = host_hotkey_input_focused() &&
             host_keymap_down(HOST_KEYMAP_TURBO, host_keys, (int)SDL_GetModState());
-        if (kb_turbo || g_manual_turbo_latched ||
+        const bool mod_ff = g_mod_fast_forward && !psx_netplay_active();
+        {
+            /* Say when a plugin's fast forward starts and stops (and why it
+             * would be held back), on screen and in the log. */
+            static int s_mod_ff_shown = -1;
+            const int state = g_mod_fast_forward ? (psx_netplay_active() ? 2 : 1) : 0;
+            if (state != s_mod_ff_shown) {
+                /* "on" and "off" stay quiet (the plugin's loading screen
+                 * shows the unattended stretch); only "held" is said. */
+                if (state == 2)
+                    host_osd_push("Fast forward held: netplay active", 1500);
+                std::fprintf(stdout, "psxrecomp: plugin fast forward state=%d (netplay_active=%d)\n",
+                             state, psx_netplay_active() ? 1 : 0);
+                std::fflush(stdout);
+                s_mod_ff_shown = state;
+            }
+        }
+        if (kb_turbo || g_manual_turbo_latched || mod_ff ||
             hotkey_shortcut_down(PSX_ASSIST_BIND_FAST_FORWARD, g_hotkey_pad_fast_forward)) {
-            const int mult = manual_fast_forward_multiplier();
-            const int present_every = (mult < 0) ? 8 : (mult <= 2 ? 2 : (mult <= 4 ? 4 : 8));
+            const int mult = mod_ff ? -1 : manual_fast_forward_multiplier();
+            /* A plugin's unattended fast forward shows one frame in 30 (as
+             * turbo-through-loads does): the host time goes to the game. */
+            const int present_every = mod_ff ? 30 : (mult < 0) ? 8 : (mult <= 2 ? 2 : (mult <= 4 ? 4 : 8));
             manual_turbo_active = true;
             if (!s_manual_ff_active) {
                 s_manual_ff_active = 1;
                 apply_present_cadence();  /* vsync would cap fast-forward at the panel rate */
             }
             s_presentation_fast_forward = 1;
-            if (!turbo_was_down && !g_manual_turbo_latched) {
+            if (!turbo_was_down && !g_manual_turbo_latched && !mod_ff) {
                 char msg[40];
                 if (mult < 0)
                     snprintf(msg, sizeof(msg), "Fast forward: max");
@@ -9779,8 +9941,18 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
                                          &g_runtime_perf.pacer_ticks);
                 latency_ring_mark(LAT_PACED);
             }
-            turbo_skip = (turbo_skip + 1) % present_every;
-            if (turbo_skip != 0) {
+            bool skip_present;
+            if (mod_ff && g_mod_loading) {
+                /* Loading screen: redraw it ~10 times a second of wall time,
+                 * ~20 with a plugin's picture (its glow pulses). */
+                const uint64_t now = (uint64_t)SDL_GetTicks();
+                skip_present = now - s_mod_loading_last_ms < (mod_loading_image_ready() ? 50u : 100u);
+                if (!skip_present) s_mod_loading_last_ms = now;
+            } else {
+                turbo_skip = (turbo_skip + 1) % present_every;
+                skip_present = turbo_skip != 0;
+            }
+            if (skip_present) {
                 ep.skip_pace = 1;
                 return ep;  /* skip render this frame */
             }
@@ -9982,7 +10154,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
         gpu_get_display_info(&di);
         depth24_frame = di.depth24 != 0;
         depth24_cutover_tick(depth24_frame ? 1 : 0);
-        if (di.disabled || di.width == 0 || di.height == 0) {
+        if (di.disabled || di.width == 0 || di.height == 0 || g_mod_loading) {
             smooth_60_present(nullptr, 0, 0, false);
             present_ring_commit(PRES_PATH_BLANK, (uint16_t)di.width,
                                 (uint16_t)di.height, 0);
@@ -9990,10 +10162,19 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
             /* After savestate load, always restage once even if we blanked
              * earlier in the session — otherwise the window keeps a stale
              * pre-load frame while vblanks (and FPS) keep advancing. */
-            if (!s_disabled_frame_presented || s_force_present_after_load) {
+            if (!s_disabled_frame_presented || s_force_present_after_load || g_mod_loading) {
                 s_disabled_frame_presented = true;
                 s_force_present_after_load = false;
-                if (g_gl_active) {
+                std::vector<uint32_t> mod_img; int mod_w = 0, mod_h = 0;
+                if (g_mod_loading) {
+                    std::lock_guard<std::mutex> lk(s_mod_image_mtx);
+                    if (s_mod_image_w > 0) { mod_img = s_mod_image; mod_w = s_mod_image_w; mod_h = s_mod_image_h; }
+                }
+                if (mod_w > 0 && g_gl_active) {
+                    gl_renderer_present_image(mod_img.data(), mod_w, mod_h);
+                } else if (mod_w > 0 && g_vk_active) {
+                    vk_renderer_present_image(mod_img.data(), mod_w, mod_h);
+                } else if (g_gl_active) {
                     gl_renderer_present_blank();
                 } else if (g_vk_active) {
                     vk_renderer_present_blank();
@@ -13818,6 +13999,12 @@ namespace {
         next.valid = 1;
         next.has_card = has_card ? 1 : 0;
         if (share >= 0) next.share = share ? 1 : 0;
+#if defined(PSX_NET_GUEST_MEMCARD_SHARE_DEFAULT) && PSX_NET_GUEST_MEMCARD_SHARE_DEFAULT
+        /* Title default: a peer offers its slot-1 card from its first
+         * publication, so seat 2 brings its own card (as the match's slot-2
+         * card) without a click. The seat-row glyph still turns it off. */
+        else if (!g_lnch_memcard_offer.valid) next.share = 1;
+#endif
         const bool changed = !g_lnch_memcard_offer.valid ||
                              next.has_card != g_lnch_memcard_offer.has_card ||
                              next.share != g_lnch_memcard_offer.share;
@@ -18076,6 +18263,47 @@ int main(int argc, char** argv) {
             g_frame_interpolation_fps = us.frame_interpolation_fps;
     }
 
+    /* No usable disc yet (first run, or the remembered image moved): look for
+     * one of this game's images beside the executable before the launcher has
+     * to ask. A --disc override is never second-guessed. */
+    if (!disc_override_path) {
+        const std::filesystem::path exe_dir_now = runtime_profile_dir(argv[0]);
+        std::error_code dec;
+        const bool have_disc = !resolved_disc.empty() &&
+            std::filesystem::exists(
+                PSXRecompV4::host_resolve(exe_dir_now, resolved_disc), dec);
+        if (!have_disc) {
+            std::string found_serial;
+            std::filesystem::path found =
+                discover_game_disc_near(exe_dir_now, game_id, &found_serial);
+            if (found.empty()) {
+                /* A packaged build (an AppImage) runs from a private folder
+                 * the player never sees; its start script names the folder
+                 * the package itself sits in, which is where a player puts
+                 * the disc image. */
+                const char* extra = std::getenv("PSX_DISC_SEARCH_DIR");
+                if (extra && extra[0])
+                    found = discover_game_disc_near(std::filesystem::path(extra),
+                                                    game_id, &found_serial);
+            }
+            if (!found.empty()) {
+                resolved_disc = normalize_disc_path_for_launch(found);
+                /* Keep the set's selected index in step with the image found. */
+                for (size_t i = 0; i < game_discs.size(); ++i) {
+                    const auto it = g_disc_serials.find(
+                        uppercase_ascii(game_discs[i].stem().string()));
+                    if (it != g_disc_serials.end() &&
+                        uppercase_ascii(it->second) == found_serial) {
+                        selected_disc_index = (int)i + 1;
+                        break;
+                    }
+                }
+                std::fprintf(stdout, "psxrecomp: adopted disc image %s (%s)\n",
+                             resolved_disc.string().c_str(), found_serial.c_str());
+            }
+        }
+    }
+
     /* lock_mode: the game supports exactly ONE pad type (e.g. X4 / Tomba 2 are
      * digital-only — X4's pre-DualShock libpad silently discards input from a
      * pad answering id 0x73). The launcher hides its selector for such games,
@@ -18175,6 +18403,14 @@ int main(int argc, char** argv) {
      * the launcher can introspect the real card files. The same default is used
      * by the runtime below. */
     if (memcard_dir.empty()) memcard_dir = default_memcard_dir(argv[0]);
+    /* Plugins and launcher pages that keep files beside the memory card (MoA
+     * AI Battle cards) find the folder here; set again once the session's
+     * card paths are final. */
+#ifdef _WIN32
+    _putenv_s("PSX_MEMCARD_HOME", memcard_dir.string().c_str());
+#else
+    setenv("PSX_MEMCARD_HOME", memcard_dir.string().c_str(), 1);
+#endif
 
     /* The game's OWN native OPTION settings (game_options.toml, next to
      * game.toml) — persisted across launches, kept separate from game.toml
@@ -18220,8 +18456,14 @@ int main(int argc, char** argv) {
      * psx_mod_set_* callbacks — is inert until this runs. */
     {
         std::string mod_error;
+        /* A release laid out for the player keeps mods outside the game's
+         * own folder; whatever starts the game names that folder. */
+        std::filesystem::path mods_root = exe_dir_from_argv(argv[0]) / "mods";
+        if (const char* named = std::getenv("PSX_MODS_DIR")) {
+            if (named[0]) mods_root = std::filesystem::path(named);
+        }
         if (!PSXRecompV4::mod_runtime_initialize(
-                exe_dir_from_argv(argv[0]) / "mods", game_id,
+                mods_root, game_id,
                 game_entry_pc, text_guard_exe_path, &mod_error)) {
             std::fprintf(stderr, "psxrecomp: mods unavailable: %s\n",
                          mod_error.c_str());
@@ -20078,6 +20320,17 @@ session_reboot:
      * ports during early boot. */
     for (int s = 0; s < PSX_MAX_PLAYERS; ++s) {
         set_player_device(g_players[s], player_device[s], player_mode[s]);
+#if defined(PSX_P1_AUTO_GAMEPAD) && PSX_P1_AUTO_GAMEPAD
+        /* Title policy: player 1 is whatever game controller is connected,
+         * with the keyboard binds live beside it (pad_sources_for keeps them
+         * on for every routed seat). A seat saved as "keyboard" therefore
+         * also picks up a controller, now or when one is plugged in; with no
+         * controller the keyboard alone drives it, as before. */
+        if (s == 0 && g_players[0].kind == 1) {
+            g_players[0].kind = 2;
+            g_players[0].guid[0] = '\0';
+        }
+#endif
         g_players[s].preferred_instance = player_instance[s]
             ? (SDL_JoystickID)(player_instance[s] - 1) : -1;
         g_players[s].deadzone = player_deadzone[s];
@@ -20228,13 +20481,41 @@ session_reboot:
                          divisor, cdrom_get_instant_rate());
     }
     {
+#if defined(PSX_MEMCARD2_FIXED) && PSX_MEMCARD2_FIXED
+        /* Title policy: slot 2 is not the player's to configure. Offline it is
+         * always the default second card (card2.mcd in the memory-card
+         * directory), so split-screen player 2 has saves to load; in a
+         * netplay match the session rebinds it to the guest's card. */
+        memcard2_enabled = true;
+        memcard2_path.clear();
+#endif
         std::string mc1 = memcard1_path.string();
         std::string mc2 = memcard2_path.string();
+        /* A session-only card in slot 2 (MoA AI Battle: the two units' saves),
+         * never written into the player's settings. */
+        {
+            const char *session_card2 = std::getenv("PSX_MEMCARD2_SESSION");
+            if (session_card2 && session_card2[0] && !psx_netplay_active()) {
+                mc2 = session_card2;
+                memcard2_enabled = true;
+            }
+        }
         const MemcardSlotConfig slots[2] = {
             { mc1.empty() ? nullptr : mc1.c_str(), memcard1_enabled ? 1 : 0 },
             { mc2.empty() ? nullptr : mc2.c_str(), memcard2_enabled ? 1 : 0 },
         };
         memcard_init_slots(memcard_dir_str.c_str(), slots);
+        /* Game plugins that keep files beside the player's memory card (MoA
+         * AI Battle cards) find the folder here: slot 1's own folder when a
+         * card file was chosen, else the card directory. */
+        const std::string card_home = mc1.empty()
+            ? memcard_dir_str
+            : std::filesystem::path(mc1).parent_path().string();
+#ifdef _WIN32
+        _putenv_s("PSX_MEMCARD_HOME", card_home.c_str());
+#else
+        setenv("PSX_MEMCARD_HOME", card_home.c_str(), 1);
+#endif
     }
     if (!rematch_session) {
         std::atexit(memcard_flush_all);
@@ -21186,10 +21467,10 @@ session_reboot:
 
     /* A match whose start failed has no session and must not run the guest.
      * Go back to the room; do not boot the game offline. */
-    if (psx_return_to_lobby_requested() && g_netplay_from_lobby)
+    if (psx_return_to_lobby_requested() && (g_netplay_from_lobby || g_offline_launcher_return))
         goto soft_return_lobby;
     psx_scheduler_run(&cpu);
-    if (psx_return_to_lobby_requested() && g_netplay_from_lobby)
+    if (psx_return_to_lobby_requested() && (g_netplay_from_lobby || g_offline_launcher_return))
         goto soft_return_lobby;
 #endif
 
@@ -21266,7 +21547,13 @@ session_reboot:
 
 soft_return_lobby:
     /* Netplay soft-exit: tear down the match, keep the lobby seat, and reopen
-     * the launcher on the LOBBY room so every peer can rematch. */
+     * the launcher on the LOBBY room so every peer can rematch. An offline
+     * return a plugin asked for (psx_mod_request_return_to_launcher) takes the
+     * same road and opens the launcher on its dashboard. */
+    const bool offline_return = g_offline_launcher_return != 0;
+    g_offline_launcher_return = 0;
+    g_mod_fast_forward = 0;
+    psx_mod_set_loading_screen(NULL, 0);
     teardown_game_session_keep_lobby();
     PSXRecompV4::mod_runtime_end_netplay();
 #if defined(RECOMP_LAUNCHER) && defined(PSX_HAS_LOBBY_CLIENT)
@@ -21284,8 +21571,8 @@ soft_return_lobby:
         /* A human-hosted room survives the match and is where a rematch
          * happens; an automatch room is the server's and cannot. Leave it
          * here, and reopen the launcher on the browser instead. */
-        const int rui_resume_room =
-            ae_np_leave_automatch_room_after_match() ? 0 : 1;
+        const int rui_resume_room = offline_return ? 0 :
+            (ae_np_leave_automatch_room_after_match() ? 0 : 1);
 
         ae_rui_set_sidecar_paths(argv[0]);
         g_lnch_expected_serial = game_id;
@@ -22010,12 +22297,10 @@ soft_return_lobby:
             {
                 PSXRecompV4::HostLaunchTimingScope timing(HOST_LAUNCH_RUNTIME_COMMIT);
                 if (dual_analog_buttons_offered) {
+                    /* Settings were already saved by the launcher-exit block
+                     * above; only the live values are refreshed here. */
                     dual_analog_buttons = ls.dual_analog_buttons != 0;
-                    us.dual_analog_buttons = dual_analog_buttons != 0;
-                    us.has_dual_analog_buttons = true;
                     dual_analog_duplicate_face = ls.dual_analog_duplicate_face != 0;
-                    us.dual_analog_duplicate_face = dual_analog_duplicate_face != 0;
-                    us.has_dual_analog_duplicate_face = true;
                 }
                 std::string mod_error;
                 if (net_cfg.enabled) {

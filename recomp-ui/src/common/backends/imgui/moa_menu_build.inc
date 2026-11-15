@@ -394,6 +394,7 @@ static void open_build_new() {
 
 static void open_build(const AiCard& c) {
     g_edit = c.card;
+    moa_build_normalise(g_edit.rec);
     if (!g_edit.has_ai) moa_card_set_preset(&g_edit, MOA_AI_PRESET_BALANCED);
     g_edit_path = c.path;
     g_edit_dirty = !c.card.has_ai;

@@ -78,6 +78,21 @@
 #define RUN_FIGHT_OPPONENT   0x8003EAD5u  /* byte: the opponent's index */
 #define RUN_STATE_ARENA      (0x80u + 0x5Du)
 #define RUN_STATE_FLAGS      (0x80u + 0x58u)
+
+/* The game's save (menu module): RUN_SAVE(a0 = card port, a1 = file index
+ * in the card list, or -1 for a new file) builds the 0xE80-byte scenario
+ * block and writes it in one call (open, write, close); v0 (byte) is 0 on a
+ * failure. Its one caller is the SAVE screen (0x8005CA7C). An existing
+ * file keeps its name letter from the list: entry (port*0x8A0 + index*0x44)
+ * of the table at RUN_SAVE_LIST, letter at +0x460, count at RUN_SAVE_COUNT.
+ * The run card holds one save, BASLUS-01030A (launcher), so the autosave
+ * writes file 0 on port 0 and only when the list still names that file;
+ * index -1 would add a new file each time. */
+#define RUN_SAVE             0x8007155Cu
+#define RUN_SIG_SAVE         0x27BDFF98u  /* addiu sp,sp,-104 */
+#define RUN_SAVE_LIST        0x801F9DB8u
+#define RUN_SAVE_COUNT       0x801B1CE4u  /* half */
+#define RUN_SAVE_LETTER      0x460u
 #define RUN_ARENA            0u           /* the run's opponents replace arena 0 */
 #define RUN_CREDITS          0x8003EA94u  /* u32, save +456 (moa_ai_battle.c) */
 #define RUN_LOSS_FRAMES      (60u * 4u)   /* the result is shown, then the launcher */
@@ -182,6 +197,7 @@ enum { STAGE_TITLE = 0, STAGE_LOADGAME, STAGE_LOADING };
 static int run_stage;
 static uint32_t run_newgame_seen;          /* run_frames when that menu last ran */
 static int run_result_seen;                /* this fight's result is booked */
+static int run_save_pending;               /* a win waits for the autosave */
 static uint32_t run_loss_wait;             /* frames until the launcher reopens */
 static const char *run_file_path(void) { return getenv("PSX_MOA_RUN_FILE"); }
 
@@ -300,6 +316,25 @@ static void run_hub_entry(struct CPUState *cpu, uint32_t address)
     run_reach_hub("moa.run.hub_reached");
 }
 
+/* Autosave to the run card with the game's own save, once the result
+ * routine has applied a win (rank, flags, credits). */
+static void run_autosave(struct CPUState *cpu)
+{
+    if (!run_save_pending) return;
+    run_save_pending = 0;
+    if (psx_mod_read_word(RUN_SAVE) != RUN_SIG_SAVE) {
+        psx_mod_counter_add("moa.run.save_skip_code", 1);
+        return;
+    }
+    if (psx_mod_read_half(RUN_SAVE_COUNT) < 1u ||
+        psx_mod_read_byte(RUN_SAVE_LIST + RUN_SAVE_LETTER) != (uint8_t)'A') {
+        psx_mod_counter_add("moa.run.save_skip_list", 1);
+        return;
+    }
+    const uint32_t ok = psx_mod_call_guest(cpu, RUN_SAVE, cpu->gpr[31], 0u, 0u, 0u, 0u);
+    psx_mod_counter_add((ok & 0xFFu) ? "moa.run.save_ok" : "moa.run.save_fail", 1);
+}
+
 /* A fight's result in the run's arena: a new win pays 1 P, a loss ends the
  * run (the file keeps it for Retry) and hands back to the launcher. */
 static void run_result_entry(struct CPUState *cpu, uint32_t address)
@@ -307,7 +342,11 @@ static void run_result_entry(struct CPUState *cpu, uint32_t address)
     if (!run_on() || !run_at_hub || !run_state_ok ||
         psx_mod_read_word(address) != RUN_SIG_RESULT)
         return;
-    if (!psx_mod_read_byte(RUN_FIGHT_DONE)) { run_result_seen = 0; return; }
+    if (!psx_mod_read_byte(RUN_FIGHT_DONE)) {
+        run_result_seen = 0;
+        run_autosave(cpu);                     /* the result is applied now */
+        return;
+    }
     if (run_result_seen) return;
     run_result_seen = 1;
     const uint32_t st = cpu->gpr[4];
@@ -339,8 +378,7 @@ static void run_result_entry(struct CPUState *cpu, uint32_t address)
         psx_mod_counter_add("moa.run.credits_mismatch", 1);
     (void)moa_run_save(path, &run_state);
     psx_mod_counter_add("moa.run.win", 1);
-    /* TODO autosave: the game's own save to the run card, once its save
-     * routine is found (see ARENA_RUN_DESIGN.md "Still to find"). */
+    run_save_pending = 1;
 }
 
 /* Arena 0 sites: s2 (open) or s0 (the rest) = state + 0x80. */

@@ -28,14 +28,7 @@ runtime plugin `moa.phantasma-missions` in `psxrecomp/runtime/src/mod_builtin_mo
   Phantasma entry 0 has the same tables for 64 slots: names 256, rewards 2560, pages 2944.
 - 0x80094150 copies entry 0 to T+80 (hook after: 0x8009417C); list builder 0x800942bc
   (returns at 0x800943AC); rows filled by ~0x80095100 from T+176 (drawn once per build).
-- MoA uses slots 0-19 (19 = Final Mission); 20-23 are "Dummy" (slot 20 is always hidden now).
-- Source picker (MISSIONS): the Ex Arena category list (0x800BACE8: task+0xa4 item flags, 0x02 grey;
-  +0xae row, +0xaf top; states 0x800BB12C open, 0x800BB1F4 input, 0x800BB6B4 confirmed,
-  0x800BB660 cancelled) opened by pointing the mission fade's callback (fade+0x84) at 0x800BA684.
-  On confirm the list task's update becomes the mission loader 0x800943E8 (task+0x8a = 1).
-- Phantasma view: PP mission k in slot k (testing: all working ones listed), engine no. 20 for all;
-  MoA's done flags (T+20) kept aside and put back at the result (0x80094068 win / 0x800940C8 loss)
-  or when leaving the screen (0x80095730). Chosen slot: 0x800976C0 (a3 = slot, s3 = T).
+- MoA uses slots 0-19 (19 = Final Mission); 20-23 are "Dummy". Slot 20 = rolling PP mission.
 - Font has no `{4` (Phantasma narrow space). Row fits ~23 chars before the reward.
 - Engine (FDAT 207): loads 800556b8 textures (file 1, a1 = slot), 800556d4 common (205),
   80055874 code (slot*5, dest 0x800A0DD0), 80055894 map (slot*5+4). File table 0x8004402C.
@@ -45,7 +38,5 @@ in mission: 2,3,4,5,6,8,10,12,17; intro scene: 13,15,16; wrong view: 11;
 black/hang: 1 (spins at 0x80098DA0 = engine data, i.e. a bad indirect jump), 7, 9, 14.
 
 ## TODO
-- missions 1, 7, 9, 14 (hang), 11 (view) are hidden from the list.
-- PP list is in testing mode (all listed); later: unlock in order, replays after the final one.
-- Armored Core source: greyed until AC1 missions are imported.
-- progress is per memory card folder (all saves share it).
+- missions 1, 7, 9, 14 (hang), 11 (view); replay list after all 17 (needs a separate page:
+  the list's 24 slots are fixed); progress is per memory card (all saves share it).

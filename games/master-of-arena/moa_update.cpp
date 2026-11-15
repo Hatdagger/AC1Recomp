@@ -345,6 +345,10 @@ bool protected_path(const std::string& rel) {
         "input.ini", "disc.cfg", "bios.cfg", "rom.cfg", "overlay_captures.json",
         "games/master-of-arena/settings.toml", "games/master-of-arena/game_options.toml",
         "games/master-of-arena/keybinds.ini", "games/master-of-arena/input.ini" };
+    /* Mods/bundled holds the mods each release ships: replace and add them, so
+     * a mod new in this release reaches players who update. */
+    if (rel.compare(0, 13, "Mods/bundled/") == 0)
+        return false;
     if (rel.compare(0, 12, "Memory Card/") == 0 || rel.compare(0, 5, "Mods/") == 0 ||
         rel.compare(0, 7, "Update/") == 0)
         return true;

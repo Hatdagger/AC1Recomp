@@ -224,48 +224,28 @@ PSX_MOD_CONSTRUCTOR(psx_register_moa_phantasma_arena_plugin) {
  *    included), the directory record pointing at the copy.
  *
  * Master of Arena's mission screen lists slots 0-23 from a table at
- * 0x8019F7A8 (T): T+0 slot being played, T+2 story chapter, T+20 one flag
- * byte per slot (0x02 = done), T+56 the list, T+80 a copy of MIS.T entry 0
- * (T+80 windows [lo,hi,..], T+176 names of 32 bytes, T+1040 rewards, T+1136
- * engine mission numbers, T+1160 a byte per slot, T+1184 briefing page
- * records: 32 bytes a slot, image entries then text entries).
- *
- * Mission source picker. MISSIONS first opens a three-row list - ARMORED
- * CORE (greyed, not installed yet), PROJECT PHANTASMA, MASTER OF ARENA - in
- * the window and code of the Ex Arena category list (800BACE8 and its
- * states), steered by register-only hooks while the picker is up:
- *  P1. 800943D8: the mission screen's fade gets the Ex Arena opener
- *      (800BA684) as its callback; 800BA6B8/800BA6E0 make it take the list
- *      branch.
- *  P2. 800BA750: the list's item flags (grey) and starting row.
- *  P3. Window height for three rows (open 800BAFC8, close 800BB4C4/5B0),
- *      three bars (800BB1B0), no scroll (800BB398/3B0), no down arrow
- *      (800BB864), our names (800BB7E8) and descriptions (800BB920).
- *  P4. Confirm (800BB6D8, once the window has closed): instead of opening an
- *      arena, the list task becomes the mission screen's loader (800943E8).
- *      Cancel (800BB5FC, 800BA784): the mission header is closed instead of
- *      the arena's; the game returns to the main menu.
- *
- * Project Phantasma view (source 1). For testing, every working Phantasma
- * mission is listed: mission k takes slot k (slots 0-16); slots 17-23 are
- * hidden. The battle runs the Dummy slot's engine number (20).
- *  A. 8009417C (after T+80 is copied): Master of Arena's done flags are kept
- *     aside and the Phantasma slots are filled (name, reward, page record,
- *     window in the current chapter). The MIS.T index is extended so the page
- *     records reach Phantasma's entries (entry 410+k = its entry k).
- *  B. 800943AC (list builder return): done marks from the progress file.
- *  C. 800976C0 (mission chosen): which Phantasma mission is played.
- *  D. Results 80094068 / 800940C8 and leaving the screen 80095730: a win is
- *     recorded in the progress file beside the memory card and Master of
- *     Arena's done flags are put back, so its progress is never changed.
- *  E. Battle engine: while engine mission 20 loads a Phantasma mission, four
- *     loads are pointed at the pack's blocks (file 3, which the game's file
- *     table never uses):
+ * 0x8019F7A8 (T): T+1 slot whose briefing reopens directly, T+2 story
+ * chapter, T+20 one flag byte per slot (0x02 = done), T+45 cursor, T+56 the
+ * list, T+80 a copy of MIS.T entry 0 (T+80 windows [lo,hi], T+176 names of
+ * 32 bytes, T+944 and T+1040 reward words, T+1136 engine mission numbers,
+ * T+1184 briefing page records: 32 bytes a slot, image entries then text
+ * entries). Opening MISSIONS first shows a source picker (see "mission
+ * source picker" below); a Phantasma mission runs in slot 20, the unused
+ * "Dummy" slot:
+ *  A. 8009417C (after T+80 is copied): picker rows or Phantasma's rows. The
+ *     MIS.T index is extended so slot 20's page record reaches Phantasma's
+ *     entries (entry 410+k = its entry k). A done flag on slot 20 is
+ *     recorded in the progress file beside the memory card and cleared.
+ *  B. 800943AC (list builder return): the picker's or Phantasma's list.
+ *  Input and drawing: 800954E4 (cross), 800955BC/800955D0 (circle),
+ *     8009510C (done mark), filters at 80095058 (reward) and 80056528
+ *     (screen closed: reopen for a picker choice or back-out).
+ *  C. Battle engine: while slot 20 loads, four loads are pointed at the
+ *     pack's blocks (file 3, which the game's file table never uses):
  *      800556b8 jal -> textures, file 1, entry = slot
  *      800556d4 jal -> common,   file 2, entry 205
  *      80055874 jal -> code,     file 2, entry slot*5
  *      80055894 jal -> map,      file 2, entry slot*5+4
- * Master of Arena view (source 2): the stock list (the Dummy slot hidden).
  * All hooks are on disc-loaded (interpreted) code and guarded by exact
  * instruction words.
  */
@@ -314,73 +294,14 @@ static const uint16_t ppm_index[PPM_INDEX_WORDS] = {
 #define PPM_T_REWARDS       1040u
 #define PPM_T_ENGINE        1136u       /* engine mission number per slot */
 #define PPM_T_PAGES         1184u       /* 32 bytes per slot: image entries, text entries */
-#define PPM_T_BYTE          1160u       /* one byte per slot (copied from the Dummy slot) */
-#define PPM_SLOTS           24u
 #define PPM_NAME_BYTES      32u
+#define PPM_MOA_MISSIONS    20u
 #define PPM_TABLE_PC        0x8009417Cu
 #define PPM_TABLE_INSN      0x2610FFB0u /* addiu s0,s0,-80 (after the MIS.T entry 0 copy) */
 #define PPM_LIST_PC         0x800943ACu
 #define PPM_LIST_INSN       0x03E00008u /* jr ra */
 #define PPM_LIST_GUARD_PC   0x800943A8u
 #define PPM_LIST_GUARD_INSN 0x00E01021u /* addu v0,a3,zero */
-#define PPM_CHOSEN_PC       0x800976C0u
-#define PPM_CHOSEN_INSN     0xA04353EDu /* sb v1,0x53ed(v0): engine number of slot a3 */
-#define PPM_WIN_PC          0x80094068u
-#define PPM_WIN_INSN        0x8C82000Cu /* lw v0,12(a0), after the done flag */
-#define PPM_LOSS_PC         0x800940C8u
-#define PPM_LOSS_INSN       0x8C820010u /* lw v0,16(a0), after the failed flag */
-#define PPM_EXIT_PC         0x80095730u
-#define PPM_EXIT_INSN       0x0C01594Au /* jal 0x80056528 (main menu) */
-#define PPM_REG_V0 2
-#define PPM_REG_V1 3
-#define PPM_REG_A2 6
-#define PPM_REG_S1 17
-#define PPM_REG_S3 19
-
-/* Mission source picker (the Ex Arena category list). */
-#define PPS_FADE_PC         0x800943D8u
-#define PPS_FADE_INSN       0x8FBF0010u /* lw ra,16(sp), after the fade is set up (v0 = fade+0x80) */
-#define PPS_MISSION_CB      0x800943E8u /* the mission screen's loader */
-#define PPS_LIST_CB         0x800BA684u /* the Ex Arena opener */
-#define PPS_BRANCH_A_PC     0x800BA6B8u
-#define PPS_BRANCH_A_INSN   0x14400007u /* bnez v0 (Ex Arena, not Arena) */
-#define PPS_BRANCH_B_PC     0x800BA6E0u
-#define PPS_BRANCH_B_INSN   0x10400018u /* beqz v0 (list, not back into an arena) */
-#define PPS_MADE_PC         0x800BA750u
-#define PPS_MADE_INSN       0x0802E9E5u /* j 0x800ba794, after the list is made (v0) */
-#define PPS_OPEN_PC         0x800BAFC8u
-#define PPS_WINDOW_INSN     0x0C018FBDu /* jal 0x80063ef4 (window) */
-#define PPS_CLOSE_A_PC      0x800BB4C4u
-#define PPS_CLOSE_B_PC      0x800BB5B0u
-#define PPS_CLOSE_INSN      0x0C0190D2u /* jal 0x80064348 (closing window) */
-#define PPS_BARS_PC         0x800BB1B0u
-#define PPS_BARS_INSN       0x28420004u /* slti v0,v0,4 */
-#define PPS_DOWN_PC         0x800BB398u
-#define PPS_DOWN_INSN       0x10620003u /* beq v1,v0 (cursor on the last row) */
-#define PPS_SCROLL_PC       0x800BB3B0u
-#define PPS_SCROLL_INSN     0x106200A5u /* beq v1,v0 (list at its end) */
-#define PPS_ARROW_PC        0x800BB864u
-#define PPS_ARROW_INSN      0x14400004u /* bnez v0 (more below: down arrow) */
-#define PPS_NAME_PC         0x800BB7E8u
-#define PPS_DESC_PC         0x800BB920u
-#define PPS_TEXT_INSN       0x0C0194CCu /* jal 0x80065330 (text) */
-#define PPS_CHOSEN_PC       0x800BB6D8u
-#define PPS_CHOSEN_INSN     0x14430011u /* bne v0,v1 (window still closing) */
-#define PPS_CANCEL_PC       0x800BB5FCu
-#define PPS_FADE_CANCEL_PC  0x800BA784u
-#define PPS_FIND_INSN       0x0C015D1Cu /* jal 0x80057470 (find a task by its maker) */
-#define PPS_ARENA_HEADER    0x800BA7B0u
-#define PPS_MISSION_HEADER  0x80097CA8u
-#define PPS_ROWS            3u
-#define PPS_WINDOW_H        0x48u       /* three rows of 24 (the arena list: 0x60, four) */
-#define PPS_LIST_FLAGS      0xA4u       /* task+0x80+0x24: a flag byte per item (0x02 grey) */
-#define PPS_LIST_ROW        0xAEu
-#define PPS_LIST_TOP        0xAFu
-#define PPS_TASK_UPDATE     0x78u
-#define PPS_TASK_READY      0x8Au       /* the loader's "fade done" byte */
-#define PPS_SOURCE_AC       0u
-#define PPS_SOURCE_PP       1u
-#define PPS_SOURCE_MOA      2u
 
 /* MIS.T: stock file then Phantasma's MIS.T (its header first). */
 #define PPM_MIS_FILE        19u
@@ -393,17 +314,9 @@ static const uint16_t ppm_index[PPM_INDEX_WORDS] = {
 #define PPM_MEM_PACK        0u
 #define PPM_MEM_MIS         256u
 #define PPM_MIS_INDEX       (PPM_MIS_ENTRIES + 1u + PPM_MIS_PP_ENTRIES + 1u)
-#define PPM_MEM_STR         ((PPM_MEM_MIS + 2u * PPM_MIS_INDEX + 64u + 15u) & ~15u)
-#define PPM_MEM_STR_BYTES   256u
-#define PPM_MEM_BYTES       (PPM_MEM_STR + PPM_MEM_STR_BYTES)
+#define PPM_MEM_BYTES       (PPM_MEM_MIS + 2u * PPM_MIS_INDEX + 64u)
 
 static uint32_t s_ppm_memory;
-static int      s_picker;                /* the source list is up */
-static uint8_t  s_source = PPS_SOURCE_PP;/* last source chosen */
-static int      s_view;                  /* Phantasma view in T (Master of Arena's flags kept aside) */
-static uint8_t  s_moa_flags[PPM_SLOTS];
-static int8_t   s_slot_pp[PPM_SLOTS];    /* Phantasma mission in each slot, -1 none */
-static int      s_battle_pp = -1;        /* Phantasma mission chosen to play */
 static int      s_ppm_loaded;            /* Phantasma table read from the disc */
 static uint16_t s_mis_stock[PPM_MIS_ENTRIES + 1u];
 static uint16_t s_mis_pp[PPM_MIS_PP_ENTRIES + 1u];
@@ -468,6 +381,13 @@ static void ppm_progress_write(void) {
 static const uint8_t k_pp_skip[PPM_MISSIONS] = {
     1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0,
 };
+
+/* The next unfinished mission, or PPM_MISSIONS when all are done. */
+static uint32_t ppm_current(void) {
+    ppm_progress_read();
+    for (uint32_t i = 0; i < PPM_MISSIONS; ++i) if (!s_done[i] && !k_pp_skip[i]) return i;
+    return PPM_MISSIONS;
+}
 
 /* ---- Phantasma's mission table, from the extended MIS.T ---- */
 
@@ -587,265 +507,320 @@ static void ppm_install_mis_index(void) {
     psx_mod_write_word(slot, mine);
 }
 
-/* ---- the Phantasma view in the mission table ---- */
+/* ---- mission source picker ----
+ *
+ * Opening MISSIONS first lists where missions come from, in the mission
+ * screen's own window: Armored Core (not installed yet), Project Phantasma,
+ * Master of Arena. Picking a source closes the screen and reopens it with
+ * that source's list; backing out of a source list reopens the picker, and
+ * backing out of the picker leaves as before.
+ *
+ * Phantasma's list shows its missions in slots 0-16 (names and rewards
+ * only; the slots' own done flags are Master of Arena's and are not used).
+ * The mission picked is copied into slot 20 (the unused "Dummy" slot) and
+ * the list entry pointed at it just before the briefing opens, so the
+ * briefing, launch, battle loads and done flag run through slot 20 exactly
+ * as before. */
 
-/* Master of Arena's done flags go back into T (its progress is saved from
- * there). */
-static void ppm_restore_flags(void) {
-    if (!s_view) return;
-    for (uint32_t i = 0; i < PPM_SLOTS; ++i)
-        psx_mod_write_byte(PPM_T + PPM_T_FLAGS + i, s_moa_flags[i]);
-    s_view = 0;
+enum { MODE_PICK = 0, MODE_PP = 1, MODE_MOA = 2 };
+static int      s_mode = MODE_PICK;      /* this screen's source */
+static int      s_next = MODE_PICK;      /* source for the next open */
+static int      s_fake_cancel;           /* picker choice: leave like a cancel */
+static int      s_reopen;                /* reopen the screen when it closes */
+static int      s_pp_pick = -1;          /* Phantasma mission in slot 20 */
+static int      s_last_src = MODE_PICK;  /* source last opened, for the picker's cursor */
+
+#define PICK_AC             21u
+#define PICK_PP             22u
+#define PICK_MOA            23u
+#define PPM_T_RESUME        1u           /* slot whose briefing reopens (-1 none) */
+#define PPM_T_CURSOR        0x2Du        /* cursor position in the list */
+#define PPM_T_COUNT_PTR     0x7A0u       /* -> byte 0 = list length */
+#define PPM_T_BONUS         944u         /* second reward word per slot */
+#define PPM_T_STAGE         1160u        /* per-slot byte copied with the engine number */
+#define PPM_PAD_NOW         0x801B1CD0u
+#define PPM_PAD_PREV        0x801B1CD4u
+#define PPM_PAD_CROSS       0x4000u
+#define PPM_PAD_CIRCLE      0x2000u
+#define PPM_CONFIRM_PC      0x800954E4u
+#define PPM_CANCEL_PC       0x800955BCu
+#define PPM_CANCEL_PREV_PC  0x800955D0u
+#define PPM_ANDI_CROSS      0x30424000u  /* andi v0,v0,0x4000 */
+#define PPM_ANDI_CIRCLE     0x30422000u  /* andi v0,v0,0x2000 */
+#define PPM_MARK_PC         0x8009510Cu
+#define PPM_MARK_INSN       0x30420002u  /* andi v0,v0,0x2 (row's done mark) */
+#define PPM_REWARD_FN       0x80095058u  /* draws a row's reward */
+#define PPM_REWARD_ENTRY    0x27BDFFE0u
+#define PPM_REWARD_GUARD    0x80095080u
+#define PPM_REWARD_GUARD_I  0x8C840410u  /* lw a0,0x410(a0) */
+#define PPM_SYNC_FN         0x8002C4B0u
+#define PPM_RESUME_FN       0x80056528u  /* hub takes over when the screen closes */
+#define PPM_RESUME_ENTRY    0x27BDFFE8u
+#define PPM_RESUME_GUARD    0x80095730u
+#define PPM_RESUME_GUARD_I  0x0C01594Au  /* jal 0x80056528 (mission screen close) */
+#define PPM_OPEN_FN         0x800943B4u  /* hub: open the mission screen */
+#define PPM_OPEN_GUARD_I    0x0C025F2Au  /* its first call: jal 0x80097ca8 */
+#define PPM_REG_V0 2
+#define PPM_REG_T0 8
+#define PPM_REG_RA 31
+
+static int ppm_pp_listed(uint32_t i) { return i < PPM_MISSIONS && !k_pp_skip[i]; }
+
+static void ppm_put_text(uint32_t at, const char *text) {
+    uint8_t out[PPM_NAME_BYTES];
+    memset(out, 0, sizeof out);
+    size_t n = strlen(text);
+    if (n > PPM_NAME_BYTES - 1u) n = PPM_NAME_BYTES - 1u;
+    memcpy(out, text, n);
+    out[n] = '>';
+    for (uint32_t i = 0; i < PPM_NAME_BYTES; ++i) psx_mod_write_byte(at + i, out[i]);
 }
 
-static int ppm_pp_available(void) {
-    return ppm_load_tables();
+/* Phantasma mission i's list row (name and reward) in slot `slot`. */
+static void ppm_fill_row(uint32_t slot, uint32_t i) {
+    ppm_put_name(PPM_T + PPM_T_NAMES + slot * PPM_NAME_BYTES, "",
+                 k_pp_short[i] ? (const uint8_t *)k_pp_short[i] : s_pp_names[i]);
+    psx_mod_write_word(PPM_T + PPM_T_REWARDS + slot * 4u, s_pp_rewards[i]);
+    psx_mod_write_word(PPM_T + PPM_T_BONUS + slot * 4u,
+                       psx_mod_read_word(PPM_T + PPM_T_BONUS + PPM_SLOT * 4u));
 }
 
-/* A. After the menu copies MIS.T entry 0 into T+80. */
+/* Slot 20 becomes Phantasma mission i: row, window, engine number, pages. */
+static void ppm_fill_slot20(uint32_t i) {
+    const uint8_t chapter = psx_mod_read_byte(PPM_T + PPM_T_CHAPTER);
+    const uint32_t window = PPM_T + PPM_T_WINDOWS + PPM_SLOT * 4u;
+    psx_mod_write_byte(window, chapter);
+    psx_mod_write_byte(window + 1u, chapter);
+    ppm_put_name(PPM_T + PPM_T_NAMES + PPM_SLOT * PPM_NAME_BYTES, "",
+                 k_pp_short[i] ? (const uint8_t *)k_pp_short[i] : s_pp_names[i]);
+    psx_mod_write_word(PPM_T + PPM_T_REWARDS + PPM_SLOT * 4u, s_pp_rewards[i]);
+    psx_mod_write_byte(PPM_T + PPM_T_ENGINE + PPM_SLOT, (uint8_t)PPM_SLOT);
+    /* Briefing pages: Phantasma's entry v+1 is our entry 410+v+1. */
+    for (uint32_t j = 0; j < 16u; ++j) {
+        const int16_t v = s_pp_pages[i][j];
+        psx_mod_write_half(PPM_T + PPM_T_PAGES + PPM_SLOT * 32u + j * 2u,
+                           (uint16_t)(v < 0 ? -1 : v + (int)PPM_MIS_ENTRIES + 1));
+    }
+    ppm_install_mis_index();
+    s_pp_pick = (int)i;
+}
+
+/* A. After the menu copies MIS.T entry 0 into T+80 (each time the screen
+ * opens; the copy refreshes every per-slot field except the done flags). */
 static void ppm_on_table(struct CPUState* cpu, uint32_t address) {
     (void)address;
     if (cpu->gpr[PPM_REG_S0] != PPM_T + PPM_T_WINDOWS) {
         psx_mod_counter_add("moa.phantasma-missions.guard_rejected", 1);
         return;
     }
-    ppm_restore_flags();                  /* left over (no result seen) */
-    memset(s_slot_pp, -1, sizeof s_slot_pp);
-    /* The Dummy slot is never listed. */
-    const uint32_t dummy_window = PPM_T + PPM_T_WINDOWS + PPM_SLOT * 4u;
-    const uint8_t dummy_w2 = psx_mod_read_byte(dummy_window + 2u);
-    const uint8_t dummy_w3 = psx_mod_read_byte(dummy_window + 3u);
-    const uint8_t dummy_byte = psx_mod_read_byte(PPM_T + PPM_T_BYTE + PPM_SLOT);
-    psx_mod_write_byte(dummy_window, 0xFFu);
-    psx_mod_write_byte(dummy_window + 1u, 0xFFu);
-    if (s_source != PPS_SOURCE_PP || !ppm_pp_available()) {
-        psx_mod_counter_add("moa.phantasma-missions.view_moa", 1);
-        return;
-    }
-    ppm_progress_read();
-    for (uint32_t i = 0; i < PPM_SLOTS; ++i)
-        s_moa_flags[i] = psx_mod_read_byte(PPM_T + PPM_T_FLAGS + i);
-    s_view = 1;
-    const uint8_t chapter = psx_mod_read_byte(PPM_T + PPM_T_CHAPTER);
-    for (uint32_t slot = 0; slot < PPM_SLOTS; ++slot) {
-        const uint32_t window = PPM_T + PPM_T_WINDOWS + slot * 4u;
-        if (slot >= PPM_MISSIONS || k_pp_skip[slot]) {
-            psx_mod_write_byte(window, 0xFFu);
-            psx_mod_write_byte(window + 1u, 0xFFu);
-            continue;
+    const int pp = ppm_load_tables();
+    if (pp) ppm_progress_read();
+    /* A finished Phantasma mission leaves slot 20's done flag set. */
+    const uint32_t flag = PPM_T + PPM_T_FLAGS + PPM_SLOT;
+    if (psx_mod_read_byte(flag) & 0x02u) {
+        const uint32_t done = s_pp_pick >= 0 ? (uint32_t)s_pp_pick : ppm_current();
+        if (pp && done < PPM_MISSIONS) {
+            s_done[done] = 1;
+            ppm_progress_write();
+            psx_mod_counter_add("moa.phantasma-missions.finished", 1);
         }
-        const uint32_t m = slot;       /* testing: mission k in slot k */
-        s_slot_pp[slot] = (int8_t)m;
-        psx_mod_write_byte(window, chapter);
-        psx_mod_write_byte(window + 1u, chapter);
-        psx_mod_write_byte(window + 2u, dummy_w2);
-        psx_mod_write_byte(window + 3u, dummy_w3);
-        ppm_put_name(PPM_T + PPM_T_NAMES + slot * PPM_NAME_BYTES, "",
-                     k_pp_short[m] ? (const uint8_t *)k_pp_short[m] : s_pp_names[m]);
-        psx_mod_write_word(PPM_T + PPM_T_REWARDS + slot * 4u, s_pp_rewards[m]);
-        psx_mod_write_byte(PPM_T + PPM_T_ENGINE + slot, (uint8_t)PPM_SLOT);
-        psx_mod_write_byte(PPM_T + PPM_T_BYTE + slot, dummy_byte);
-        /* Briefing pages: Phantasma's entry v+1 is our entry 410+v+1. */
-        for (uint32_t j = 0; j < 16u; ++j) {
-            const int16_t v = s_pp_pages[m][j];
-            psx_mod_write_half(PPM_T + PPM_T_PAGES + slot * 32u + j * 2u,
-                               (uint16_t)(v < 0 ? -1 : v + (int)PPM_MIS_ENTRIES + 1));
-        }
-        /* Listed whether done or not (testing); marks come after the list. */
-        psx_mod_write_byte(PPM_T + PPM_T_FLAGS + slot, 0u);
+        psx_mod_write_byte(flag, 0u);
     }
-    ppm_install_mis_index();
-    psx_mod_counter_add("moa.phantasma-missions.view_pp", 1);
+    /* The screen reopens straight on a briefing (T+1) after some missions. */
+    const int8_t resume = (int8_t)psx_mod_read_byte(PPM_T + PPM_T_RESUME);
+    s_mode = s_next;
+    s_next = MODE_PICK;
+    if (resume == (int8_t)PPM_SLOT) s_mode = pp ? MODE_PP : MODE_MOA;
+    else if (resume >= 0) s_mode = MODE_MOA;
+    if (s_mode == MODE_PP && !pp) s_mode = MODE_PICK;
+    if (s_mode != MODE_PICK) s_last_src = s_mode;
+
+    if (s_mode == MODE_PICK) {
+        ppm_put_text(PPM_T + PPM_T_NAMES + PICK_AC * PPM_NAME_BYTES,
+                     "Armored Core (Not installed)");
+        ppm_put_text(PPM_T + PPM_T_NAMES + PICK_PP * PPM_NAME_BYTES,
+                     pp ? "Project Phantasma" : "Phantasma (Not installed)");
+        ppm_put_text(PPM_T + PPM_T_NAMES + PICK_MOA * PPM_NAME_BYTES, "Master of Arena");
+    } else if (s_mode == MODE_PP) {
+        for (uint32_t i = 0; i < PPM_MISSIONS; ++i)
+            if (ppm_pp_listed(i)) ppm_fill_row(i, i);
+        if (resume == (int8_t)PPM_SLOT)
+            ppm_fill_slot20(s_pp_pick >= 0 ? (uint32_t)s_pp_pick : ppm_current());
+    }
+    psx_mod_counter_add(s_mode == MODE_PICK ? "moa.phantasma-missions.open_picker"
+                        : s_mode == MODE_PP ? "moa.phantasma-missions.open_pp"
+                                            : "moa.phantasma-missions.open_moa", 1);
 }
 
-/* B. List builder return: done marks for finished Phantasma missions. */
+/* B. List builder return: the picker's three rows, or Phantasma's missions. */
 static void ppm_on_list(struct CPUState* cpu, uint32_t address) {
-    (void)cpu;
     (void)address;
-    if (!s_view) return;
     if (psx_mod_read_word(PPM_LIST_GUARD_PC) != PPM_LIST_GUARD_INSN) {
         psx_mod_counter_add("moa.phantasma-missions.guard_rejected", 1);
         return;
     }
-    for (uint32_t slot = 0; slot < PPM_SLOTS; ++slot)
-        if (s_slot_pp[slot] >= 0)
-            psx_mod_write_byte(PPM_T + PPM_T_FLAGS + slot, s_done[s_slot_pp[slot]] ? 0x02u : 0u);
-}
-
-/* C. The mission chosen (a3 = slot, s3 = T). */
-static void ppm_on_chosen(struct CPUState* cpu, uint32_t address) {
-    (void)address;
-    if (cpu->gpr[PPM_REG_S3] != PPM_T) return;
-    const uint32_t slot = cpu->gpr[PPM_REG_A3];
-    s_battle_pp = (s_view && slot < PPM_SLOTS) ? s_slot_pp[slot] : -1;
-}
-
-/* D. Mission result (a0 = T, v1 = T + slot, the flag just set) and leaving
- * the screen. */
-static void ppm_result(struct CPUState* cpu, int won) {
-    if (cpu->gpr[PPM_REG_A0] != PPM_T) return;
-    if (s_view && s_battle_pp >= 0 && won) {
-        s_done[s_battle_pp] = 1;
-        ppm_progress_write();
-        psx_mod_counter_add("moa.phantasma-missions.finished", 1);
+    const int resumed = (int8_t)psx_mod_read_byte(PPM_T + PPM_T_RESUME) >= 0;
+    if (s_mode == MODE_MOA) {
+        if (!resumed) psx_mod_write_byte(PPM_T + PPM_T_CURSOR, 0u);
+        return;
     }
-    ppm_restore_flags();
+    const uint32_t list = PPM_T + PPM_T_LIST;
+    uint32_t n = 0;
+    if (s_mode == MODE_PICK) {
+        psx_mod_write_byte(list + n++, (uint8_t)PICK_AC);
+        psx_mod_write_byte(list + n++, (uint8_t)PICK_PP);
+        psx_mod_write_byte(list + n++, (uint8_t)PICK_MOA);
+        /* Cursor on the source last used, else the first one installed. */
+        const int src = s_last_src != MODE_PICK ? s_last_src
+                      : ppm_load_tables() ? MODE_PP : MODE_MOA;
+        psx_mod_write_byte(PPM_T + PPM_T_CURSOR, src == MODE_PP ? 1u : 2u);
+    } else {
+        if (!resumed) psx_mod_write_byte(PPM_T + PPM_T_CURSOR, 0u);
+        const int resume = (int8_t)psx_mod_read_byte(PPM_T + PPM_T_RESUME) == (int8_t)PPM_SLOT;
+        for (uint32_t i = 0; i < PPM_MISSIONS; ++i) {
+            if (!ppm_pp_listed(i)) continue;
+            psx_mod_write_byte(list + n++,
+                               (uint8_t)(resume && (int)i == s_pp_pick ? PPM_SLOT : i));
+        }
+    }
+    for (uint32_t k = n; k < 24u; ++k) psx_mod_write_byte(list + k, 0xFFu);
+    cpu->gpr[PPM_REG_A3] = n;
+    cpu->gpr[PPM_REG_V0] = n;
 }
 
-static void ppm_on_win(struct CPUState* cpu, uint32_t address) {
+static uint32_t ppm_cursor_slot(void) {
+    const uint8_t pos = psx_mod_read_byte(PPM_T + PPM_T_CURSOR);
+    return pos < 24u ? psx_mod_read_byte(PPM_T + PPM_T_LIST + pos) : 0xFFu;
+}
+
+static int ppm_new_press(uint32_t bit) {
+    return (psx_mod_read_word(PPM_PAD_NOW) & bit) && !(psx_mod_read_word(PPM_PAD_PREV) & bit);
+}
+
+/* C. Cross on the list (andi v0,v0,0x4000 tests the new press). */
+static void ppm_on_confirm(struct CPUState* cpu, uint32_t address) {
     (void)address;
-    ppm_result(cpu, 1);
-}
-
-static void ppm_on_loss(struct CPUState* cpu, uint32_t address) {
-    (void)address;
-    ppm_result(cpu, 0);
-}
-
-static void ppm_on_exit(struct CPUState* cpu, uint32_t address) {
-    (void)cpu;
-    (void)address;
-    ppm_restore_flags();
-}
-
-/* ---- mission source picker ---- */
-
-static const char *const k_pps_names[PPS_ROWS] = {
-    "ARMORED CORE", "PROJECT PHANTASMA", "MASTER OF ARENA",
-};
-static const char *const k_pps_desc[PPS_ROWS] = {
-    "Not installed.", "Project Phantasma missions.", "Master of Arena missions.",
-};
-
-/* Text lives in mod memory: names at +0 (32 each), descriptions at +96
- * (40 each), an empty string at +224. */
-static uint32_t pps_text(uint32_t which) {
-    const uint32_t memory = ppm_memory();
-    return memory ? memory + PPM_MEM_STR + which : 0u;
-}
-
-static void pps_write_text(void) {
-    const uint32_t base = pps_text(0);
-    if (!base) return;
-    for (uint32_t i = 0; i < PPM_MEM_STR_BYTES; ++i) psx_mod_write_byte(base + i, 0u);
-    for (uint32_t r = 0; r < PPS_ROWS; ++r) {
-        for (uint32_t i = 0; k_pps_names[r][i]; ++i)
-            psx_mod_write_byte(base + r * 32u + i, (uint8_t)k_pps_names[r][i]);
-        for (uint32_t i = 0; k_pps_desc[r][i]; ++i)
-            psx_mod_write_byte(base + 96u + r * 40u + i, (uint8_t)k_pps_desc[r][i]);
+    if (!(cpu->gpr[PPM_REG_V0] & PPM_PAD_CROSS) || !ppm_new_press(PPM_PAD_CROSS)) return;
+    const uint32_t slot = ppm_cursor_slot();
+    if (s_mode == MODE_PICK) {
+        cpu->gpr[PPM_REG_V0] &= ~PPM_PAD_CROSS;     /* no briefing */
+        if (slot == PICK_PP && ppm_load_tables()) s_next = MODE_PP;
+        else if (slot == PICK_MOA) s_next = MODE_MOA;
+        else { psx_mod_counter_add("moa.phantasma-missions.pick_unavailable", 1); return; }
+        s_fake_cancel = 1;
+        s_reopen = 1;
+    } else if (s_mode == MODE_PP && slot < PPM_MISSIONS) {
+        /* The briefing and everything after it read slot 20. */
+        ppm_fill_slot20(slot);
+        psx_mod_write_byte(PPM_T + PPM_T_LIST + psx_mod_read_byte(PPM_T + PPM_T_CURSOR),
+                           (uint8_t)PPM_SLOT);
+        psx_mod_counter_add("moa.phantasma-missions.picked", 1);
     }
 }
 
-static int pps_greyed(uint32_t row) {
-    return row == PPS_SOURCE_AC || (row == PPS_SOURCE_PP && !ppm_pp_available());
-}
-
-/* P1. The mission screen's fade is set up (v0 = fade + 0x80, +4 callback). */
-static void pps_on_fade(struct CPUState* cpu, uint32_t address) {
+/* D. Circle: a source list backs out to the picker; a picker choice leaves
+ * the screen the same way. */
+static void ppm_on_cancel(struct CPUState* cpu, uint32_t address) {
     (void)address;
-    const uint32_t fade = cpu->gpr[PPM_REG_V0];
-    if ((fade >> 24) != 0x80u || psx_mod_read_word(fade + 4u) != PPS_MISSION_CB) return;
-    if (!pps_text(0)) return;
-    pps_write_text();
-    psx_mod_write_word(fade + 4u, PPS_LIST_CB);
-    s_picker = 1;
-    psx_mod_counter_add("moa.phantasma-missions.picker_opened", 1);
+    if (s_fake_cancel) { cpu->gpr[PPM_REG_V0] |= PPM_PAD_CIRCLE; return; }
+    if (s_mode != MODE_PICK && (cpu->gpr[PPM_REG_V0] & PPM_PAD_CIRCLE) &&
+        ppm_new_press(PPM_PAD_CIRCLE)) {
+        s_next = MODE_PICK;
+        s_reopen = 1;
+    }
 }
 
-static void pps_set_v0(struct CPUState* cpu, uint32_t address) {
-    if (!s_picker) return;
-    cpu->gpr[PPM_REG_V0] = address == PPS_BRANCH_A_PC ? 1u : 0u;
-}
-
-/* P2. The list task is made (v0). */
-static void pps_on_made(struct CPUState* cpu, uint32_t address) {
+static void ppm_on_cancel_prev(struct CPUState* cpu, uint32_t address) {
     (void)address;
-    if (!s_picker) return;
-    const uint32_t task = cpu->gpr[PPM_REG_V0];
-    if ((task >> 24) != 0x80u) { s_picker = 0; return; }
-    for (uint32_t i = 0; i < 9u; ++i)
-        psx_mod_write_byte(task + PPS_LIST_FLAGS + i, i < PPS_ROWS && !pps_greyed(i) ? 0u : 0x02u);
-    uint32_t row = s_source;
-    if (row >= PPS_ROWS || pps_greyed(row)) row = PPS_SOURCE_MOA;
-    psx_mod_write_byte(task + PPS_LIST_ROW, (uint8_t)row);
-    psx_mod_write_byte(task + PPS_LIST_TOP, 0u);
+    if (!s_fake_cancel) return;
+    cpu->gpr[PPM_REG_V0] = 0;
+    s_fake_cancel = 0;
 }
 
-/* P3. Window height, bars, cursor and arrow limits, text. */
-static void pps_window(struct CPUState* cpu, uint32_t address) {
+/* E. A row's done mark: Phantasma's own progress; none in the picker. */
+static void ppm_on_mark(struct CPUState* cpu, uint32_t address) {
     (void)address;
-    if (s_picker && cpu->gpr[PPM_REG_A3] == 0x60u) cpu->gpr[PPM_REG_A3] = PPS_WINDOW_H;
+    const uint32_t slot = cpu->gpr[PPM_REG_T0];
+    if (s_mode == MODE_PICK) cpu->gpr[PPM_REG_V0] = 0;
+    else if (s_mode == MODE_PP && slot < PPM_MISSIONS)
+        cpu->gpr[PPM_REG_V0] = s_done[slot] ? 2u : 0u;
 }
 
-static void pps_bars(struct CPUState* cpu, uint32_t address) {
+/* F. Rewards: none in the picker (the guest's own drawing call is skipped;
+ * its closing sync call still runs). */
+static int ppm_reward_filter(struct CPUState* cpu, uint32_t address) {
     (void)address;
-    if (s_picker && (int32_t)cpu->gpr[PPM_REG_V0] >= (int32_t)PPS_ROWS) cpu->gpr[PPM_REG_V0] = 4u;
+    if (s_mode != MODE_PICK || psx_mod_read_word(PPM_REWARD_GUARD) != PPM_REWARD_GUARD_I) return 0;
+    (void)psx_mod_call_guest(cpu, PPM_SYNC_FN, cpu->gpr[PPM_REG_RA], 0, 0, 0, 0);
+    return 1;
 }
 
-static void pps_down(struct CPUState* cpu, uint32_t address) {
+/* G. When the screen closes for a picker choice or a back-out, open it
+ * again instead of handing control back to the hub (the hub is still
+ * waiting on the mission screen, as when it first opened it). */
+static int ppm_resume_filter(struct CPUState* cpu, uint32_t address) {
     (void)address;
-    if (s_picker) cpu->gpr[PPM_REG_V0] = PPS_ROWS - 1u;   /* last row: try to scroll */
+    if (!s_reopen) return 0;
+    s_reopen = 0;
+    if (cpu->gpr[PPM_REG_RA] != PPM_RESUME_GUARD + 8u ||
+        psx_mod_read_word(PPM_RESUME_GUARD) != PPM_RESUME_GUARD_I ||
+        psx_mod_read_word(PPM_OPEN_FN + 8u) != PPM_OPEN_GUARD_I) {
+        psx_mod_counter_add("moa.phantasma-missions.guard_rejected", 1);
+        s_next = MODE_PICK;
+        return 0;
+    }
+    (void)psx_mod_call_guest(cpu, PPM_OPEN_FN, cpu->gpr[PPM_REG_RA], 0, 0, 0, 0);
+    psx_mod_counter_add("moa.phantasma-missions.reopen", 1);
+    return 1;
 }
 
-static void pps_scroll(struct CPUState* cpu, uint32_t address) {
+/* I. Mission result (0x80093CD8, run when the player returns from a
+ * mission). It copies the saved progress block (0x8004AC50) into T and, for
+ * a story-mode success, advances Master of Arena's chapter and progress
+ * points; the chapter also unlocks MoA's missions and mail. A Phantasma
+ * mission (slot 20) must not move MoA's story: the routine runs with mode
+ * and chapter hidden from it, so only slot 20's done/failed flag is set,
+ * then MoA's chapter, mode, points and success/failure counts are put back. */
+#define PPM_RESULT_FN       0x80093CD8u
+#define PPM_RESULT_ENTRY    0x27BDFFE8u
+#define PPM_RESULT_GUARD    0x80093CECu
+#define PPM_RESULT_GUARD_I  0x2442AC50u  /* addiu v0,v0,-0x53b0 */
+#define PPM_SAVED           0x8004AC50u  /* saved copy of T+0..T+43 */
+static int s_in_result;                  /* the filter's own call of the routine */
+static int ppm_result_filter(struct CPUState* cpu, uint32_t address) {
     (void)address;
-    if (s_picker) cpu->gpr[PPM_REG_V0] = cpu->gpr[PPM_REG_V1];   /* never scrolls */
+    if (s_in_result || psx_mod_read_word(PPM_RESULT_GUARD) != PPM_RESULT_GUARD_I ||
+        psx_mod_read_byte(PPM_SAVED) != PPM_SLOT)
+        return 0;
+    const uint8_t chapter = psx_mod_read_byte(PPM_SAVED + PPM_T_CHAPTER);
+    const uint8_t mode = psx_mod_read_byte(PPM_SAVED + 4u);
+    const uint8_t points = psx_mod_read_byte(PPM_SAVED + 5u);
+    const uint32_t wins = psx_mod_read_word(PPM_SAVED + 0xCu);
+    const uint32_t losses = psx_mod_read_word(PPM_SAVED + 0x10u);
+    psx_mod_write_byte(PPM_SAVED + PPM_T_CHAPTER, 0u);
+    psx_mod_write_byte(PPM_SAVED + 4u, 0u);
+    s_in_result = 1;
+    (void)psx_mod_call_guest(cpu, PPM_RESULT_FN, cpu->gpr[PPM_REG_RA], cpu->gpr[PPM_REG_A0],
+                             cpu->gpr[PPM_REG_A1], cpu->gpr[6], cpu->gpr[PPM_REG_A3]);
+    s_in_result = 0;
+    psx_mod_write_byte(PPM_SAVED + PPM_T_CHAPTER, chapter);
+    psx_mod_write_byte(PPM_SAVED + 4u, mode);
+    psx_mod_write_byte(PPM_T + PPM_T_CHAPTER, chapter);
+    psx_mod_write_byte(PPM_T + 4u, mode);
+    psx_mod_write_byte(PPM_T + 5u, points);
+    psx_mod_write_word(PPM_T + 0xCu, wins);
+    psx_mod_write_word(PPM_T + 0x10u, losses);
+    psx_mod_counter_add("moa.phantasma-missions.result_kept_apart", 1);
+    return 1;
 }
 
-static void pps_arrow(struct CPUState* cpu, uint32_t address) {
-    (void)address;
-    if (s_picker) cpu->gpr[PPM_REG_V0] = 0u;
-}
-
-static void pps_name(struct CPUState* cpu, uint32_t address) {
-    (void)address;
-    if (!s_picker) return;
-    const uint32_t item = cpu->gpr[PPM_REG_S1];
-    const uint32_t text = pps_text(item < PPS_ROWS ? item * 32u : 224u);
-    if (text) cpu->gpr[PPM_REG_A1] = text;
-}
-
-static void pps_desc(struct CPUState* cpu, uint32_t address) {
-    (void)address;
-    if (!s_picker) return;
-    const uint32_t item = cpu->gpr[PPM_REG_S1];
-    if (item >= PPS_ROWS) return;
-    uint32_t text = pps_text(96u + item * 40u);
-    if (item == PPS_SOURCE_PP && pps_greyed(item)) text = pps_text(96u);   /* "Not installed." */
-    if (text) cpu->gpr[PPM_REG_A1] = text;
-}
-
-/* P4. Confirmed: once the window has closed (v0 == v1), the list task (s0)
- * becomes the mission screen's loader instead of opening an arena. */
-static void pps_chosen(struct CPUState* cpu, uint32_t address) {
-    (void)address;
-    if (!s_picker) return;
-    if (cpu->gpr[PPM_REG_V0] != cpu->gpr[PPM_REG_V1]) return;   /* still closing */
-    const uint32_t task = cpu->gpr[PPM_REG_S0];
-    const uint32_t row = psx_mod_read_byte(task + PPS_LIST_ROW) + psx_mod_read_byte(task + PPS_LIST_TOP);
-    s_source = (uint8_t)(row < PPS_ROWS ? row : PPS_SOURCE_MOA);
-    psx_mod_write_byte(task + PPS_TASK_READY, 1u);
-    psx_mod_write_word(task + PPS_TASK_UPDATE, PPS_MISSION_CB);
-    cpu->gpr[PPM_REG_V0] = cpu->gpr[PPM_REG_V1] + 4u;   /* skip the arena */
-    s_picker = 0;
-    psx_mod_counter_add(s_source == PPS_SOURCE_PP ? "moa.phantasma-missions.picked_pp"
-                                                  : "moa.phantasma-missions.picked_moa", 1);
-}
-
-/* Cancelled: close the mission header, not the arena's. */
-static void pps_cancel(struct CPUState* cpu, uint32_t address) {
-    (void)address;
-    if (!s_picker || cpu->gpr[PPM_REG_A0] != PPS_ARENA_HEADER) return;
-    cpu->gpr[PPM_REG_A0] = PPS_MISSION_HEADER;
-    s_picker = 0;
-}
-
-/* E. Battle engine loads while engine mission 20 runs a Phantasma mission. */
+/* H. Battle engine loads while slot 20 loads. */
 static int ppm_ready(uint32_t *mission) {
     if (psx_mod_read_byte(PPM_MISSION_ADDR) != PPM_SLOT) return 0;
-    if (s_battle_pp < 0 || (uint32_t)s_battle_pp >= PPM_MISSIONS) return 0;
+    const uint32_t m = s_pp_pick >= 0 ? (uint32_t)s_pp_pick : ppm_current();
+    if (m >= PPM_MISSIONS) return 0;
     if (!ppm_install_pack()) return 0;
-    *mission = (uint32_t)s_battle_pp;
+    *mission = m;
     return 1;
 }
 
@@ -897,9 +872,11 @@ static void ppm_map(struct CPUState* cpu, uint32_t address) {
 static void ppm_activate(void) {
     s_ppm_memory = 0; /* this session's plan gets its own allocation */
     s_done_read = 0;
-    s_picker = 0;
-    s_view = 0;
-    s_battle_pp = -1;
+    s_mode = s_next = MODE_PICK;
+    s_fake_cancel = s_reopen = 0;
+    s_in_result = 0;
+    s_pp_pick = -1;
+    s_last_src = MODE_PICK;
 }
 
 PSX_MOD_CONSTRUCTOR(psx_register_moa_phantasma_missions) {
@@ -907,29 +884,15 @@ PSX_MOD_CONSTRUCTOR(psx_register_moa_phantasma_missions) {
     (void)psx_mod_register_activation_plugin(id, ppm_activate);
     (void)psx_mod_register_instruction_plugin(id, PPM_TABLE_PC, PPM_TABLE_INSN, ppm_on_table);
     (void)psx_mod_register_instruction_plugin(id, PPM_LIST_PC, PPM_LIST_INSN, ppm_on_list);
-    (void)psx_mod_register_instruction_plugin(id, PPM_CHOSEN_PC, PPM_CHOSEN_INSN, ppm_on_chosen);
-    (void)psx_mod_register_instruction_plugin(id, PPM_WIN_PC, PPM_WIN_INSN, ppm_on_win);
-    (void)psx_mod_register_instruction_plugin(id, PPM_LOSS_PC, PPM_LOSS_INSN, ppm_on_loss);
-    (void)psx_mod_register_instruction_plugin(id, PPM_EXIT_PC, PPM_EXIT_INSN, ppm_on_exit);
+    (void)psx_mod_register_instruction_plugin(id, PPM_CONFIRM_PC, PPM_ANDI_CROSS, ppm_on_confirm);
+    (void)psx_mod_register_instruction_plugin(id, PPM_CANCEL_PC, PPM_ANDI_CIRCLE, ppm_on_cancel);
+    (void)psx_mod_register_instruction_plugin(id, PPM_CANCEL_PREV_PC, PPM_ANDI_CIRCLE, ppm_on_cancel_prev);
+    (void)psx_mod_register_instruction_plugin(id, PPM_MARK_PC, PPM_MARK_INSN, ppm_on_mark);
+    (void)psx_mod_register_function_filter_plugin(id, PPM_REWARD_FN, ppm_reward_filter);
+    (void)psx_mod_register_function_filter_plugin(id, PPM_RESUME_FN, ppm_resume_filter);
+    (void)psx_mod_register_function_filter_plugin(id, PPM_RESULT_FN, ppm_result_filter);
     (void)psx_mod_register_instruction_plugin(id, PPM_TEX_PC, PPM_TEX_INSN, ppm_textures);
     (void)psx_mod_register_instruction_plugin(id, PPM_COMMON_PC, PPM_COMMON_INSN, ppm_common);
     (void)psx_mod_register_instruction_plugin(id, PPM_CODE_PC, PPM_CODE_INSN, ppm_code);
     (void)psx_mod_register_instruction_plugin(id, PPM_MAP_PC, PPM_MAP_INSN, ppm_map);
-    /* Source picker. */
-    (void)psx_mod_register_instruction_plugin(id, PPS_FADE_PC, PPS_FADE_INSN, pps_on_fade);
-    (void)psx_mod_register_instruction_plugin(id, PPS_BRANCH_A_PC, PPS_BRANCH_A_INSN, pps_set_v0);
-    (void)psx_mod_register_instruction_plugin(id, PPS_BRANCH_B_PC, PPS_BRANCH_B_INSN, pps_set_v0);
-    (void)psx_mod_register_instruction_plugin(id, PPS_MADE_PC, PPS_MADE_INSN, pps_on_made);
-    (void)psx_mod_register_instruction_plugin(id, PPS_OPEN_PC, PPS_WINDOW_INSN, pps_window);
-    (void)psx_mod_register_instruction_plugin(id, PPS_CLOSE_A_PC, PPS_CLOSE_INSN, pps_window);
-    (void)psx_mod_register_instruction_plugin(id, PPS_CLOSE_B_PC, PPS_CLOSE_INSN, pps_window);
-    (void)psx_mod_register_instruction_plugin(id, PPS_BARS_PC, PPS_BARS_INSN, pps_bars);
-    (void)psx_mod_register_instruction_plugin(id, PPS_DOWN_PC, PPS_DOWN_INSN, pps_down);
-    (void)psx_mod_register_instruction_plugin(id, PPS_SCROLL_PC, PPS_SCROLL_INSN, pps_scroll);
-    (void)psx_mod_register_instruction_plugin(id, PPS_ARROW_PC, PPS_ARROW_INSN, pps_arrow);
-    (void)psx_mod_register_instruction_plugin(id, PPS_NAME_PC, PPS_TEXT_INSN, pps_name);
-    (void)psx_mod_register_instruction_plugin(id, PPS_DESC_PC, PPS_TEXT_INSN, pps_desc);
-    (void)psx_mod_register_instruction_plugin(id, PPS_CHOSEN_PC, PPS_CHOSEN_INSN, pps_chosen);
-    (void)psx_mod_register_instruction_plugin(id, PPS_CANCEL_PC, PPS_FIND_INSN, pps_cancel);
-    (void)psx_mod_register_instruction_plugin(id, PPS_FADE_CANCEL_PC, PPS_FIND_INSN, pps_cancel);
 }

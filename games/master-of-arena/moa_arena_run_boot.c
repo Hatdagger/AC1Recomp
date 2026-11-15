@@ -562,7 +562,7 @@ static void run_result_entry(struct CPUState *cpu, uint32_t address)
             run_credit_hold = 0;
             const uint32_t now = psx_mod_read_word(RUN_CREDITS);
             if (now != run_credit_value) {
-                run_log("win: arena reward %d undone (credits %u -> %u)",
+                run_log("win: arena reward off by %d, credits %u -> %u",
                         (int)(now - run_credit_value), (unsigned)now, (unsigned)run_credit_value);
                 psx_mod_write_word(RUN_CREDITS, run_credit_value);
                 psx_mod_counter_add("moa.run.reward_undone", 1);
@@ -592,6 +592,8 @@ static void run_result_entry(struct CPUState *cpu, uint32_t address)
     const uint8_t who = psx_mod_read_byte(RUN_FIGHT_OPPONENT);
     if (flags < 0x80000000u || flags >= 0x80200000u || who >= MOA_RUN_SLOTS ||
         psx_mod_read_byte(flags + who) == 1u) {
+        run_credit_value = psx_mod_read_word(RUN_CREDITS);
+        run_credit_hold = 1;
         psx_mod_counter_add("moa.run.refight", 1);
         run_log("win: refight, nothing paid");
         return;
@@ -602,7 +604,7 @@ static void run_result_entry(struct CPUState *cpu, uint32_t address)
      * credits are the run's P: if not, leave them (and say so). */
     const uint32_t credits = psx_mod_read_word(RUN_CREDITS);
     if (credits != had) psx_mod_counter_add("moa.run.credits_mismatch", 1);
-    psx_mod_write_word(RUN_CREDITS, run_state.run.points);
+    psx_mod_write_word(RUN_CREDITS, run_state.run.points - 1u);   /* the game pays the 1 */
     run_credit_value = run_state.run.points;
     run_credit_hold = 1;
     run_log("win: P %u -> %u (credits were %u)", (unsigned)had,
@@ -776,8 +778,9 @@ static void run_apply_fix(int kind, uint32_t buf, uint32_t bytes)
     for (uint32_t e = 0; e + 1u < MOA_RUN_SLOTS; ++e) {   /* entry 49: the player */
         uint8_t *rec = out + e * stride;
         const struct moa_run_pick p = run_state.lineup.slot[MOA_RUN_SLOTS - 1u - e];
-        if (kind == KIND_REWARDS) {                       /* P comes from the run */
+        if (kind == KIND_REWARDS) {                       /* every win pays 1 P (the game's own prize screen) */
             memset(rec, 0, 4);
+            rec[0] = 1;
             memset(rec + 4, 0xFF, 4);
             continue;
         }

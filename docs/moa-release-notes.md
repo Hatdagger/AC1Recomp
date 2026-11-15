@@ -22,3 +22,6 @@ This is a test release. Please report problems in this repository's Issues
   its missions; back out to return to the picker. The "PP:" and "M:" name
   prefixes are gone. While Phantasma missions are being tested, its list shows
   all of them except the ones that still hang (1, 7, 9, 11 and 14).
+- **Phantasma missions no longer advance Master of Arena's story:** finishing
+  one used to move MoA's chapter forward, unlocking MoA missions and mail
+  early. Now only Phantasma's own progress changes.

@@ -63,7 +63,7 @@ mod_function_entry_funcs = [
     # boot exe: archive sector read (instant loading, mod_builtin_moa_loading.c)
     "0x800167A0",
     # menu: mission source picker (mod_builtin_moa_phantasma.c)
-    "0x80095058", "0x80056528",
+    "0x80095058", "0x80056528", "0x80093CD8",
 ]
 
 # Instruction hooks of the game's plugins (psxrecomp/runtime/src/

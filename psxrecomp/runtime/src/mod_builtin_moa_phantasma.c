@@ -774,6 +774,46 @@ static int ppm_resume_filter(struct CPUState* cpu, uint32_t address) {
     return 1;
 }
 
+/* I. Mission result (0x80093CD8, run when the player returns from a
+ * mission). It copies the saved progress block (0x8004AC50) into T and, for
+ * a story-mode success, advances Master of Arena's chapter and progress
+ * points; the chapter also unlocks MoA's missions and mail. A Phantasma
+ * mission (slot 20) must not move MoA's story: the routine runs with mode
+ * and chapter hidden from it, so only slot 20's done/failed flag is set,
+ * then MoA's chapter, mode, points and success/failure counts are put back. */
+#define PPM_RESULT_FN       0x80093CD8u
+#define PPM_RESULT_ENTRY    0x27BDFFE8u
+#define PPM_RESULT_GUARD    0x80093CECu
+#define PPM_RESULT_GUARD_I  0x2442AC50u  /* addiu v0,v0,-0x53b0 */
+#define PPM_SAVED           0x8004AC50u  /* saved copy of T+0..T+43 */
+static int s_in_result;                  /* the filter's own call of the routine */
+static int ppm_result_filter(struct CPUState* cpu, uint32_t address) {
+    (void)address;
+    if (s_in_result || psx_mod_read_word(PPM_RESULT_GUARD) != PPM_RESULT_GUARD_I ||
+        psx_mod_read_byte(PPM_SAVED) != PPM_SLOT)
+        return 0;
+    const uint8_t chapter = psx_mod_read_byte(PPM_SAVED + PPM_T_CHAPTER);
+    const uint8_t mode = psx_mod_read_byte(PPM_SAVED + 4u);
+    const uint8_t points = psx_mod_read_byte(PPM_SAVED + 5u);
+    const uint32_t wins = psx_mod_read_word(PPM_SAVED + 0xCu);
+    const uint32_t losses = psx_mod_read_word(PPM_SAVED + 0x10u);
+    psx_mod_write_byte(PPM_SAVED + PPM_T_CHAPTER, 0u);
+    psx_mod_write_byte(PPM_SAVED + 4u, 0u);
+    s_in_result = 1;
+    (void)psx_mod_call_guest(cpu, PPM_RESULT_FN, cpu->gpr[PPM_REG_RA], cpu->gpr[PPM_REG_A0],
+                             cpu->gpr[PPM_REG_A1], cpu->gpr[6], cpu->gpr[PPM_REG_A3]);
+    s_in_result = 0;
+    psx_mod_write_byte(PPM_SAVED + PPM_T_CHAPTER, chapter);
+    psx_mod_write_byte(PPM_SAVED + 4u, mode);
+    psx_mod_write_byte(PPM_T + PPM_T_CHAPTER, chapter);
+    psx_mod_write_byte(PPM_T + 4u, mode);
+    psx_mod_write_byte(PPM_T + 5u, points);
+    psx_mod_write_word(PPM_T + 0xCu, wins);
+    psx_mod_write_word(PPM_T + 0x10u, losses);
+    psx_mod_counter_add("moa.phantasma-missions.result_kept_apart", 1);
+    return 1;
+}
+
 /* H. Battle engine loads while slot 20 loads. */
 static int ppm_ready(uint32_t *mission) {
     if (psx_mod_read_byte(PPM_MISSION_ADDR) != PPM_SLOT) return 0;
@@ -834,6 +874,7 @@ static void ppm_activate(void) {
     s_done_read = 0;
     s_mode = s_next = MODE_PICK;
     s_fake_cancel = s_reopen = 0;
+    s_in_result = 0;
     s_pp_pick = -1;
     s_last_src = MODE_PICK;
 }
@@ -849,6 +890,7 @@ PSX_MOD_CONSTRUCTOR(psx_register_moa_phantasma_missions) {
     (void)psx_mod_register_instruction_plugin(id, PPM_MARK_PC, PPM_MARK_INSN, ppm_on_mark);
     (void)psx_mod_register_function_filter_plugin(id, PPM_REWARD_FN, ppm_reward_filter);
     (void)psx_mod_register_function_filter_plugin(id, PPM_RESUME_FN, ppm_resume_filter);
+    (void)psx_mod_register_function_filter_plugin(id, PPM_RESULT_FN, ppm_result_filter);
     (void)psx_mod_register_instruction_plugin(id, PPM_TEX_PC, PPM_TEX_INSN, ppm_textures);
     (void)psx_mod_register_instruction_plugin(id, PPM_COMMON_PC, PPM_COMMON_INSN, ppm_common);
     (void)psx_mod_register_instruction_plugin(id, PPM_CODE_PC, PPM_CODE_INSN, ppm_code);

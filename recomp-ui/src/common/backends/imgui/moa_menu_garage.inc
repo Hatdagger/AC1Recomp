@@ -475,7 +475,7 @@ static void draw_data_page(LauncherModel* m, const Gfx& g, const Input& in) {
 
 static void draw_performance_page(LauncherModel* m, const Gfx& g, const Input& in) {
     const bool have = parts_ready(m);
-    moa_performance q{};
+    struct moa_performance q{};
     if (have) moa_performance(&g_parts, g_garage.rec, &q);
     header(g, "PERFORMANCE", "EXTRA GARAGE");
     const float top = 62.0f;
@@ -586,7 +586,7 @@ static void draw_garage_page(LauncherModel* m, const Gfx& g, const Input& in) {
         if (design && (i == D_AC_NAME || i == D_PILOT)) {
             const int which = i == D_AC_NAME ? 1 : 2;
             const std::string v = name_shown(which);
-            text_right(g, lx + lw - 10.0f, y + eh - 13.0f, 9.0f, g_name_edit == which ? kHi : kDim, upper(v).c_str());
+            text_right(g, lx + lw - 10.0f, y + eh - 13.0f, 9.0f, g_name_edit == which ? kHi : kDim, upper(v.c_str()).c_str());
         }
         const ImVec2 r0 = at(g, lx, y), r1 = at(g, lx + lw, y + eh);
         if (!naming && ImGui::IsMouseHoveringRect(r0, r1)) {

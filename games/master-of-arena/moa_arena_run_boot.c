@@ -281,6 +281,7 @@ static void run_reach_hub(const char *why)
     run_ticks = 0;
     psx_mod_request_fast_forward(0);
     psx_mod_counter_add(why, 1);
+    run_log("boot: %s (frame %u)", why, (unsigned)run_frames);
 }
 
 /* ---- hooks -------------------------------------------------------------------- */
@@ -296,6 +297,7 @@ static void run_menu_entry(struct CPUState *cpu, uint32_t address)
     run_stage = STAGE_TITLE;
     run_set_ff(1);
     psx_mod_counter_add("moa.run.boot", 1);
+    run_log("boot: menu reached, autopilot on");
 }
 
 static void run_title_open_entry(struct CPUState *cpu, uint32_t address)
@@ -333,7 +335,10 @@ static void run_newgame_entry(struct CPUState *cpu, uint32_t address)
     const uint32_t st = cpu->gpr[4];
     if (st < 0x80000000u || st >= 0x80200000u) return;
     psx_mod_write_byte(st + RUN_NEWGAME_CURSOR, 0);      /* LOAD GAME: the run's card */
-    if (run_stage != STAGE_LOADGAME) psx_mod_counter_add("moa.run.load_game", 1);
+    if (run_stage != STAGE_LOADGAME) {
+        psx_mod_counter_add("moa.run.load_game", 1);
+        run_log("boot: new game / load game menu (frame %u)", (unsigned)run_frames);
+    }
     run_stage = STAGE_LOADGAME;
     run_newgame_seen = run_frames;
 }
@@ -345,7 +350,10 @@ static void run_menu_input_entry(struct CPUState *cpu, uint32_t address)
     const uint32_t w = psx_mod_read_word(address);
     if (w != RUN_SIG_INPUT_A && w != RUN_SIG_INPUT_B) return;
     if (run_stage == STAGE_LOADGAME && run_frames - run_newgame_seen > 10u)
+    {
         run_stage = STAGE_LOADING;                       /* that menu has closed */
+        run_log("boot: loading the run's save (frame %u)", (unsigned)run_frames);
+    }
     /* One button held for 3 samples out of every 24: START on the title,
      * then X on LOAD GAME and through the load screens (all defaults: slot 1,
      * the card's one save, yes). */

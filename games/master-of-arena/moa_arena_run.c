@@ -414,6 +414,13 @@ int moa_run_write_card(const char *card_path, const struct moa_run_state *s)
     static uint8_t block[8192];
     char path[1100];
     moa_run_card_path(card_path, path, sizeof path);
+    /* A fresh card each start: a card left by an earlier session once kept
+     * the next run from booting (removing it fixed that), so the old card
+     * and any half-written copy beside it go first. */
+    char tmp[1110];
+    snprintf(tmp, sizeof tmp, "%s.tmp", path);
+    remove(tmp);
+    remove(path);
     moa_run_make_save(s, block);
     const uint8_t *blocks[1] = { block };
     return moa_memcard_write_blocks(path, blocks, 1);

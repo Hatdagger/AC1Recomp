@@ -126,7 +126,7 @@ static void synth_click(LauncherPlatform* p, float x, float y) {
     SDL_PushEvent(&e);
 }
 
-static void synth_key(SDL_Keycode key) {
+static void synth_key(LauncherPlatform* p, SDL_Keycode key) {
     SDL_Scancode sc = SDL_GetScancodeFromKey(key
 #if defined(LNG_SDL3)
         , NULL
@@ -139,6 +139,8 @@ static void synth_key(SDL_Keycode key) {
     e.key.key = key;
     e.key.scancode = sc;
     e.key.down = true;
+    /* The imgui SDL3 backend drops key events for an unknown window. */
+    e.key.windowID = SDL_GetWindowID(p->window);
 #else
     e.key.keysym.sym = key;
     e.key.keysym.scancode = sc;
@@ -216,10 +218,10 @@ static bool launcher_debug_step_impl(LauncherPlatform* p, LauncherModel* m) {
         float x = 0, y = 0;
         if (sscanf(c + 6, "%f,%f", &x, &y) == 2) synth_click(p, x, y);
     } else if (strncmp(c, "key:", 4) == 0) {
-        if (strcmp(c + 4, "escape") == 0) synth_key(SDLK_ESCAPE);
+        if (strcmp(c + 4, "escape") == 0) synth_key(p, SDLK_ESCAPE);
         else {
             SDL_Keycode k = SDL_GetKeyFromName(c + 4);
-            if (k != SDLK_UNKNOWN) synth_key(k);
+            if (k != SDLK_UNKNOWN) synth_key(p, k);
             else fprintf(stderr, "[dbg] unknown key: %s\n", c + 4);
         }
     } else if (strncmp(c, "text:", 5) == 0) {

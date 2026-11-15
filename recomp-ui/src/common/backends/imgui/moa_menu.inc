@@ -801,7 +801,7 @@ static void draw_extras_page(LauncherModel* m, const Gfx& g, const Input& in) {
              "Lets ASSEMBLY and the AI card builder show your AC in 3D, with each "
              "part's full details. The models, textures and part figures are read "
              "here, on this computer, from your own Master of Arena disc 1 and kept "
-             "in the program's acmodels folder (about 10 MB). Nothing from the disc "
+             "in the program's acmodels folder (about 20 MB). Nothing from the disc "
              "is sent anywhere.", 560.0f);
         text(g, 38.0f, 282.0f, 11.0f, kDim, "STATUS");
         text(g, 170.0f, 282.0f, 11.0f, busy ? kHi : models ? kOn : kDim,
@@ -812,8 +812,8 @@ static void draw_extras_page(LauncherModel* m, const Gfx& g, const Input& in) {
         panel(g, 24.0f, 178.0f, 592.0f, 238.0f, "PROJECT PHANTASMA");
         text(g, 38.0f, 194.0f, 11.0f, kText,
              "Adds the 49 arena opponents of Armored Core: Project Phantasma as a "
-             "tenth Ex Arena, and its missions ('PP:', one at a time; 12 of 17 for now) at the top of "
-             "the mission list. It is built here, on this computer, from your own "
+             "tenth Ex Arena, and its missions (12 of 17 for now) under PROJECT "
+             "PHANTASMA in the mission picker. It is built here, on this computer, from your own "
              "Project Phantasma (USA) disc. Nothing from the disc is copied anywhere "
              "else.", 560.0f);
         text(g, 38.0f, 282.0f, 11.0f, kDim, "PHANTASMA DISC");

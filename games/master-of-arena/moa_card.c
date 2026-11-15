@@ -6,6 +6,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#if defined(_WIN32)
+#include <direct.h>
+#endif
 
 #include "moa_card_font.h"
 
@@ -653,7 +656,9 @@ void moa_card_to_save(const struct moa_card *c, uint8_t b[MOA_SAVE_BLOCK])
     {
         uint8_t title[64];
         memset(title, 0, sizeof title);
-        save_put_name(title, "AI BATTLE");
+        char name[24];
+        snprintf(name, sizeof name, "%s", c->ac[0] ? c->ac : "AC");
+        save_put_name(title, name);
         for (int i = 0; i < 18 && title[i] != '>'; i++) b[4 + i] = title[i];
     }
     for (int i = 0; i < 16; i++) b[0x60 + 2 * i + 1] = (uint8_t)(i ? 0x7C : 0x00);  /* icon CLUT */
@@ -736,6 +741,23 @@ int moa_memcard_write_units(const char *path, const struct moa_card *const units
     return ok;
 }
 
+/* A blank, formatted PS1 memory card image (header, 15 free directory
+ * frames, empty broken-sector list, write-test frame). */
+static void memcard_format(uint8_t *mc)
+{
+    memset(mc, 0, 131072);
+    for (int i = 0; i < 64; i++) {
+        uint8_t *fr = mc + i * 128;
+        if (i == 0 || i == 63) { fr[0] = 'M'; fr[1] = 'C'; }
+        else if (i < 16) { fr[0] = 0xA0; fr[8] = fr[9] = 0xFF; }
+        else if (i < 36) { fr[0] = fr[1] = fr[2] = fr[3] = 0xFF; fr[8] = fr[9] = 0xFF; }
+        else continue;
+        uint8_t x = 0;
+        for (int k = 0; k < 127; k++) x ^= fr[k];
+        fr[127] = x;
+    }
+}
+
 /* Add one card as a new save on an existing memory card image, in the first
  * free directory slot, under the first unused name BASLUS-01030A..Z. Every
  * other save stays as it was; the old image is kept as <path>.bak. */
@@ -747,6 +769,24 @@ int moa_memcard_add_unit(const char *path, const struct moa_card *card, char *er
     FILE *f = fopen(path, "rb");
     size_t got = 0;
     if (f) { got = fread(mc, 1, 131072, f); fclose(f); }
+    const int fresh = !f;
+    if (fresh) {   /* no card yet: start a new one, in a new folder if need be */
+        memcard_format(mc);
+        got = 131072;
+        char dir[1100];
+        snprintf(dir, sizeof dir, "%s", path);
+        for (char *q = dir + 1; *q; q++) {
+            if (*q != '/' && *q != '\\') continue;
+            const char c = *q;
+            *q = '\0';
+#if defined(_WIN32)
+            _mkdir(dir);
+#else
+            mkdir(dir, 0755);
+#endif
+            *q = c;
+        }
+    }
     if (got != 131072 || mc[0] != 'M' || mc[1] != 'C') {
         if (err) snprintf(err, err_size, "the memory card could not be read");
         free(mc);
@@ -769,8 +809,8 @@ int moa_memcard_add_unit(const char *path, const struct moa_card *card, char *er
     }
     char bak[1100];
     snprintf(bak, sizeof bak, "%s.bak", path);
-    FILE *b = fopen(bak, "wb");
-    int ok = b && fwrite(mc, 1, 131072, b) == 131072;
+    FILE *b = fresh ? NULL : fopen(bak, "wb");
+    int ok = fresh || (b && fwrite(mc, 1, 131072, b) == 131072);
     if (b && fclose(b) != 0) ok = 0;
     if (!ok) {
         if (err) snprintf(err, err_size, "the backup copy could not be written");

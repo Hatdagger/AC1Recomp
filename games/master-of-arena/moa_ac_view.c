@@ -385,7 +385,8 @@ static void put_tri(raster *r, const svtx s[3], const acv_tex *tex, const uint8_
                 ty = ty < 0 ? 0 : ty >= tex->h ? tex->h - 1 : ty;
                 const uint8_t *t = tex->rgba + 4 * (ty * tex->w + tx);
                 if (t[3] == 0) continue;                      /* see-through texel */
-                c[0] = t[0]; c[1] = t[1]; c[2] = t[2];
+                /* texel modulated by the vertex colour, 128 = 1.0 */
+                for (int k = 0; k < 3; ++k) c[k] = t[k] * rgb[k] / 128.0f;
             }
             const float l = w0 * s[0].light + w1 * s[1].light + w2 * s[2].light;
             uint8_t *o = &r->rgba[4 * (y * r->w + x)];
@@ -420,7 +421,7 @@ static void draw_tri(void *ctx, const acv_vtx t[3], const acv_tex *tex, const ui
         /* key light from the upper left front, plus ambient */
         const float len = sqrtf(nx * nx + ny * ny + nz * nz);
         const float d = len > 0 ? (nx * -0.45f + ny * 0.6f + nz * 0.66f) / len : 0.0f;
-        s[j].light = (0.55f + 0.75f * (d > 0 ? d : 0.0f)) / 128.0f * 1.6f;
+        s[j].light = 0.6f + 0.6f * (d > 0 ? d : 0.0f);
     }
     put_tri(r, s, tex, rgb);
 }

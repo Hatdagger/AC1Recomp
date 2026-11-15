@@ -62,6 +62,8 @@ mod_function_entry_funcs = [
     "0x80070F1C",
     # boot exe: archive sector read (instant loading, mod_builtin_moa_loading.c)
     "0x800167A0",
+    # menu: mission source picker (mod_builtin_moa_phantasma.c)
+    "0x80095058", "0x80056528",
 ]
 
 # Instruction hooks of the game's plugins (psxrecomp/runtime/src/
@@ -77,6 +79,8 @@ mod_instruction_sites = [
     "0x800BBEE8", "0x800BA8AC",
     # Project Phantasma missions: mission screen (menu), mission loads (engine)
     "0x8009417C", "0x800943AC",
+    # mission source picker (menu)
+    "0x800954E4", "0x800955BC", "0x800955D0", "0x8009510C",
     "0x800556B8", "0x800556D4", "0x80055874", "0x80055894",
 ]
 

@@ -17,3 +17,8 @@ This is a test release. Please report problems in this repository's Issues
 - **AI Battle time limit:** the countdown now starts at the time you pick
   (2:00 showed about 2:45 before; the arena engine counts 22 steps a second,
   not 30).
+- **Mission picker:** MISSIONS now opens a short list first: Armored Core
+  (not installed yet), Project Phantasma and Master of Arena. Pick one to see
+  its missions; back out to return to the picker. The "PP:" and "M:" name
+  prefixes are gone. While Phantasma missions are being tested, its list shows
+  all of them except the ones that still hang (1, 7, 9, 11 and 14).

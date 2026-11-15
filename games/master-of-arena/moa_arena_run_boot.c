@@ -512,6 +512,17 @@ static void run_autosave(struct CPUState *cpu)
 static void run_book_loss(const char *where)
 {
     if (!run_state_ok || run_state.run.over) return;
+    /* The ghost is the build that lost, parts bought included: the garage's
+     * AC (0x80036FB0, the save's part order) into the card record's order. */
+    {
+        uint8_t g[12];
+        for (unsigned i = 0; i < 12; i++) g[i] = psx_mod_read_byte(0x80036FB0u + i);
+        if (g[0] != 0xFF && g[2] != 0xFF && g[3] != 0xFF && g[11] != 0xFF) {
+            const uint8_t rec[13] = { g[0], g[2], g[3], g[11], g[5], g[4], g[6], g[7], g[9], g[8],
+                                      psx_mod_read_byte(0x8003EA70u), psx_mod_read_byte(0x8003EA71u), g[1] };
+            memcpy(run_state.run.start_ac, rec, sizeof rec);
+        }
+    }
     moa_run_lose(&run_state);
     (void)moa_run_save(run_file_path(), &run_state);
     run_loss_wait = RUN_LOSS_FRAMES;

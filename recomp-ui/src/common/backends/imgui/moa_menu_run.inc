@@ -115,11 +115,20 @@ static bool start_run(LauncherModel* m) {
 static void retry_run(LauncherModel* m) {
     const std::string disc = game_disc(m);
     if (disc.empty()) { note("SELECT YOUR MASTER OF ARENA DISC FIRST"); return; }
+    if (!g_run_pilot[0]) {
+        g_run_status = "ENTER A PILOT NAME FIRST.";
+        g_state.cursor[PAGE_RUN] = R_PILOT;
+        return;
+    }
     static moa_parts parts;
     if (!moa_parts_load(disc.c_str(), &parts) || !moa_run_retry(&parts, &g_run)) {
         g_run_status = "THE RUN COULD NOT BE RETRIED.";
         return;
     }
+    /* The new attempt flies under the names on the page (the ghost of the
+     * last attempt keeps the old ones). */
+    std::snprintf(g_run.run.pilot, sizeof g_run.run.pilot, "%s", g_run_pilot);
+    std::snprintf(g_run.run.ac, sizeof g_run.run.ac, "%s", g_run_ac);
     start_run(m);
 }
 

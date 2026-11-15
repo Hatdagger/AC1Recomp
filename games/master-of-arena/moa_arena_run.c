@@ -395,10 +395,8 @@ void moa_run_make_save(const struct moa_run_state *s, uint8_t b[8192])
         if (moa_record_cat(r) != MOA_CAT_BACK)       /* back weapons stay on sale */
             b[RS_SHOP + base + s->run.start_ac[r]] = 0;
     }
-    /* The new game's own starter parts, not in this AC, go on sale. */
-    static const uint8_t k_starter[] = { 5, 18, 30, 56, 93, 108, 143, 157, 197, 218, 243 };
-    for (size_t i = 0; i < sizeof k_starter; i++)
-        if (!b[RS_OWNED + k_starter[i]]) b[RS_SHOP + k_starter[i]] = 1;
+    /* The shop opens empty: restocks at ranks 45, 40 ... 5 and 1 fill it. */
+    memset(b + RS_SHOP, 0, 256);
     const uint32_t p = s->run.points;
     for (int i = 0; i < 4; i++) {
         b[RS_CREDITS + i] = (uint8_t)(p >> (8 * i));

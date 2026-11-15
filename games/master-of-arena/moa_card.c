@@ -736,6 +736,62 @@ int moa_memcard_write_units(const char *path, const struct moa_card *const units
     return ok;
 }
 
+/* Add one card as a new save on an existing memory card image, in the first
+ * free directory slot, under the first unused name BASLUS-01030A..Z. Every
+ * other save stays as it was; the old image is kept as <path>.bak. */
+int moa_memcard_add_unit(const char *path, const struct moa_card *card, char *err, size_t err_size)
+{
+    if (err && err_size) err[0] = '\0';
+    uint8_t *mc = (uint8_t *)malloc(131072);
+    if (!mc) return 0;
+    FILE *f = fopen(path, "rb");
+    size_t got = 0;
+    if (f) { got = fread(mc, 1, 131072, f); fclose(f); }
+    if (got != 131072 || mc[0] != 'M' || mc[1] != 'C') {
+        if (err) snprintf(err, err_size, "the memory card could not be read");
+        free(mc);
+        return 0;
+    }
+    int slot = -1;
+    char used[26] = { 0 };
+    for (int i = 1; i < 16; i++) {
+        const uint8_t *fr = mc + i * 128;
+        const uint32_t state = (uint32_t)fr[0] | (uint32_t)fr[1] << 8 | (uint32_t)fr[2] << 16 | (uint32_t)fr[3] << 24;
+        if ((state & 0xF0) == 0xA0) { if (slot < 0) slot = i; continue; }   /* free */
+        if (memcmp(fr + 10, "BASLUS-01030", 12) == 0 && fr[22] >= 'A' && fr[22] <= 'Z') used[fr[22] - 'A'] = 1;
+    }
+    int letter = -1;
+    for (int i = 0; i < 26 && letter < 0; i++) if (!used[i]) letter = i;
+    if (slot < 0 || letter < 0) {
+        if (err) snprintf(err, err_size, "the memory card is full");
+        free(mc);
+        return 0;
+    }
+    char bak[1100];
+    snprintf(bak, sizeof bak, "%s.bak", path);
+    FILE *b = fopen(bak, "wb");
+    int ok = b && fwrite(mc, 1, 131072, b) == 131072;
+    if (b && fclose(b) != 0) ok = 0;
+    if (!ok) {
+        if (err) snprintf(err, err_size, "the backup copy could not be written");
+        free(mc);
+        return 0;
+    }
+    char name[16];
+    snprintf(name, sizeof name, "BASLUS-01030%c", 'A' + letter);
+    mc_frame(mc + slot * 128, 0x51, 8192, name);
+    moa_card_to_save(card, mc + slot * 8192);
+    f = fopen(path, "wb");
+    ok = 0;
+    if (f) {
+        ok = fwrite(mc, 1, 131072, f) == 131072;
+        if (fclose(f) != 0) ok = 0;
+    }
+    if (!ok && err) snprintf(err, err_size, "the memory card could not be written (backup kept)");
+    free(mc);
+    return ok;
+}
+
 /* ---- format 3 payload (builder: pack) ---- */
 
 struct bit_writer { uint8_t b[160]; int pos; };

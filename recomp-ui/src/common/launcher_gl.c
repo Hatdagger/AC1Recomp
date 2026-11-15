@@ -79,6 +79,27 @@ LauncherTexture launcher_texture_load_colorkey(const char* path, int tolerance) 
     return load_impl(path, tolerance < 0 ? 0 : tolerance);
 }
 
+void launcher_texture_set_rgba(LauncherTexture* t, const unsigned char* pixels, int w, int h) {
+    if (!t || !pixels || w <= 0 || h <= 0) return;
+    GLuint tex = (GLuint)t->id;
+    const int fresh = (tex == 0 || t->w != w || t->h != h);
+    if (tex == 0) glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    if (fresh) {
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    } else {
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    }
+    glBindTexture(GL_TEXTURE_2D, 0);
+    t->id = (unsigned int)tex;
+    t->w = w; t->h = h;
+}
+
 void launcher_texture_free(LauncherTexture* t) {
     if (t && t->id) {
         GLuint id = (GLuint)t->id;

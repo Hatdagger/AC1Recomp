@@ -185,6 +185,7 @@ static bool row(const Gfx& g, float x, float y, float w, bool selected,
 
 struct Input {
     bool up, down, left, right, confirm, back, alt, start, page_up, page_down;
+    bool info;   /* TRIANGLE / Y (also counted as back elsewhere), or I */
 };
 
 static bool key(ImGuiKey k, bool repeat) { return ImGui::IsKeyPressed(k, repeat); }
@@ -213,6 +214,7 @@ static Input read_input(const LauncherModel* m) {
                key(ImGuiKey_GamepadFaceUp, false);
     in.alt   = key(ImGuiKey_Delete, false) || key(ImGuiKey_GamepadFaceLeft, false);
     in.start = key(ImGuiKey_GamepadStart, false);
+    in.info  = key(ImGuiKey_GamepadFaceUp, false) || key(ImGuiKey_I, false);
     in.page_up   = key(ImGuiKey_PageUp, true) || key(ImGuiKey_GamepadR1, true);
     in.page_down = key(ImGuiKey_PageDown, true) || key(ImGuiKey_GamepadL1, true);
     return in;
@@ -337,6 +339,16 @@ static void open_ai_page(LauncherModel* m) {
     g_ai_sub = AI_SUB_SETUP;
     g_state.cursor[PAGE_AI] = 0;
     g_state.note[0] = '\0';
+}
+
+/* ASSEMBLY from the main menu: the AC builder on its own, starting from the
+ * last AC built here this session (a new one the first time). */
+static void open_assembly(LauncherModel* m) {
+    open_ai_page(m);
+    static bool started = false;
+    if (!started) { open_build_new(); started = true; }
+    else { g_ai_sub = AI_SUB_BUILD; g_state.cursor[PAGE_AI_BUILD] = 0; g_state.top[PAGE_AI_BUILD] = 0; }
+    g_build_standalone = true;
 }
 
 static void step_ai_pick(int unit, int dir) {
@@ -764,50 +776,75 @@ static void choose_phantasma(LauncherModel* m, bool reinstall) {
 }
 
 static void draw_extras_page(LauncherModel* m, const Gfx& g, const Input& in) {
-    move_cursor(PAGE_EXTRAS, 2, in, 2);
+    models_poll();
+    move_cursor(PAGE_EXTRAS, 3, in, 3);
     int& cur = g_state.cursor[PAGE_EXTRAS];
     header(g, "EXTRAS", "BUILT FROM DISCS YOU OWN");
-    panel(g, 24.0f, 76.0f, 592.0f, 70.0f, "SELECT");
-    bool hovered0 = false, hovered1 = false;
+    panel(g, 24.0f, 76.0f, 592.0f, 96.0f, "SELECT");
+    bool hovered[3] = { false, false, false };
     const bool installed = phantasma_installed(m);
+    const bool models = models_installed();
+    const bool busy = g_models_job.load() == 1;
     const bool clicked0 = row(g, 25.0f, 90.0f, 590.0f, cur == 0,
                               true, "INSTALL DATA FROM PROJECT PHANTASMA",
-                              installed ? "INSTALLED" : "", false, false, &hovered0);
+                              installed ? "INSTALLED" : "", false, false, &hovered[0]);
     const bool clicked1 = row(g, 25.0f, 90.0f + kRowH + 2.0f, 590.0f, cur == 1,
-                              true, "REINSTALL ADDITIONAL CONTENT", "", false, false, &hovered1);
-    if (hovered0) cur = 0;
-    if (hovered1) cur = 1;
+                              true, "REINSTALL ADDITIONAL CONTENT", "", false, false, &hovered[1]);
+    const bool clicked2 = row(g, 25.0f, 90.0f + 2.0f * (kRowH + 2.0f), 590.0f, cur == 2, !busy,
+                              "INSTALL 3D AC MODELS (OPTIONAL)",
+                              busy ? "WORKING..." : models ? "INSTALLED" : "", false, false, &hovered[2]);
+    for (int i = 0; i < 3; ++i) if (hovered[i]) cur = i;
 
-    panel(g, 24.0f, 152.0f, 592.0f, 264.0f, "PROJECT PHANTASMA");
-    text(g, 38.0f, 168.0f, 11.0f, kText,
-         "Adds the 49 arena opponents of Armored Core: Project Phantasma as a "
-         "tenth Ex Arena, and its missions ('PP:', one at a time; 12 of 17 for now) at the top of "
-         "the mission list. It is built here, on this computer, from your own "
-         "Project Phantasma (USA) disc. Nothing from the disc is copied anywhere "
-         "else.", 560.0f);
-    text(g, 38.0f, 256.0f, 11.0f, kDim, "PHANTASMA DISC");
-    if (installed) {
-        text(g, 170.0f, 256.0f, 11.0f, kOn, "NOT NEEDED: ALREADY INSTALLED");
-    } else if (!g_pp_found.empty()) {
-        text(g, 170.0f, 256.0f, 11.0f, kOn, "FOUND NEXT TO YOUR GAME DISC");
-        text(g, 38.0f, 274.0f, 10.0f, kDim,
-             std::filesystem::u8path(g_pp_found).filename().u8string().c_str(), 560.0f);
+    if (cur == 2) {
+        panel(g, 24.0f, 178.0f, 592.0f, 238.0f, "3D AC MODELS");
+        text(g, 38.0f, 194.0f, 11.0f, kText,
+             "Lets ASSEMBLY and the AI card builder show your AC in 3D, with each "
+             "part's full details. The models, textures and part figures are read "
+             "here, on this computer, from your own Master of Arena disc 1 and kept "
+             "in the program's acmodels folder (about 10 MB). Nothing from the disc "
+             "is sent anywhere.", 560.0f);
+        text(g, 38.0f, 282.0f, 11.0f, kDim, "STATUS");
+        text(g, 170.0f, 282.0f, 11.0f, busy ? kHi : models ? kOn : kDim,
+             busy ? "READING YOUR DISC..." : models ? "INSTALLED (SELECT AGAIN TO REBUILD)" : "NOT INSTALLED");
+        const std::string st = models_status();
+        if (!st.empty()) text(g, 38.0f, 340.0f, 11.0f, g_models_job.load() == 3 ? kWarn : kHi, st.c_str(), 560.0f);
     } else {
-        text(g, 170.0f, 256.0f, 11.0f, kWarn, "NOT FOUND");
-        text(g, 38.0f, 274.0f, 10.0f, kText,
-             "Put the Project Phantasma disc image (.cue and .bin) in the same "
-             "folder as your Master of Arena disc and reopen this page, or "
-             "choose the file yourself: you will be asked when you select the "
-             "option. The file window belongs to the system and needs a mouse "
-             "or keyboard.", 560.0f);
+        panel(g, 24.0f, 178.0f, 592.0f, 238.0f, "PROJECT PHANTASMA");
+        text(g, 38.0f, 194.0f, 11.0f, kText,
+             "Adds the 49 arena opponents of Armored Core: Project Phantasma as a "
+             "tenth Ex Arena, and its missions ('PP:', one at a time; 12 of 17 for now) at the top of "
+             "the mission list. It is built here, on this computer, from your own "
+             "Project Phantasma (USA) disc. Nothing from the disc is copied anywhere "
+             "else.", 560.0f);
+        text(g, 38.0f, 282.0f, 11.0f, kDim, "PHANTASMA DISC");
+        if (installed) {
+            text(g, 170.0f, 282.0f, 11.0f, kOn, "NOT NEEDED: ALREADY INSTALLED");
+        } else if (!g_pp_found.empty()) {
+            text(g, 170.0f, 282.0f, 11.0f, kOn, "FOUND NEXT TO YOUR GAME DISC");
+            text(g, 38.0f, 300.0f, 10.0f, kDim,
+                 std::filesystem::u8path(g_pp_found).filename().u8string().c_str(), 560.0f);
+        } else {
+            text(g, 170.0f, 282.0f, 11.0f, kWarn, "NOT FOUND");
+            text(g, 38.0f, 300.0f, 10.0f, kText,
+                 "Put the Project Phantasma disc image (.cue and .bin) in the same "
+                 "folder as your Master of Arena disc and reopen this page, or "
+                 "choose the file yourself: you will be asked when you select the "
+                 "option. The file window belongs to the system and needs a mouse "
+                 "or keyboard.", 560.0f);
+        }
+        if (!g_pp_status.empty())
+            text(g, 38.0f, 366.0f, 11.0f, g_pp_failed ? kWarn : kHi, g_pp_status.c_str(), 560.0f);
     }
-    if (!g_pp_status.empty())
-        text(g, 38.0f, 340.0f, 11.0f, g_pp_failed ? kWarn : kHi, g_pp_status.c_str(), 560.0f);
     footer(g, "A / ENTER  SELECT      B / ESC  BACK");
 
     if (in.back) { g_state.extras_page = false; return; }
     if (clicked0 || (in.confirm && cur == 0)) choose_phantasma(m, false);
     else if (clicked1 || (in.confirm && cur == 1)) choose_phantasma(m, true);
+    else if ((clicked2 || (in.confirm && cur == 2)) && !busy) {
+        const std::string disc = game_disc(m);
+        if (disc.empty()) note("SELECT YOUR MASTER OF ARENA DISC FIRST");
+        else install_models(disc);
+    }
 }
 
 /* ---- Updates page ----------------------------------------------------------------
@@ -895,7 +932,7 @@ static void draw_updates_page(const Gfx& g, const Input& in) {
 
 /* ---- main page ------------------------------------------------------------- */
 
-enum MainEntry { MAIN_START = 0, MAIN_NETWORK, MAIN_AI_BATTLE, MAIN_EXTRAS, MAIN_SETTINGS, MAIN_MODS, MAIN_UPDATES, MAIN_EXIT };
+enum MainEntry { MAIN_START = 0, MAIN_NETWORK, MAIN_ASSEMBLY, MAIN_AI_BATTLE, MAIN_EXTRAS, MAIN_SETTINGS, MAIN_MODS, MAIN_UPDATES, MAIN_EXIT };
 
 static int enabled_mod_count(const LauncherModel* m, int* total_out) {
     int on = 0, total = 0;
@@ -943,7 +980,7 @@ static void set_ai_battle(bool on) {
 
 static void draw_main(LauncherModel* m, const Gfx& g, const Input& in) {
     struct Entry { MainEntry id; const char* label; const char* info; };
-    Entry entries[8];
+    Entry entries[9];
     int count = 0;
     entries[count++] = { MAIN_START, m->in_session ? "RESUME GAME" : "START GAME",
         m->in_session ? "Return to the game in progress."
@@ -953,6 +990,11 @@ static void draw_main(LauncherModel* m, const Gfx& g, const Input& in) {
         entries[count++] = { MAIN_NETWORK, "NETWORK PLAY",
             "Versus over LAN or online, two players. The host is player 1; "
             "the guest is player 2 and brings their own memory card." };
+    if (!m->in_session)
+        entries[count++] = { MAIN_ASSEMBLY, "ASSEMBLY",
+            "Build an AC without starting the game: parts, paint and emblem, "
+            "laid out like the game's garage. Save it as an AI card or to your "
+            "memory card for VS and network play." };
     if (!m->in_session)
         entries[count++] = { MAIN_AI_BATTLE, "AI BATTLE",
             "Watch two computer-flown ACs fight. Choose the two units from the "
@@ -1049,6 +1091,7 @@ static void draw_main(LauncherModel* m, const Gfx& g, const Input& in) {
         case MAIN_START:    if (!m->in_session) set_ai_battle(false);
                             start_game(m); break;
         case MAIN_AI_BATTLE: open_ai_page(m); break;
+        case MAIN_ASSEMBLY: open_assembly(m); break;
         case MAIN_EXTRAS:   open_extras_page(m); break;
         case MAIN_UPDATES:  open_updates_page(); break;
         case MAIN_NETWORK:  launcher_model_set_view(m, LNG_VIEW_NETPLAY_MODE); break;

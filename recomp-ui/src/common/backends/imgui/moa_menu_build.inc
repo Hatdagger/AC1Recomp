@@ -43,6 +43,8 @@ static const int kSlotCount = (int)(sizeof kSlots / sizeof kSlots[0]);
 
 static bool paint_uniform();
 
+#include "moa_menu_asm.inc"
+
 static bool parts_ready(const LauncherModel* m) {
     if (g_parts_state == 0) {
         const char* p = launcher_model_effective_rom_path(m);
@@ -131,17 +133,26 @@ static void meter_line(const Gfx& g, float x, float y, const char* label, int v,
     text_right(g, x + 240.0f, y, 10.0f, over ? (waived ? kHi : kWarn) : kText, b);
 }
 
-static void build_totals(const Gfx& g, float x, float y) {
+/* `ref`: the build as it is, to colour a candidate's totals (green better,
+ * red worse); NULL draws them plain. */
+static void build_totals(const Gfx& g, float x, float y, const struct moa_build_check* ref = nullptr) {
     struct moa_build_check t;
     moa_build_check(&g_parts, g_edit.rec, g_edit.plus, &t);
+    auto vs = [&](int v, int r, bool higher_better) -> ImU32 {
+        if (!ref || v == r) return kText;
+        return ((v > r) == higher_better) ? kBetter : kWorse;
+    };
     char b[48];
     text(g, x, y, 10.0f, kDim, "WEIGHT");
-    std::snprintf(b, sizeof b, "%d", t.weight); text_right(g, x + 240.0f, y, 10.0f, kText, b);
+    std::snprintf(b, sizeof b, "%d", t.weight);
+    text_right(g, x + 240.0f, y, 10.0f, ref ? vs(t.weight, ref->weight, false) : kText, b);
     text(g, x, y + 14.0f, 10.0f, kDim, "AP");
-    std::snprintf(b, sizeof b, "%d", t.ap); text_right(g, x + 240.0f, y + 14.0f, 10.0f, kText, b);
+    std::snprintf(b, sizeof b, "%d", t.ap);
+    text_right(g, x + 240.0f, y + 14.0f, 10.0f, ref ? vs(t.ap, ref->ap, true) : kText, b);
     text(g, x, y + 28.0f, 10.0f, kDim, "DEF. SHELL / ENERGY");
     std::snprintf(b, sizeof b, "%d / %d", t.def_shell, t.def_energy);
-    text_right(g, x + 240.0f, y + 28.0f, 10.0f, kText, b);
+    text_right(g, x + 240.0f, y + 28.0f, 10.0f,
+               ref ? vs(t.def_shell + t.def_energy, ref->def_shell + ref->def_energy, true) : kText, b);
     const bool plus = g_edit.plus > 0;
     meter_line(g, x, y + 46.0f, "LEGS LOAD", t.leg_load, t.leg_max, t.leg_over, plus);
     meter_line(g, x, y + 60.0f, "ARM LOAD", t.arm_load, t.arm_max, t.arm_over, plus);
@@ -229,7 +240,17 @@ static std::string name_shown(int which) {
 /* ---- BUILD ---- */
 
 enum { B_AC = 0, B_PILOT, B_SLOT0, B_OPTS = B_SLOT0 + 11, B_PAINT, B_EMBLEM, B_PLUS, B_AI,
-       B_SAVE, B_SAVE_NEW, B_ROWS };
+       B_SAVE, B_SAVE_NEW, B_MEMCARD, B_ROWS };
+
+/* Opened from the main menu's ASSEMBLY (not the AI Battle card list): back
+ * then returns to the main menu. */
+static bool g_build_standalone = false;
+
+static void leave_build() {
+    g_details_open = false;
+    if (g_build_standalone) { g_build_standalone = false; g_ai_sub = AI_SUB_SETUP; g_state.ai_page = false; }
+    else g_ai_sub = AI_SUB_CARDS;
+}
 
 static void open_build_new() {
     moa_card_new(&g_edit);
@@ -266,7 +287,8 @@ static bool save_build(LauncherModel* m, bool as_new) {
 }
 
 static void draw_ai_build(LauncherModel* m, const Gfx& g, const Input& in) {
-    header(g, "AC BUILDER", g_edit_path.empty() ? "NEW CARD" : upper(g_edit.ac).c_str());
+    header(g, g_build_standalone ? "ASSEMBLY" : "AC BUILDER",
+           g_edit_path.empty() ? (g_build_standalone ? "NEW AC" : "NEW CARD") : upper(g_edit.ac).c_str());
     if (!parts_ready(m)) {
         panel(g, 24.0f, 76.0f, 592.0f, 120.0f, "PARTS");
         text(g, 38.0f, 96.0f, 12.0f, kWarn, "THE PART LIST COULD NOT BE READ FROM THE GAME DISC.");
@@ -305,7 +327,8 @@ static void draw_ai_build(LauncherModel* m, const Gfx& g, const Input& in) {
         else if (i == B_PLUS) { label = "HUMAN PLUS"; value = plus_text(g_edit.plus); }
         else if (i == B_AI) { label = "AI"; value = card_ai_label(g_edit); }
         else if (i == B_SAVE) { label = "SAVE CARD"; enabled = !chk.blocked; }
-        else { label = "SAVE AS NEW CARD"; enabled = !chk.blocked; }
+        else if (i == B_SAVE_NEW) { label = "SAVE AS NEW CARD"; enabled = !chk.blocked; }
+        else { label = "SAVE TO MEMORY CARD"; value = "FOR VS"; enabled = !chk.blocked && !m->in_session; }
         bool hovered = false;
         if (row(g, 25.0f, 74.0f + kRowH * (i - top), 298.0f, i == cur, enabled, label.c_str(),
                 value.c_str(), false, false, &hovered) && !g_name_edit && !g_confirm_discard)
@@ -315,38 +338,52 @@ static void draw_ai_build(LauncherModel* m, const Gfx& g, const Input& in) {
             cur = i;
     }
 
-    panel(g, 340.0f, 62.0f, 276.0f, visible * kRowH + 12.0f, "AC");
-    if (cur >= B_SLOT0 && cur < B_OPTS) {
-        const int byte = kSlots[cur - B_SLOT0].byte;
-        part_stats(g, 354.0f, 76.0f, moa_record_cat(byte),
-                   g_edit.rec[byte] == 255 ? nullptr
-                                           : moa_parts_find(&g_parts, moa_record_cat(byte), g_edit.rec[byte]));
+    const bool on_slot = cur >= B_SLOT0 && cur < B_OPTS;
+    if (g_details_open) {
+        draw_details(g, -1);
     } else {
-        draw_emblem(g, 354.0f, 76.0f, 72.0f, g_edit);
-        text(g, 436.0f, 78.0f, 13.0f, kBright, upper(g_edit.ac).c_str());
-        text(g, 436.0f, 98.0f, 10.0f, kDim, "PILOT");
-        text(g, 436.0f, 112.0f, 11.0f, kText, upper(g_edit.pilot).c_str());
-        text(g, 436.0f, 132.0f, 10.0f, kHi, ("AI  " + card_ai_label(g_edit)).c_str());
+        panel(g, 340.0f, 62.0f, 276.0f, visible * kRowH + 12.0f, "AC");
+        draw_acv(g, 341.0f, 75.0f, 274.0f, 168.0f, g_edit);
+        draw_emblem(g, 346.0f, 80.0f, 28.0f, g_edit);
+        if (on_slot) {
+            const int byte = kSlots[cur - B_SLOT0].byte, cat = moa_record_cat(byte);
+            const moa_part* p = g_edit.rec[byte] == 255 ? nullptr : moa_parts_find(&g_parts, cat, g_edit.rec[byte]);
+            text(g, 354.0f, 250.0f, 12.0f, kBright, p ? p->name : "NONE");
+            if (p) text_right(g, 594.0f, 252.0f, 9.0f, kDim, moa_part_group(cat, p->name));
+        } else {
+            text(g, 354.0f, 250.0f, 12.0f, kBright, upper(g_edit.ac).c_str());
+            text_right(g, 594.0f, 252.0f, 9.0f, kHi, ("AI  " + card_ai_label(g_edit)).c_str());
+        }
+        build_totals(g, 354.0f, 272.0f);
     }
-    build_totals(g, 354.0f, 196.0f);
     if (g_name_edit)
-        text(g, 354.0f, 340.0f, 10.0f, kHi,
+        text(g, 354.0f, 400.0f, 10.0f, kHi,
              "UP / DOWN  LETTER   LEFT / RIGHT  MOVE   X  DELETE   A  DONE  (or type)", 250.0f);
     if (g_confirm_discard) {
         panel(g, 360.0f, 330.0f, 236.0f, 64.0f, "UNSAVED CHANGES");
         text(g, 374.0f, 346.0f, 11.0f, kWarn, "LEAVE WITHOUT SAVING?");
         text(g, 374.0f, 370.0f, 10.0f, kText, "A  LEAVE      B  STAY");
     }
-    footer(g, "A  SELECT      LEFT / RIGHT  CHANGE      B  BACK");
+    footer(g, on_slot ? "A  LIST   LEFT / RIGHT  CHANGE   Y / TRIANGLE  DETAILS   R-STICK  TURN   B  BACK"
+                      : "A  SELECT      LEFT / RIGHT  CHANGE      R-STICK  TURN AC      B  BACK");
 
     if (g_name_edit) { name_input(in); return; }
-    if (g_confirm_discard) {
-        if (in.back) { g_confirm_discard = false; return; }
-        if (in.confirm) { g_confirm_discard = false; g_edit_dirty = false; g_ai_sub = AI_SUB_CARDS; }
+    if (g_details_open) {
+        if (in.info || in.back || in.confirm) g_details_open = false;
         return;
     }
-    if (in.back) {
-        if (g_edit_dirty) g_confirm_discard = true; else g_ai_sub = AI_SUB_CARDS;
+    if (in.info && on_slot) {
+        const int byte = kSlots[cur - B_SLOT0].byte;
+        open_details(moa_record_cat(byte), g_edit.rec[byte]);
+        return;
+    }
+    if (g_confirm_discard) {
+        if (in.back) { g_confirm_discard = false; return; }
+        if (in.confirm) { g_confirm_discard = false; g_edit_dirty = false; leave_build(); }
+        return;
+    }
+    if (in.back && !in.info) {
+        if (g_edit_dirty) g_confirm_discard = true; else leave_build();
         return;
     }
     const int dir = in.left ? -1 : in.right ? 1 : 0;
@@ -390,6 +427,10 @@ static void draw_ai_build(LauncherModel* m, const Gfx& g, const Input& in) {
         g_ai_sub = AI_SUB_EDIT;
     } else if (activate == B_SAVE) save_build(m, false);
     else if (activate == B_SAVE_NEW) save_build(m, true);
+    else if (activate == B_MEMCARD) {
+        if (build_blocked()) note("THE GAME WILL NOT FIELD THIS AC: FIX THE BUILD FIRST");
+        else save_to_memcard(m);
+    }
 }
 
 /* ---- PICK ---- */
@@ -410,28 +451,44 @@ static void draw_ai_pick(const Gfx& g, const Input& in) {
         const moa_part* p = v[(size_t)i] == 255 ? nullptr : moa_parts_find(&g_parts, cat, (uint8_t)v[(size_t)i]);
         std::string label = p ? p->name : "NONE";
         if (v[(size_t)i] == g_edit.rec[byte]) label += "  *";
+        if (marked(byte, v[(size_t)i])) label = "> " + label;
         bool hovered = false;
         if (row(g, 25.0f, 74.0f + kRowH * (i - top), 298.0f, i == cur, true, label.c_str(),
                 p ? moa_part_group(cat, p->name) : "", false, false, &hovered))
             activate = i;
         if (hovered && (ImGui::GetIO().MouseDelta.x != 0.0f || ImGui::GetIO().MouseDelta.y != 0.0f)) cur = i;
     }
-    panel(g, 340.0f, 62.0f, 276.0f, visible * kRowH + 12.0f, "PART");
-    if (cur >= 0 && cur < (int)v.size()) {
-        const moa_part* p = v[(size_t)cur] == 255 ? nullptr : moa_parts_find(&g_parts, cat, (uint8_t)v[(size_t)cur]);
-        part_stats(g, 354.0f, 76.0f, cat, p);
-        /* the build with this part in */
-        const uint8_t keep = g_edit.rec[byte];
+    const int at_id = (cur >= 0 && cur < (int)v.size()) ? v[(size_t)cur] : 255;
+    if (g_details_open) {
+        draw_details(g, g_edit.rec[byte]);
+    } else if (!g_marks[byte].empty()) {
+        draw_compare(g, byte);
+    } else if (cur >= 0 && cur < (int)v.size()) {
+        panel(g, 340.0f, 62.0f, 276.0f, visible * kRowH + 12.0f, "PART");
+        const moa_part* p = at_id == 255 ? nullptr : moa_parts_find(&g_parts, cat, (uint8_t)at_id);
+        struct moa_build_check before;
+        moa_build_check(&g_parts, g_edit.rec, g_edit.plus, &before);
+        /* the build with this part in: the AC and its totals */
+        moa_card preview = g_edit;
+        preview.rec[byte] = (uint8_t)at_id;
+        moa_build_normalise(preview.rec);
+        draw_acv(g, 341.0f, 75.0f, 274.0f, 168.0f, preview);
+        text(g, 354.0f, 250.0f, 12.0f, kBright, p ? p->name : "NONE");
+        if (p) text_right(g, 594.0f, 252.0f, 9.0f, kDim, moa_part_group(cat, p->name));
         uint8_t saved[13];
         std::memcpy(saved, g_edit.rec, 13);
-        g_edit.rec[byte] = (uint8_t)v[(size_t)cur];
-        moa_build_normalise(g_edit.rec);
-        text(g, 354.0f, 182.0f, 10.0f, kDim, "WITH THIS PART");
-        build_totals(g, 354.0f, 200.0f);
+        std::memcpy(g_edit.rec, preview.rec, 13);
+        text(g, 354.0f, 268.0f, 9.0f, kDim, "WITH THIS PART");
+        build_totals(g, 354.0f, 282.0f, &before);
         std::memcpy(g_edit.rec, saved, 13);
-        (void)keep;
     }
-    footer(g, "A  CHOOSE      B  BACK      L1 / R1  PAGE");
+    footer(g, "A  CHOOSE   Y / TRIANGLE  DETAILS   X / SQUARE  MARK TO COMPARE   L1 / R1  PAGE   B  BACK");
+    if (g_details_open) {
+        if (in.info || in.back || in.confirm) g_details_open = false;
+        return;
+    }
+    if (in.info) { open_details(cat, at_id); return; }   /* TRIANGLE is not BACK here */
+    if (in.alt) { toggle_mark(byte, at_id); return; }
     if (in.back) { g_ai_sub = AI_SUB_BUILD; return; }
     if (in.page_down) cur = std::max(0, cur - visible);
     if (in.page_up) cur = std::min((int)v.size() - 1, cur + visible);

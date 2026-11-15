@@ -147,6 +147,18 @@ if(TARGET psx-master-of-arena)
         # AI Battle cards (Raven Card Builder images) -> builds.
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_card.c"
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_parts.c"
+        # Assembly: the 3D AC preview, from the optional model install
+        # (acr/: the Armored-CoreR importer and model code).
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_ac_view.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/acr/acr_disc.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/acr/acr_import.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/acr/acr_models_moa.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/acr/acr_motion_moa.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/acr/acr_parts_moa.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/acr/acr_gen1_fit.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/acr/acr_gen1_compile.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/acr/acr_model.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/acr/acr_png.c"
         # Extras: the Project Phantasma arena, built from the player's discs.
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_phantasma.c"
         # Updates: look for a newer release and install it when asked.

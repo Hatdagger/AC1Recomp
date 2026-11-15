@@ -52,6 +52,8 @@
 #include "imgui_impl_opengl3.h"
 
 #include <atomic>
+#include <mutex>
+#include <thread>
 #if defined(_MSC_VER)
   #include <intrin.h>
 #endif

@@ -165,7 +165,7 @@ static void record_grid(const Gfx& g, float x, float y, const moa_card& c) {
 static void draw_ai_cards(LauncherModel* m, const Gfx& g, const Input& in) {
     const int n = (int)g_ai_cards.size();
     const int visible = 11;
-    header(g, "CARD WORKSHOP", "AI BATTLE CARDS");
+    header(g, "AI CARD MANAGEMENT", "EXTRA GARAGE");
     panel(g, 24.0f, 76.0f, 300.0f, 314.0f, "CARDS");
     if (g_ws_action < 0 && !g_confirm_delete) move_cursor(PAGE_AI_CARDS, n, in, visible);
     int& cur = g_state.cursor[PAGE_AI_CARDS];
@@ -262,7 +262,7 @@ static void draw_ai_cards(LauncherModel* m, const Gfx& g, const Input& in) {
         if (g_ws_action_cur == 3) g_confirm_delete = true;
         return;
     }
-    if (in.back) { g_ai_sub = AI_SUB_SETUP; return; }
+    if (in.back) { g_ai_sub = AI_SUB_SETUP; g_state.ai_page = false; return; }   /* to EXTRA GARAGE */
     if (in.start) { open_build_new(); return; }
     if (n == 0) return;
     if (in.alt) { g_confirm_delete = true; return; }

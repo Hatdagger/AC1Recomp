@@ -111,7 +111,9 @@ static bool hover_moved(bool hovered) {
 
 /* ---- mode page ------------------------------------------------------------- */
 
-enum ModeRow { MODE_LAN = 0, MODE_ONLINE, MODE_CALLSIGN, MODE_BACK, MODE__COUNT };
+/* Online play is not offered: it uses a lobby menu that isn't ours. Its
+ * row stays past the end of the list, unreachable. */
+enum ModeRow { MODE_LAN = 0, MODE_CALLSIGN, MODE_BACK, MODE__COUNT, MODE_ONLINE };
 
 static void draw_net_mode(LauncherModel* m, const Gfx& g, const Input& in) {
     const auto* np = np_cb(m);
@@ -134,10 +136,10 @@ static void draw_net_mode(LauncherModel* m, const Gfx& g, const Input& in) {
     move_cursor(PAGE_NET_MODE, MODE__COUNT, in, MODE__COUNT);
     int& cur = g_state.cursor[PAGE_NET_MODE];
 
-    header(g, "NETWORK PLAY", "LINK SYSTEM");
+    header(g, "MULTIPLAYER", "LINK SYSTEM");
     panel(g, 24.0f, 76.0f, 270.0f, 340.0f, "SELECT");
     const std::string callsign = "< " + upper(np_effective_name(m)) + " >";
-    const char* labels[MODE__COUNT] = { "LAN PLAY", "ONLINE PLAY", "CALLSIGN", "BACK" };
+    const char* labels[MODE__COUNT] = { "LAN / DIRECT IP", "CALLSIGN", "BACK" };
     int activate = -1;
     for (int i = 0; i < MODE__COUNT; ++i) {
         bool hovered = false;
@@ -171,7 +173,7 @@ static void draw_net_mode(LauncherModel* m, const Gfx& g, const Input& in) {
                       (unsigned)launcher_model_memcard_blocks_used(m, 0));
         text(g, 424.0f, y, 11.0f, kText, buf);
         y += 19.0f;
-        if (offered) {
+        if (false && offered) {   /* online play is not offered */
             text(g, 324.0f, y, 11.0f, kDim, "ACCOUNT");
             text(g, 424.0f, y, 11.0f, signed_in ? kOn : kText,
                  signed_in ? "SIGNED IN" : awaiting ? "CHECKING" : "GUEST");
@@ -181,7 +183,6 @@ static void draw_net_mode(LauncherModel* m, const Gfx& g, const Input& in) {
     static const char* const info[MODE__COUNT] = {
         "Play someone on the same network, or connect straight to an address "
         "they give you. Rooms on your network appear by themselves.",
-        "Find other pilots on the lobby server.",
         "The name other pilots see. Left and right pick from the arena "
         "roster; press the button to type one of your own.",
         "Return to the system menu.",

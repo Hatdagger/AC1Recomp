@@ -245,10 +245,21 @@ enum { B_AC = 0, B_PILOT, B_SLOT0, B_OPTS = B_SLOT0 + 11, B_PAINT, B_EMBLEM, B_P
 /* Opened from the main menu's ASSEMBLY (not the AI Battle card list): back
  * then returns to the main menu. */
 static bool g_build_standalone = false;
+static bool g_opts_standalone = false;   /* OPTION PARTS straight from EXTRA GARAGE */
+
+/* Back to EXTRA GARAGE: the AC goes into the garage, kept for next time. */
+static void leave_to_garage() {
+    g_garage = g_edit;
+    save_garage();
+    g_build_standalone = false;
+    g_opts_standalone = false;
+    g_ai_sub = AI_SUB_SETUP;
+    g_state.ai_page = false;
+}
 
 static void leave_build() {
     g_details_open = false;
-    if (g_build_standalone) { g_build_standalone = false; g_ai_sub = AI_SUB_SETUP; g_state.ai_page = false; }
+    if (g_build_standalone) leave_to_garage();
     else g_ai_sub = AI_SUB_CARDS;
 }
 
@@ -326,8 +337,8 @@ static void draw_ai_build(LauncherModel* m, const Gfx& g, const Input& in) {
         else if (i == B_EMBLEM) { label = "EMBLEM"; value = "CHANGE"; }
         else if (i == B_PLUS) { label = "HUMAN PLUS"; value = plus_text(g_edit.plus); }
         else if (i == B_AI) { label = "AI"; value = card_ai_label(g_edit); }
-        else if (i == B_SAVE) { label = "SAVE CARD"; enabled = !chk.blocked; }
-        else if (i == B_SAVE_NEW) { label = "SAVE AS NEW CARD"; enabled = !chk.blocked; }
+        else if (i == B_SAVE) { label = g_build_standalone ? "KEEP IN GARAGE" : "SAVE CARD"; enabled = !chk.blocked; }
+        else if (i == B_SAVE_NEW) { label = g_build_standalone ? "SAVE AS NEW AI CARD" : "SAVE AS NEW CARD"; enabled = !chk.blocked; }
         else { label = "SAVE TO MEMORY CARD"; value = "FOR VS"; enabled = !chk.blocked && !m->in_session; }
         bool hovered = false;
         if (row(g, 25.0f, 74.0f + kRowH * (i - top), 298.0f, i == cur, enabled, label.c_str(),
@@ -383,7 +394,7 @@ static void draw_ai_build(LauncherModel* m, const Gfx& g, const Input& in) {
         return;
     }
     if (in.back && !in.info) {
-        if (g_edit_dirty) g_confirm_discard = true; else leave_build();
+        if (g_edit_dirty && !g_build_standalone) g_confirm_discard = true; else leave_build();
         return;
     }
     const int dir = in.left ? -1 : in.right ? 1 : 0;
@@ -425,8 +436,15 @@ static void draw_ai_build(LauncherModel* m, const Gfx& g, const Input& in) {
         g_confirm_discard = false;
         g_state.cursor[PAGE_AI_EDIT] = 0;
         g_ai_sub = AI_SUB_EDIT;
+    } else if (activate == B_SAVE && g_build_standalone) {
+        g_garage = g_edit;
+        note(save_garage() ? "KEPT IN THE GARAGE" : "THE GARAGE AC COULD NOT BE WRITTEN");
+        g_edit_dirty = false;
     } else if (activate == B_SAVE) save_build(m, false);
-    else if (activate == B_SAVE_NEW) save_build(m, true);
+    else if (activate == B_SAVE_NEW) {
+        save_build(m, true);
+        if (g_build_standalone) g_edit_path = garage_path();   /* still the garage AC */
+    }
     else if (activate == B_MEMCARD) {
         if (build_blocked()) note("THE GAME WILL NOT FIELD THIS AC: FIX THE BUILD FIRST");
         else save_to_memcard(m);
@@ -531,7 +549,10 @@ static void draw_ai_opts(const Gfx& g, const Input& in) {
     text(g, 434.0f, 112.0f, 10.0f, kHi, b);
     text(g, 434.0f, 134.0f, 10.0f, kText, moa_option_effect(cur), 170.0f);
     footer(g, "A  ON / OFF      B  BACK");
-    if (in.back) { g_ai_sub = AI_SUB_BUILD; return; }
+    if (in.back) {
+        if (g_opts_standalone) leave_to_garage(); else g_ai_sub = AI_SUB_BUILD;
+        return;
+    }
     if (in.confirm || in.left || in.right) activate = cur;
     if (activate < 0) return;
     cur = activate;

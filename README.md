@@ -44,14 +44,15 @@ A launcher in Master of Arena's own style, made for a **gamepad**
 (Steam Deck and handheld PCs included). No mouse needed.
 
 - **Start:** launch the game.
-- **Network:** two-player versus over **LAN or online**.
-  - One player hosts a lobby, the other joins (recent hosts are remembered, and
+- **Multiplayer:** two-player versus over your network (**LAN**) or straight
+  to an address (**direct IP**).
+  - One player hosts a room, the other joins (recent hosts are remembered, and
     an IP address is entered digit by digit with the d-pad).
   - **Names are picked for you** from the game's arena pilot names, so
     there's nothing to type.
   - Each player plays on their own screen, with their own AC and memory card.
-- **Assembly:** build an AC with your AC shown in 3D (see below).
-- **AI Battle:** pick two AC "cards" and watch the computer fly both (see below).
+- **Extra Garage:** build your AC in 3D, manage AI cards and memory card
+  saves, and set up AI matches (see below).
 - **Mods:** switch features on and off, or install new ones.
 - **Extras:** *Install data from Project Phantasma* builds the Phantasma
   content on your PC from your own disc (it finds the disc by itself).
@@ -63,34 +64,43 @@ A launcher in Master of Arena's own style, made for a **gamepad**
 
 ---
 
-## 3. Assembly (preview)
+## 3. Extra Garage
+
+![Extra Garage](docs/readme/extra-garage.png)
+
+Launcher → **Extra Garage**: a garage outside the game around one shared AC,
+the **garage AC**, which is kept between launches.
+
+- **Assembly (preview):** build the garage AC and see it in 3D. Install the
+  models once first: **Extras** → *Install 3D AC models (optional)*. Turn
+  the AC with the right stick (or Q/E and R/F). **Triangle / Y** shows a
+  part's full figures; in a part list, **Square / X** marks up to three parts
+  to compare (green better, red worse than the fitted part). The build checks
+  the game's own rules and says if the game won't field the AC.
+- **Option Parts:** the garage AC's optional parts on their own screen, with
+  the slots each takes and what it does.
+- **AI Card Management:** your AI cards: edit their AI, rename, delete, and
+  change their AC.
+- **Data:** a memory card manager. Load an AC from a save into the garage,
+  save the garage AC or an AI card to the card as a **new** save, export
+  saves as AI cards, and delete saves. **L1 / R1** switch between the `.mcd`
+  files in the Memory Card folder, **Square / X** marks several saves,
+  **Triangle / Y** shows a save's parts. Only Master of Arena saves can be
+  changed; nothing is overwritten and every change keeps a `.bak` copy.
+- **AI Arena Setup:** *Player vs AI* (you fly unit 1: the garage AC or an AI
+  card's AC) or *AI vs AI* (two AI cards). Pick the map and time limit (2:00,
+  5:00 or no limit).
 
 ![Assembly](docs/readme/assembly.png)
-
-Launcher → **Assembly**. Build an AC outside the game and see it in 3D.
-
-- Install the models once first: **Extras** → *Install 3D AC models
-  (optional)*.
-- Turn the AC with the right stick (or Q/E and R/F on a keyboard).
-- **Triangle / Y** shows a part's full figures. In a part list, **Square / X**
-  marks up to three parts to compare: green is better, red is worse than the
-  fitted part.
-- The build checks the game's own rules (weight, energy, option slots) and
-  says if the game won't field the AC.
-- **Save to memory card** adds the AC as a new save on your card (it never
-  overwrites one). In game, load it in **VS mode: AC Setup → System → Data
-  Load**. It can also be saved as an AI Battle card.
-
-![Part list with figures](docs/readme/assembly-parts.png)
+![Data](docs/readme/garage-data.png)
 
 ---
 
-## 4. AI Battle (computer vs computer)
+## 4. AI cards
 
-Pick two ACs and watch the computer fly both, using the game's own arena AI.
+AI matches fly ACs with the game's own arena AI.
 
-- **Where:** Launcher → **AI Battle**. Choose **Unit 1**, **Unit 2** and the
-  stage, then start the battle.
+- **Where:** Launcher → **Extra Garage** → **AI Arena Setup**.
 - **The ACs are "cards":** each one is a square picture, like an AC emblem,
   with the whole build (parts, optional parts, colours, Human PLUS, emblem)
   stored in a colour strip down its left edge. They're easy to share as
@@ -99,9 +109,9 @@ Pick two ACs and watch the computer fly both, using the game's own arena AI.
   **[Raven Card Builder](https://hatdagger.github.io/ACMOA-AI-CARDBUILDER/)**,
   a page that runs in any web browser. Pick parts from sorted lists, check the
   stats and the game's own build rules, and turn any picture into the emblem.
-- **Or export your own ACs:** the launcher can turn the ACs in your memory card
+- **Or export your own ACs:** **Extra Garage** → **Data** turns memory card
   saves into cards.
-- Put cards in the **Memory Card** folder and they show up in AI Battle.
+- Put cards in the **Memory Card** folder and they show up in the garage.
 
 ---
 
@@ -153,9 +163,10 @@ with their own briefings, maps and enemies, and with any AC you build.
 |---|---|
 | `Armored Core Moa.exe` | Start here |
 | your `.cue` + `.bin` | Your Master of Arena Disc 1 (and optionally Project Phantasma) |
-| `Memory Card/` | Memory cards, AI Battle cards (`.png`) and Phantasma mission progress |
+| `Memory Card/` | Memory cards, AI cards (`.png`) and Phantasma mission progress |
 | `Mods/` | Mods |
 | `acmodels/` | 3D AC models for Assembly (only after the optional install) |
+| `garage/` | The garage AC (Extra Garage) |
 | `RecompData/` | Everything else the game needs |
 
 ---

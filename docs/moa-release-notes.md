@@ -8,6 +8,29 @@ This is a test release. Please report problems in this repository's Issues
 
 ## What's new in 0.8.3
 
+- **New launcher menu:** START GAME, MULTIPLAYER, EXTRA GARAGE, EXTRAS,
+  SETTINGS, MODS, UPDATES, EXIT.
+  - **MULTIPLAYER** (was Network Play) is LAN and direct IP only. Online
+    play is gone from the launcher for now (it used a lobby menu that isn't
+    ours).
+  - **EXTRA GARAGE** (new) is a garage around one shared AC, the garage AC,
+    kept between launches: ASSEMBLY, OPTION PARTS, AI CARD MANAGEMENT, DATA
+    and AI ARENA SETUP.
+  - **DATA** is a memory card manager: load an AC from a save into the
+    garage, save the garage AC or an AI card to the card (always as a new
+    save), export saves as AI cards, delete saves (a .bak copy is kept).
+    L1 / R1 switch memory card files, Square marks several saves, Triangle
+    shows a save's parts. Other games' saves are listed and left alone.
+  - **AI ARENA SETUP** replaces AI Battle: PLAYER VS AI (you fly unit 1:
+    the garage AC or an AI card's AC) or AI VS AI. Time limit: 2:00, 5:00 or
+    no limit.
+
+  ![Main menu](https://raw.githubusercontent.com/Hatdagger/AC1Recomp/master/docs/readme/launcher.png)
+  ![Extra Garage](https://raw.githubusercontent.com/Hatdagger/AC1Recomp/master/docs/readme/extra-garage.png)
+  ![Data](https://raw.githubusercontent.com/Hatdagger/AC1Recomp/master/docs/readme/garage-data.png)
+  ![Player vs AI](https://raw.githubusercontent.com/Hatdagger/AC1Recomp/master/docs/readme/player-vs-ai.png)
+  ![Option parts](https://raw.githubusercontent.com/Hatdagger/AC1Recomp/master/docs/readme/option-parts.png)
+
 - **Updater:** mods that ship with a new release (in Mods/bundled) are now
   installed when you update from the launcher. Your own mods are still left
   alone.
@@ -26,8 +49,8 @@ This is a test release. Please report problems in this repository's Issues
   panel now shows your public IP address and port under the LAN address, so
   friends outside your network know what to join (the UDP port has to be
   forwarded to your PC).
-- **Assembly (preview):** a new ASSEMBLY screen on the launcher's main menu
-  builds an AC and shows it in 3D. Install the models once from EXTRAS:
+- **Assembly (preview):** EXTRA GARAGE's ASSEMBLY builds the garage AC and
+  shows it in 3D. Install the models once from EXTRAS:
   "INSTALL 3D AC MODELS (OPTIONAL)" (read from your own disc, about 20 MB).
   Turn the AC with the right stick, see each part's figures with Triangle,
   mark up to three parts with Square to compare them (green better, red

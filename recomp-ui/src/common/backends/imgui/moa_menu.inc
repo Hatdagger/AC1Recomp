@@ -53,6 +53,7 @@ struct State {
     bool   ai_page = false;            /* the AI Battle page is up */
     bool   extras_page = false;        /* the Extras page is up */
     bool   updates_page = false;       /* the Updates page is up */
+    bool   garage_page = false;        /* EXTRA GARAGE is up */
     char   note[200] = {0};
     double note_until = 0.0;
 };
@@ -254,6 +255,46 @@ static std::string g_ai_folder;
 static int g_ai_pick[2] = { -1, -1 };          /* index into g_ai_cards; -1 random */
 static std::string g_ai_chosen[2];             /* paths, kept across rescans */
 static bool g_ai_manual = false;               /* player 1 flies unit 1 */
+static int  g_arena_mode = 1;                   /* AI ARENA SETUP: 0 player vs AI, 1 AI vs AI */
+
+/* ---- the garage AC ----
+ * EXTRA GARAGE's one shared AC: built in ASSEMBLY and OPTION PARTS, loaded
+ * from and saved to the memory card in DATA, flown as unit 1 in PLAYER VS AI.
+ * Kept between launches as a card file (RecompData/garage/garage-ac.png). */
+static moa_card g_garage;
+static bool g_garage_loaded = false;
+
+static std::string garage_path() { return asset("garage/garage-ac.png"); }
+
+static void load_garage() {
+    if (g_garage_loaded) return;
+    g_garage_loaded = true;
+    std::FILE* f = std::fopen(garage_path().c_str(), "rb");
+    std::vector<uint8_t> data;
+    if (f) {
+        if (std::fseek(f, 0, SEEK_END) == 0) {
+            const long n = std::ftell(f);
+            if (n > 0 && n < 32L * 1024 * 1024 && std::fseek(f, 0, SEEK_SET) == 0) {
+                data.resize((size_t)n);
+                if (std::fread(data.data(), 1, data.size(), f) != data.size()) data.clear();
+            }
+        }
+        std::fclose(f);
+    }
+    if (!data.empty() && moa_card_decode(data.data(), data.size(), &g_garage)) {
+        if (!g_garage.has_ai) moa_card_set_preset(&g_garage, MOA_AI_PRESET_BALANCED);
+        return;
+    }
+    moa_card_new(&g_garage);
+    moa_card_paint_from_emblem(&g_garage);
+}
+
+static bool save_garage() {
+    std::error_code ec;
+    std::filesystem::create_directories(std::filesystem::path(garage_path()).parent_path(), ec);
+    if (!g_garage.ac[0]) std::strcpy(g_garage.ac, "AC");
+    return moa_card_write_png(&g_garage, garage_path().c_str()) != 0;
+}
 
 static void set_env(const char* name, const char* value) {
 #ifdef _WIN32
@@ -341,22 +382,52 @@ static void open_ai_page(LauncherModel* m) {
     g_state.note[0] = '\0';
 }
 
-/* ASSEMBLY from the main menu: the AC builder on its own, starting from the
- * last AC built here this session (a new one the first time). */
+/* EXTRA GARAGE > ASSEMBLY: the AC builder on the garage AC. */
 static void open_assembly(LauncherModel* m) {
     open_ai_page(m);
-    static bool started = false;
-    if (!started) { open_build_new(); started = true; }
-    else { g_ai_sub = AI_SUB_BUILD; g_state.cursor[PAGE_AI_BUILD] = 0; g_state.top[PAGE_AI_BUILD] = 0; }
+    load_garage();
+    AiCard c;
+    c.card = g_garage;
+    c.path = garage_path();
+    open_build(c);
+    g_edit_dirty = false;
     g_build_standalone = true;
+}
+
+/* EXTRA GARAGE > OPTION PARTS: the garage AC's optional parts on their own. */
+static void open_option_parts(LauncherModel* m) {
+    open_assembly(m);
+    if (!parts_ready(m)) { g_state.ai_page = false; g_build_standalone = false; note("THE PART LIST COULD NOT BE READ FROM THE DISC"); return; }
+    g_build_standalone = false;
+    g_opts_standalone = true;
+    g_ai_sub = AI_SUB_OPTS;
+    g_state.cursor[PAGE_AI_OPTS] = 0;
+}
+
+/* EXTRA GARAGE > AI CARD MANAGEMENT: the card list (the old card workshop). */
+static void open_card_management(LauncherModel* m) {
+    open_ai_page(m);
+    g_ai_sub = AI_SUB_CARDS;
+    g_ws_action = -1;
+    g_confirm_delete = false;
+}
+
+/* EXTRA GARAGE > AI ARENA SETUP > PLAYER VS AI / AI VS AI. */
+static void open_arena(LauncherModel* m, int mode) {
+    open_ai_page(m);
+    g_arena_mode = mode;
+    g_ai_manual = mode == 0;
+    if (mode == 0 && g_ai_pick[0] == -1) g_ai_pick[0] = -2;   /* you fly the garage AC */
+    if (mode == 1 && g_ai_pick[0] == -2) g_ai_pick[0] = -1;
 }
 
 static void step_ai_pick(int unit, int dir) {
     const int n = (int)g_ai_cards.size();
     int& p = g_ai_pick[unit];
-    p += dir;                                   /* -1 .. n-1, wrapping */
-    if (p < -1) p = n - 1;
-    if (p >= n) p = -1;
+    const int lo = (unit == 0 && g_arena_mode == 0) ? -2 : -1;   /* -2: the garage AC */
+    p += dir;                                   /* lo .. n-1, wrapping */
+    if (p < lo) p = n - 1;
+    if (p >= n) p = lo;
     g_ai_chosen[unit] = p >= 0 ? g_ai_cards[(size_t)p].path : std::string();
 }
 
@@ -379,6 +450,15 @@ static void draw_unit(const Gfx& g, float x, int unit) {
     std::snprintf(cap, sizeof cap, "UNIT %d", unit + 1);
     panel(g, x, 76.0f, 145.0f, 214.0f, cap);
     const int p = g_ai_pick[unit];
+    if (p == -2) {
+        load_garage();
+        draw_emblem(g, x + 16.0f, 92.0f, 113.0f, g_garage);
+        text(g, x + 16.0f, 216.0f, 13.0f, kBright, "GARAGE AC");
+        text(g, x + 16.0f, 236.0f, 10.0f, kDim, upper(g_garage.ac).c_str());
+        text(g, x + 16.0f, 250.0f, 11.0f, kText, "BUILT IN ASSEMBLY");
+        text(g, x + 16.0f, 268.0f, 10.0f, kHi, unit == 0 && g_ai_manual ? "YOU FLY IT" : "AI", 0.0f);
+        return;
+    }
     if (p < 0) {
         g.dl->AddRect(at(g, x + 16.0f, 92.0f), at(g, x + 129.0f, 205.0f), kLine);
         const float tw = text_width(g, 30.0f, "?");
@@ -417,9 +497,9 @@ static const int kTimeLimits[] = { 120, 300, 0 };
 static const int kTimeLimitCount = 3;
 static int g_ai_time = 0;
 static std::string time_label(void) {
-    if (g_ai_manual) return "NONE";
+    if (g_ai_manual) return "SET IN GAME";
     const int t = kTimeLimits[g_ai_time];
-    if (!t) return "NONE";
+    if (!t) return "NO LIMIT";
     char b[16];
     std::snprintf(b, sizeof b, "%d:%02d", t / 60, t % 60);
     return b;
@@ -466,19 +546,27 @@ static void launch_ai_battle(LauncherModel* m) {
     int pick[2] = { g_ai_pick[0], g_ai_pick[1] };
     const int n = (int)g_ai_cards.size();
     for (int u = 0; u < 2; ++u) {
-        if (pick[u] >= 0 || n == 0) continue;
+        if (pick[u] >= 0 || pick[u] == -2 || n == 0) continue;
         for (int tries = 0; tries < 32; ++tries) {
             const int k = (int)(std::rand() % n);
             if (k != pick[1 - u] || n == 1) { pick[u] = k; break; }
         }
     }
-    bool menu_load = pick[0] >= 0 && pick[1] >= 0;
+    if (pick[0] == -2) { load_garage(); save_garage(); }
+    auto unit_card = [&](int u) -> const moa_card* {
+        return pick[u] == -2 ? &g_garage : &g_ai_cards[(size_t)pick[u]].card;
+    };
+    auto unit_path = [&](int u) -> std::string {
+        if (pick[u] == -2) return garage_path();
+        return pick[u] >= 0 ? g_ai_cards[(size_t)pick[u]].path : std::string();
+    };
+    bool menu_load = pick[0] != -1 && pick[1] != -1;
     std::string session_card;
     if (menu_load) {
         std::error_code ec;
         const std::filesystem::path dir = std::filesystem::temp_directory_path(ec);
         session_card = (dir / "moa-ai-battle-card2.mcd").string();
-        const moa_card* units[2] = { &g_ai_cards[(size_t)pick[0]].card, &g_ai_cards[(size_t)pick[1]].card };
+        const moa_card* units[2] = { unit_card(0), unit_card(1) };
         if (ec || !moa_memcard_write_units(session_card.c_str(), units, 2)) {
             menu_load = false;
             session_card.clear();
@@ -486,7 +574,7 @@ static void launch_ai_battle(LauncherModel* m) {
     }
     for (int u = 0; u < 2; ++u)
         set_env(u ? "PSX_MOA_AI_UNIT2" : "PSX_MOA_AI_UNIT1",
-                pick[u] >= 0 ? g_ai_cards[(size_t)pick[u]].path.c_str() : "");
+                unit_path(u).c_str());
     set_env("PSX_MOA_AI_P1", g_ai_manual ? "1" : "0");
     set_env("PSX_MOA_AI_LOADMENU", menu_load ? "1" : "0");
     set_env("PSX_MEMCARD2_SESSION", session_card.c_str());
@@ -515,25 +603,24 @@ static void draw_ai_page(LauncherModel* m, const Gfx& g, const Input& in) {
     if (g_ai_sub == AI_SUB_OPTS)  { draw_ai_opts(g, in); return; }
     if (g_ai_sub == AI_SUB_PAINT) { draw_ai_paint(g, in); return; }
     if (g_ai_sub == AI_SUB_EMBLEM){ draw_ai_emblem(m, g, in); return; }
-    enum { AI_START = 0, AI_UNIT1, AI_UNIT2, AI_PILOT1, AI_STAGE, AI_TIME, AI_NEWCARD, AI_WORKSHOP,
-           AI_EXPORT, AI_ROWS };
+    /* AI ARENA SETUP: PLAYER VS AI (you fly unit 1) or AI VS AI. */
+    enum { AI_START = 0, AI_UNIT1, AI_UNIT2, AI_STAGE, AI_TIME, AI_ROWS };
+    g_ai_manual = g_arena_mode == 0;
     move_cursor(PAGE_AI, AI_ROWS, in, AI_ROWS);
     int& cur = g_state.cursor[PAGE_AI];
 
-    header(g, "AI BATTLE", "COMPUTER VERSUS COMPUTER");
+    header(g, g_arena_mode == 0 ? "PLAYER VS AI" : "AI VS AI", "AI ARENA SETUP");
     panel(g, 24.0f, 76.0f, 270.0f, 240.0f, "SETUP");
-    const float row_step = 25.0f;              /* nine rows in the panel */
+    const float row_step = 25.0f;
     int activate = -1;
-    const char* labels[AI_ROWS] = { "START BATTLE", "UNIT 1", "UNIT 2", "UNIT 1 PILOT", "STAGE",
-                                    "TIME LIMIT", "BUILD NEW CARD", "CARD WORKSHOP",
-                                    "EXPORT CARDS FROM MEMORY CARD" };
+    const char* labels[AI_ROWS] = { "MATCH START", g_arena_mode == 0 ? "UNIT 1 (YOU)" : "UNIT 1",
+                                    "UNIT 2", "MAP", "TIME LIMIT" };
     for (int i = 0; i < AI_ROWS; ++i) {
         std::string value;
         if (i == AI_UNIT1 || i == AI_UNIT2) {
             const int p = g_ai_pick[i - AI_UNIT1];
-            value = p < 0 ? std::string("RANDOM") : g_ai_cards[(size_t)p].label;
-        } else if (i == AI_PILOT1) {
-            value = g_ai_manual ? "YOU" : "COMPUTER";
+            value = p == -2 ? std::string("GARAGE AC")
+                  : p < 0 ? std::string("RANDOM") : g_ai_cards[(size_t)p].label;
         } else if (i == AI_STAGE) {
             value = stage_label(g_ai_stage);
         } else if (i == AI_TIME) {
@@ -553,23 +640,25 @@ static void draw_ai_page(LauncherModel* m, const Gfx& g, const Input& in) {
     panel(g, 24.0f, 324.0f, 450.0f, 96.0f, "CARDS");
     {
         char buf[300];
-        std::snprintf(buf, sizeof buf, "%d CARD%s FOUND", (int)g_ai_cards.size(),
+        std::snprintf(buf, sizeof buf, "%d AI CARD%s FOUND", (int)g_ai_cards.size(),
                       g_ai_cards.size() == 1 ? "" : "S");
         text(g, 38.0f, 336.0f, 11.0f, g_ai_cards.empty() ? kWarn : kHi, buf);
         text(g, 38.0f, 353.0f, 10.0f, kText,
-             "Build a card here (BUILD NEW CARD) or with the Raven Card Builder; edit "
-             "builds and AI in the CARD WORKSHOP. Cards live in the memory card folder:", 420.0f);
+             g_arena_mode == 0
+                 ? "You fly unit 1: the garage AC (built in ASSEMBLY) or an AI card's AC. "
+                   "The time limit is set in the game's own versus menu."
+                 : "Both units are AI cards. Make and edit them in AI CARD MANAGEMENT, or "
+                   "with the Raven Card Builder. Cards live in the memory card folder:", 420.0f);
         text(g, 38.0f, 392.0f, 10.0f, kDim,
              g_ai_folder.empty() ? "(no memory card folder yet)" : g_ai_folder.c_str(), 420.0f);
     }
-    panel(g, 490.0f, 324.0f, 126.0f, 96.0f, "STAGE");
+    panel(g, 490.0f, 324.0f, 126.0f, 96.0f, "MAP");
     draw_stage(m, g, 501.0f, 331.0f, g_ai_stage);
-    footer(g, "A  SELECT      LEFT / RIGHT  CHANGE      B  BACK      START  BATTLE");
+    footer(g, "A  SELECT      LEFT / RIGHT  CHANGE      B  BACK      START  MATCH START");
 
     if (in.back) { g_state.ai_page = false; return; }
     if ((cur == AI_UNIT1 || cur == AI_UNIT2) && (in.left || in.right))
         step_ai_pick(cur - AI_UNIT1, in.left ? -1 : 1);
-    if (cur == AI_PILOT1 && (in.left || in.right)) g_ai_manual = !g_ai_manual;
     if (cur == AI_STAGE && (in.left || in.right))
         g_ai_stage = (g_ai_stage + (in.left ? kStageCount - 1 : 1)) % kStageCount;
     if (cur == AI_TIME && !g_ai_manual && (in.left || in.right))
@@ -578,18 +667,9 @@ static void draw_ai_page(LauncherModel* m, const Gfx& g, const Input& in) {
     if (in.start) activate = AI_START;
     if (activate < 0) return;
     cur = activate;
-    if (activate == AI_EXPORT) { export_ai_cards(m); return; }
-    if (activate == AI_PILOT1) { g_ai_manual = !g_ai_manual; return; }
     if (activate == AI_STAGE) { g_ai_stage = (g_ai_stage + 1) % kStageCount; return; }
     if (activate == AI_TIME) {
         if (!g_ai_manual) g_ai_time = (g_ai_time + 1) % kTimeLimitCount;
-        return;
-    }
-    if (activate == AI_NEWCARD) { open_build_new(); return; }
-    if (activate == AI_WORKSHOP) {
-        g_ai_sub = AI_SUB_CARDS;
-        g_ws_action = -1;
-        g_confirm_delete = false;
         return;
     }
     if (activate != AI_START) { step_ai_pick(activate - AI_UNIT1, 1); return; }
@@ -932,7 +1012,9 @@ static void draw_updates_page(const Gfx& g, const Input& in) {
 
 /* ---- main page ------------------------------------------------------------- */
 
-enum MainEntry { MAIN_START = 0, MAIN_NETWORK, MAIN_ASSEMBLY, MAIN_AI_BATTLE, MAIN_EXTRAS, MAIN_SETTINGS, MAIN_MODS, MAIN_UPDATES, MAIN_EXIT };
+#include "moa_menu_garage.inc"
+
+enum MainEntry { MAIN_START = 0, MAIN_NETWORK, MAIN_GARAGE, MAIN_EXTRAS, MAIN_SETTINGS, MAIN_MODS, MAIN_UPDATES, MAIN_EXIT };
 
 static int enabled_mod_count(const LauncherModel* m, int* total_out) {
     int on = 0, total = 0;
@@ -987,18 +1069,14 @@ static void draw_main(LauncherModel* m, const Gfx& g, const Input& in) {
                       : "Start Armored Core: Master of Arena with the settings "
                         "and mods chosen here." };
     if (m->netplay_supported && !m->in_session)
-        entries[count++] = { MAIN_NETWORK, "NETWORK PLAY",
-            "Versus over LAN or online, two players. The host is player 1; "
-            "the guest is player 2 and brings their own memory card." };
+        entries[count++] = { MAIN_NETWORK, "MULTIPLAYER",
+            "Versus for two players over your network, or straight to an address "
+            "a friend gives you. The host is player 1; the guest is player 2 and "
+            "brings their own memory card." };
     if (!m->in_session)
-        entries[count++] = { MAIN_ASSEMBLY, "ASSEMBLY",
-            "Build an AC without starting the game: parts, paint and emblem, "
-            "laid out like the game's garage. Save it as an AI card or to your "
-            "memory card for VS and network play." };
-    if (!m->in_session)
-        entries[count++] = { MAIN_AI_BATTLE, "AI BATTLE",
-            "Watch two computer-flown ACs fight. Choose the two units from the "
-            "AC cards in your memory card folder." };
+        entries[count++] = { MAIN_GARAGE, "EXTRA GARAGE",
+            "Build the garage AC in 3D, manage AI cards and memory card saves, and "
+            "set up PLAYER VS AI or AI VS AI matches." };
     if (!m->in_session && m->mods)
         entries[count++] = { MAIN_EXTRAS, "EXTRAS",
             "Extra content built from discs you own, such as the Project "
@@ -1090,8 +1168,7 @@ static void draw_main(LauncherModel* m, const Gfx& g, const Input& in) {
     switch (entries[activate].id) {
         case MAIN_START:    if (!m->in_session) set_ai_battle(false);
                             start_game(m); break;
-        case MAIN_AI_BATTLE: open_ai_page(m); break;
-        case MAIN_ASSEMBLY: open_assembly(m); break;
+        case MAIN_GARAGE:   open_garage_page(m); break;
         case MAIN_EXTRAS:   open_extras_page(m); break;
         case MAIN_UPDATES:  open_updates_page(); break;
         case MAIN_NETWORK:  launcher_model_set_view(m, LNG_VIEW_NETPLAY_MODE); break;
@@ -1487,7 +1564,7 @@ static void draw_mods_page(LauncherModel* m, const Gfx& g, const Input& in) {
 
 /* True when this menu, not the stock page, draws the current view. */
 static bool owns_view(const LauncherModel* m) {
-    if (m->view != LNG_VIEW_DASHBOARD) g_state.ai_page = g_state.extras_page = g_state.updates_page = false;
+    if (m->view != LNG_VIEW_DASHBOARD) g_state.ai_page = g_state.extras_page = g_state.updates_page = g_state.garage_page = false;
     if (m->view == LNG_VIEW_DASHBOARD) {
         g_state.classic_settings = false;
         g_state.classic_mods = false;
@@ -1541,6 +1618,7 @@ static void draw(LauncherModel* m, const LauncherTheme& th) {
         case LNG_VIEW_LOBBY:        draw_lobby_page(m, th, g, in); break;
         default:
             if (g_state.ai_page && !m->in_session) draw_ai_page(m, g, in);
+            else if (g_state.garage_page && !m->in_session) draw_garage_page(m, g, in);
             else if (g_state.extras_page && !m->in_session) draw_extras_page(m, g, in);
             else if (g_state.updates_page && !m->in_session) draw_updates_page(g, in);
             else draw_main(m, g, in);

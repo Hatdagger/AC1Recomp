@@ -147,6 +147,7 @@ if(TARGET psx-master-of-arena)
         # AI Battle cards (Raven Card Builder images) -> builds.
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_card.c"
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_parts.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_arena_run.c"
         # Assembly: the 3D AC preview, from the optional model install
         # (acr/: the Armored-CoreR importer and model code).
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_ac_view.c"

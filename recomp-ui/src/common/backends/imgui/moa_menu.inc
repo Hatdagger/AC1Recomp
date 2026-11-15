@@ -21,6 +21,7 @@
 #include <ctime>
 #include "../../../../../games/master-of-arena/moa_card.h"
 #include "../../../../../games/master-of-arena/moa_phantasma.h"
+#include "../../../../../games/master-of-arena/moa_arena_run.h"
 #include "../../../../../games/master-of-arena/moa_update.h"
 
 namespace moa_menu {
@@ -29,7 +30,7 @@ enum Page {
     PAGE_MAIN = 0, PAGE_SETTINGS, PAGE_MODS,
     PAGE_NET_MODE, PAGE_NET_ROOMS, PAGE_LOBBY, PAGE_AI, PAGE_EXTRAS, PAGE_UPDATES,
     PAGE_AI_CARDS, PAGE_AI_EDIT, PAGE_AI_ADV, PAGE_AI_BUILD, PAGE_AI_PICK, PAGE_AI_OPTS,
-    PAGE_AI_PAINT, PAGE_AI_EMBLEM, PAGE__COUNT
+    PAGE_AI_PAINT, PAGE_AI_EMBLEM, PAGE_RUN, PAGE__COUNT
 };
 
 struct State {
@@ -52,6 +53,7 @@ struct State {
     std::vector<std::string> new_packages;   /* files waiting in mods/new */
     bool   ai_page = false;            /* the AI Battle page is up */
     bool   extras_page = false;        /* the Extras page is up */
+    bool   run_page = false;           /* the Arena Run page is up */
     bool   updates_page = false;       /* the Updates page is up */
     bool   garage_page = false;        /* EXTRA GARAGE is up */
     char   note[200] = {0};
@@ -957,6 +959,8 @@ static void draw_extras_page(LauncherModel* m, const Gfx& g, const Input& in) {
     }
 }
 
+#include "moa_menu_run.inc"
+
 /* ---- Updates page ----------------------------------------------------------------
  *
  * Opt-in: nothing is looked up or downloaded until a button here is pressed
@@ -1044,7 +1048,7 @@ static void draw_updates_page(const Gfx& g, const Input& in) {
 
 #include "moa_menu_garage.inc"
 
-enum MainEntry { MAIN_START = 0, MAIN_NETWORK, MAIN_GARAGE, MAIN_EXTRAS, MAIN_SETTINGS, MAIN_MODS, MAIN_UPDATES, MAIN_EXIT };
+enum MainEntry { MAIN_START = 0, MAIN_RUN, MAIN_NETWORK, MAIN_GARAGE, MAIN_EXTRAS, MAIN_SETTINGS, MAIN_MODS, MAIN_UPDATES, MAIN_EXIT };
 
 static int enabled_mod_count(const LauncherModel* m, int* total_out) {
     int on = 0, total = 0;
@@ -1092,12 +1096,16 @@ static void set_ai_battle(bool on) {
 
 static void draw_main(LauncherModel* m, const Gfx& g, const Input& in) {
     struct Entry { MainEntry id; const char* label; const char* info; };
-    Entry entries[9];
+    Entry entries[10];
     int count = 0;
     entries[count++] = { MAIN_START, m->in_session ? "RESUME GAME" : "START GAME",
         m->in_session ? "Return to the game in progress."
                       : "Start Armored Core: Master of Arena with the settings "
                         "and mods chosen here." };
+    if (!m->in_session)
+        entries[count++] = { MAIN_RUN, "ARENA RUN",
+            "A roguelike run: a random AC, 50 opponents from every arena, 1 P "
+            "a win to spend in the shop, and one loss ends it." };
     if (m->netplay_supported && !m->in_session)
         entries[count++] = { MAIN_NETWORK, "MULTIPLAYER",
             "Versus for two players over your network, or straight to an address "
@@ -1196,10 +1204,11 @@ static void draw_main(LauncherModel* m, const Gfx& g, const Input& in) {
     if (activate < 0) return;
     cur = activate;
     switch (entries[activate].id) {
-        case MAIN_START:    if (!m->in_session) set_ai_battle(false);
+        case MAIN_START:    if (!m->in_session) { set_ai_battle(false); set_arena_run(false, ""); }
                             start_game(m); break;
         case MAIN_GARAGE:   open_garage_page(m); break;
         case MAIN_EXTRAS:   open_extras_page(m); break;
+        case MAIN_RUN:      open_run_page(m); break;
         case MAIN_UPDATES:  open_updates_page(); break;
         case MAIN_NETWORK:  launcher_model_set_view(m, LNG_VIEW_NETPLAY_MODE); break;
         case MAIN_SETTINGS: launcher_model_set_view(m, LNG_VIEW_SETTINGS); break;
@@ -1594,7 +1603,7 @@ static void draw_mods_page(LauncherModel* m, const Gfx& g, const Input& in) {
 
 /* True when this menu, not the stock page, draws the current view. */
 static bool owns_view(const LauncherModel* m) {
-    if (m->view != LNG_VIEW_DASHBOARD) g_state.ai_page = g_state.extras_page = g_state.updates_page = g_state.garage_page = false;
+    if (m->view != LNG_VIEW_DASHBOARD) g_state.ai_page = g_state.extras_page = g_state.updates_page = g_state.garage_page = g_state.run_page = false;
     if (m->view == LNG_VIEW_DASHBOARD) {
         g_state.classic_settings = false;
         g_state.classic_mods = false;
@@ -1650,6 +1659,7 @@ static void draw(LauncherModel* m, const LauncherTheme& th) {
             if (g_state.ai_page && !m->in_session) draw_ai_page(m, g, in);
             else if (g_state.garage_page && !m->in_session) draw_garage_page(m, g, in);
             else if (g_state.extras_page && !m->in_session) draw_extras_page(m, g, in);
+            else if (g_state.run_page && !m->in_session) draw_run_page(m, g, in);
             else if (g_state.updates_page && !m->in_session) draw_updates_page(g, in);
             else draw_main(m, g, in);
             break;

@@ -31,12 +31,15 @@ struct moa_part {
     uint16_t extra;          /* core: arm load; legs: load; booster: power;
                                 generator: output */
     uint8_t slots;           /* core: optional-part slots */
+    uint32_t price;
+    uint16_t attack;         /* weapons, blades, weapon arms: ATTACK POWER */
+    uint8_t raw[96];         /* the part's whole menu-table record */
 };
 
 struct moa_parts {
     int count[MOA_CAT__COUNT];
     struct moa_part part[MOA_CAT__COUNT][MOA_PARTS_MAX];
-    struct { char name[19]; char what[19]; uint8_t slots; } option[MOA_OPTIONS];
+    struct { char name[19]; char what[19]; uint8_t slots; uint32_t price; } option[MOA_OPTIONS];
 };
 
 /* Read the tables from a Master of Arena (USA) disc 1 image. 1 = ok. */
@@ -70,6 +73,19 @@ struct moa_build_check {
 void moa_build_check(const struct moa_parts *p, const uint8_t rec[13], int plus,
                      struct moa_build_check *out);
 
+/* The garage's PERFORMANCE screen, with the game's own maths (menu
+ * 0x80092BB4): check build HD-GRY-NX / XCA-00 / AN-201 / LN-1001-PX-0 /
+ * WG-XP1000 / LS-2001 / B-P351 / GBG-10000 / COMDEX-G0 gives 1040 / 3085 /
+ * 904 / 6960 (2800 / 1160 / 3000) / 652 (0 / 652) / 12641. */
+struct moa_performance {
+    int offensive, defensive, stability;
+    int mobility, moving_speed, turning_speed, boost_ability;
+    int support, radar_range, fcs_performance;
+    int overall;
+    int ap, weight, price;
+};
+void moa_performance(const struct moa_parts *p, const uint8_t rec[13],
+                     struct moa_performance *out);
 /* The stages' preview pictures, read from the disc's menu archive: all
  * twenty, by stage id (20..39, the id the fight loads; the versus menu's
  * maps 1..10 are ids 20, 21, 22, 23, 30, 33, 34, 35, 36, 37). Stage id n is

@@ -2,6 +2,7 @@
  *
  *   ASSEMBLY            the game's Assembly screen on the garage AC
  *   OPTIONAL PARTS      the game's Optional Parts screen, plus HUMAN PLUS
+ *   PERFORMANCE         the game's Performance screen (its own maths, no GRADE)
  *   DESIGN              PAINT, EMBLEM, AC NAME, PILOT NAME
  *   AI PROGRAMMING      the garage AC's AI (travels with it as an AI card)
  *   MEMORY CARD         memory card manager (below)
@@ -21,9 +22,9 @@ static bool g_moved(bool hovered) {
     return hovered && (ImGui::GetIO().MouseDelta.x != 0.0f || ImGui::GetIO().MouseDelta.y != 0.0f);
 }
 
-enum GarageRow { G_ASSEMBLY = 0, G_OPTIONS, G_DESIGN, G_AI, G_DATA, G_CARDS, G_ARENA, G__COUNT };
+enum GarageRow { G_ASSEMBLY = 0, G_OPTIONS, G_PERF, G_DESIGN, G_AI, G_DATA, G_CARDS, G_ARENA, G__COUNT };
 enum DesignRow { D_PAINT = 0, D_EMBLEM, D_AC_NAME, D_PILOT, D__COUNT };
-static int g_garage_sub = 0;   /* 0 the list, 1 MEMORY CARD, 2 AI ARENA SETUP, 3 DESIGN */
+static int g_garage_sub = 0;   /* 0 the list, 1 MEMORY CARD, 2 AI ARENA SETUP, 3 DESIGN, 4 PERFORMANCE */
 
 static void open_garage_page(LauncherModel* m) {
     (void)m;
@@ -470,6 +471,50 @@ static void draw_data_page(LauncherModel* m, const Gfx& g, const Input& in) {
     }
 }
 
+/* ---- PERFORMANCE: the game's screen (menu 0x80092BB4), without GRADE ------- */
+
+static void draw_performance_page(LauncherModel* m, const Gfx& g, const Input& in) {
+    const bool have = parts_ready(m);
+    moa_performance q{};
+    if (have) moa_performance(&g_parts, g_garage.rec, &q);
+    header(g, "PERFORMANCE", "EXTRA GARAGE");
+    const float top = 62.0f;
+    game_box(g, 24.0f, top, 262.0f, 354.0f);
+    struct Line { const char* label; int value; bool sub; };
+    const Line lines[] = {
+        { "OFFENSIVE POINT", q.offensive, false }, { "DEFENSIVE POINT", q.defensive, false },
+        { "STABILITY", q.stability, false },       { "MOBILITY", q.mobility, false },
+        { "MOVING SPEED", q.moving_speed, true },  { "TURNING SPEED", q.turning_speed, true },
+        { "BOOST ABILITY", q.boost_ability, true },{ "SUPPORT SYSTEM", q.support, false },
+        { "RADAR RANGE", q.radar_range, true },    { "FCS PERFORMANCE", q.fcs_performance, true },
+        { "OVERALL", q.overall, false },
+    };
+    char b[24];
+    float y = top + 40.0f;
+    for (const Line& l : lines) {
+        text(g, l.sub ? 58.0f : 40.0f, y, 13.0f, l.sub ? kText : kBright, l.label);
+        std::snprintf(b, sizeof b, "%d", l.value);
+        text_right(g, 268.0f, y, 13.0f, kBright, have ? b : "-");
+        y += 24.0f;
+    }
+    if (!have) text(g, 40.0f, top + 12.0f, 10.0f, kWarn, "SET THE DISC IMAGE TO SEE THE FIGURES");
+
+    const float rx = 300.0f, rw = 316.0f;
+    game_box(g, rx, top, rw, 354.0f);
+    draw_acv(g, rx + 2.0f, top + 2.0f, rw - 4.0f, 262.0f, g_garage);
+    g.dl->AddLine(at(g, rx, top + 266.0f), at(g, rx + rw, top + 266.0f), kGameBlue, 2.0f * g.s);
+    const Line side[] = { { "AP", q.ap, false }, { "WEIGHT", q.weight, false }, { "PRICE", q.price, false } };
+    y = top + 276.0f;
+    for (const Line& l : side) {
+        text(g, rx + 16.0f, y, 16.0f, kBright, l.label);
+        std::snprintf(b, sizeof b, "%d", l.value);
+        text_right(g, rx + rw - 16.0f, y, 16.0f, kBright, have ? b : "-");
+        y += 24.0f;
+    }
+    footer(g, "B / ESC  BACK");
+    if (in.back || in.confirm) g_garage_sub = 0;
+}
+
 /* ---- the garage list -------------------------------------------------------- */
 
 /* DESIGN > AC NAME / PILOT NAME: typed in place on the garage AC. */
@@ -480,6 +525,7 @@ static void garage_name_done() {
 
 static void draw_garage_page(LauncherModel* m, const Gfx& g, const Input& in) {
     if (g_garage_sub == 1) { draw_data_page(m, g, in); return; }
+    if (g_garage_sub == 4) { draw_performance_page(m, g, in); return; }
     const bool arena = g_garage_sub == 2, design = g_garage_sub == 3;
     const int count = arena ? 2 : design ? D__COUNT : G__COUNT;
     static int s_cur[3] = {0, 0, 0};
@@ -490,7 +536,7 @@ static void draw_garage_page(LauncherModel* m, const Gfx& g, const Input& in) {
         if (in.down) cur = (cur + 1) % count;
     }
 
-    static const char* const kRows[G__COUNT] = { "ASSEMBLY", "OPTIONAL PARTS", "DESIGN", "AI PROGRAMMING",
+    static const char* const kRows[G__COUNT] = { "ASSEMBLY", "OPTIONAL PARTS", "PERFORMANCE", "DESIGN", "AI PROGRAMMING",
                                                  "MEMORY CARD", "AI CARD MANAGEMENT", "AI ARENA SETUP" };
     static const char* const kArena[2] = { "PLAYER VS AI", "AI VS AI" };
     static const char* const kDesign[D__COUNT] = { "PAINT", "EMBLEM", "AC NAME", "PILOT NAME" };
@@ -498,6 +544,8 @@ static void draw_garage_page(LauncherModel* m, const Gfx& g, const Input& in) {
         "The game's Assembly screen: change the garage AC's parts slot by slot. "
         "It is kept between launches.",
         "Fit optional parts into the core's slots, and switch HUMAN PLUS.",
+        "The game's performance breakdown of the garage AC: offence, defence, "
+        "stability, mobility, support systems and the overall figure.",
         "Paint, emblem and the AC and pilot names.",
         "The garage AC's AI. It goes with the AC when you export it as an AI card "
         "(MEMORY CARD > EXPORT AS AI CARD).",
@@ -525,10 +573,10 @@ static void draw_garage_page(LauncherModel* m, const Gfx& g, const Input& in) {
            arena || design ? "EXTRA GARAGE" : "LAUNCHER GARAGE");
 
     /* the game's GARAGE: tall boxed entries, the orange bar on the highlight */
-    const float lx = 24.0f, top = 62.0f, lw = 250.0f, eh = 38.0f;
+    const float lx = 24.0f, top = 62.0f, lw = 250.0f, eh = 34.0f;
     int activate = -1;
     for (int i = 0; i < count; ++i) {
-        const float y = top + (eh + 6.0f) * i;
+        const float y = top + (eh + 5.0f) * i;
         game_box(g, lx, y, lw, eh);
         if (i == cur) game_bar(g, lx + 4.0f, y + 4.0f, lw - 8.0f, eh - 8.0f, labels[i]);
         else {
@@ -589,6 +637,7 @@ static void draw_garage_page(LauncherModel* m, const Gfx& g, const Input& in) {
     switch (activate) {
         case G_ASSEMBLY: open_assembly(m); break;
         case G_OPTIONS:  open_garage_screen(m, AI_SUB_OPTS); break;
+        case G_PERF:     load_garage(); g_garage_sub = 4; break;
         case G_DESIGN:   load_garage(); g_edit = g_garage; g_garage_sub = 3; s_cur[2] = 0; break;
         case G_AI:       open_garage_screen(m, AI_SUB_EDIT); break;
         case G_DATA:     open_data_page(m); break;

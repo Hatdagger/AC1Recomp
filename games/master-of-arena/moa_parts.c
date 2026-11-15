@@ -22,6 +22,11 @@ static const struct { uint32_t addr; uint32_t stride; uint32_t end; } k_tables[M
     { 0x800D17D0u, 48, 0x800D1AA0u },   /* generator */
 };
 #define OPTION_TABLE 0x800D1AA0u        /* 44-byte entries: name 18, what 18, price, slots */
+/* Weapon details, 24 bytes each, ATTACK POWER at +0x14. */
+#define WARM_DETAIL 0x800D1DE4u         /* weapon arms, by arms id - 12 */
+#define HAND_DETAIL 0x800D1F64u
+#define BACK_DETAIL 0x800D21D4u
+#define DETAIL_END  0x800D2774u
 
 static uint16_t rd16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
 
@@ -51,7 +56,7 @@ int moa_parts_load(const char *disc, struct moa_parts *out)
     }
     free(head);
     if (!ok) return 0;
-    const uint32_t need = k_tables[0].addr - MENU_BASE, last = OPTION_TABLE + 13u * 44u - MENU_BASE;
+    const uint32_t need = k_tables[0].addr - MENU_BASE, last = DETAIL_END - MENU_BASE;
     if (end - start < last) return 0;
     const uint32_t from = need & ~2047u;
     uint8_t *m = moa_disc_read_range(disc, "GG/COM/FDAT.T", start + from, last - from, NULL);
@@ -67,6 +72,12 @@ int moa_parts_load(const char *disc, struct moa_parts *out)
             p->id = (uint8_t)i;
             copy_name(p->name, r, 0);
             p->weight = rd16(r + 40);
+            p->price = (uint32_t)rd16(r + 36) | ((uint32_t)rd16(r + 38) << 16);
+            memcpy(p->raw, r, k_tables[c].stride);
+            if (c == MOA_CAT_HAND) p->attack = rd16(AT(HAND_DETAIL + 24u * i) + 20);
+            if (c == MOA_CAT_BACK) p->attack = rd16(AT(BACK_DETAIL + 24u * i) + 20);
+            if (c == MOA_CAT_BLADE) p->attack = rd16(r + 48);
+            if (c == MOA_CAT_ARMS && i >= 12) p->attack = rd16(AT(WARM_DETAIL + 24u * (i - 12)) + 20);
             p->drain = rd16(r + 42);
             if (c == MOA_CAT_HEAD || c == MOA_CAT_CORE || c == MOA_CAT_LEGS || c == MOA_CAT_ARMS) {
                 p->ap = rd16(r + 44); p->def_shell = rd16(r + 46); p->def_energy = rd16(r + 48);
@@ -83,6 +94,7 @@ int moa_parts_load(const char *disc, struct moa_parts *out)
         copy_name(out->option[i].name, r, 1);
         copy_name(out->option[i].what, r + 18, 0);
         out->option[i].slots = r[40];
+        out->option[i].price = (uint32_t)rd16(r + 36) | ((uint32_t)rd16(r + 38) << 16);
     }
 #undef AT
     free(m);
@@ -221,4 +233,63 @@ int moa_map_previews_load(const char *disc, struct moa_map_previews *out)
         free(t);
     }
     return got == MOA_STAGES;
+}
+
+/* The PERFORMANCE screen (menu 0x80092BB4). Option bits as the game's mask:
+ * 0x08 / 0x10 / 0x1000 stability, 0x80 / 0x100 shell / energy defence +15%. */
+void moa_performance(const struct moa_parts *p, const uint8_t rec[13], struct moa_performance *o)
+{
+    memset(o, 0, sizeof *o);
+    const struct moa_part *core = moa_parts_find(p, MOA_CAT_CORE, rec[0]),
+        *head = moa_parts_find(p, MOA_CAT_HEAD, rec[1]), *arms = moa_parts_find(p, MOA_CAT_ARMS, rec[2]),
+        *legs = moa_parts_find(p, MOA_CAT_LEGS, rec[3]), *hand = moa_parts_find(p, MOA_CAT_HAND, rec[4]),
+        *blade = moa_parts_find(p, MOA_CAT_BLADE, rec[5]), *bl = moa_parts_find(p, MOA_CAT_BACK, rec[6]),
+        *br = moa_parts_find(p, MOA_CAT_BACK, rec[7]), *fcs = moa_parts_find(p, MOA_CAT_FCS, rec[8]),
+        *gen = moa_parts_find(p, MOA_CAT_GEN, rec[9]), *boost = moa_parts_find(p, MOA_CAT_BOOST, rec[12]);
+    const unsigned mask = rec[10] | (rec[11] << 8);
+    const struct moa_part *all[11] = { core, head, arms, legs, hand, blade, bl, br, fcs, gen, boost };
+    for (int i = 0; i < 11; i++)
+        if (all[i]) { o->weight += all[i]->weight; o->price += (int)all[i]->price; }
+    for (int i = 0; i < MOA_OPTIONS; i++)
+        if (mask & (1u << i)) o->price += (int)p->option[i].price;
+
+    /* OFFENSIVE: weapon arms alone, else hand weapon + blade; plus both backs */
+    if (rec[2] >= 12 && rec[2] != 255) { if (arms) o->offensive += arms->attack; }
+    else { if (hand) o->offensive += hand->attack; if (blade) o->offensive += blade->attack; }
+    if (bl) o->offensive += bl->attack;
+    if (br) o->offensive += br->attack;
+
+    /* DEFENSIVE: shell + energy of head, arms, legs, core (x1.15 with the options) */
+    int shell = 0, energy = 0;
+    const struct moa_part *body[4] = { head, arms, legs, core };
+    for (int i = 0; i < 4; i++)
+        if (body[i]) { shell += rd16(body[i]->raw + 46); energy += rd16(body[i]->raw + 48);
+                       o->ap += rd16(body[i]->raw + 44); }
+    int s12 = shell << 12, e12 = energy << 12;
+    if (mask & 0x80) s12 = s12 * 115 / 100;
+    if (mask & 0x100) e12 = e12 * 115 / 100;
+    o->defensive = (s12 + e12) >> 12;
+
+    /* STABILITY: the legs' figure plus the balancer options */
+    if (legs) o->stability = rd16(legs->raw + 64);
+    if (mask & 0x10) o->stability += 800;
+    if (mask & 0x1000) o->stability += 1600; else if (mask & 0x08) o->stability += 800;
+
+    /* MOBILITY: speed and turning x10; boost = (power / weight) x1000, caterpillars 9800 */
+    if (legs) { o->moving_speed = rd16(legs->raw + 54) * 10; o->turning_speed = rd16(legs->raw + 56) * 10; }
+    const int power = (rec[3] >= 27 && rec[3] != 255) ? 9800 : boost ? rd16(boost->raw + 44) : 0;
+    if (o->weight > 0) o->boost_ability = power / o->weight * 1000;
+    o->mobility = o->moving_speed + o->turning_speed + o->boost_ability;
+
+    /* SUPPORT: the head's radar range / 10 (none with a back radar), FCS figures */
+    const int back_radar = (rec[6] >= 40 && rec[6] < 52) || (rec[7] >= 40 && rec[7] < 52);
+    if (head && !back_radar) o->radar_range = rd16(head->raw + 56) / 10;
+    if (fcs) {
+        const uint8_t *f = fcs->raw;
+        int a = 0, b = 0;
+        for (int i = 0; i < 4; i++) { a += (int16_t)rd16(f + 48 + 12 * i); b += (int16_t)rd16(f + 50 + 12 * i); }
+        o->fcs_performance = rd16(f + 46) / 10 + a / 10 + b / 10 + f[44] * 100 - (int16_t)rd16(f + 56) * 10;
+    }
+    o->support = o->radar_range + o->fcs_performance;
+    o->overall = o->offensive + o->defensive + o->stability + o->mobility + o->support;
 }

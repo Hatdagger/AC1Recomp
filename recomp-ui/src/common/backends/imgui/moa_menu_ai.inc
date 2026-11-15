@@ -116,6 +116,8 @@ static void rescan_on(const LauncherModel* m, const std::string& path) {
         g_state.cursor[PAGE_AI_CARDS] = g_ai_cards.empty() ? 0 : (int)g_ai_cards.size() - 1;
 }
 
+#include "../../../../../games/master-of-arena/moa_parts.h"
+
 static void open_editor(const AiCard& c) {
     g_edit = c.card;
     moa_build_normalise(g_edit.rec);

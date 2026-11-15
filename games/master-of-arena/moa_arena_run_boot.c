@@ -129,6 +129,46 @@
 #define RUN_A0_CLEAR         0x800BC274u
 #define RUN_A0_CLEAR_I       0x10400005u
 
+/* The run's opponents in arena 0 (GG/MS/MENU_TIM.T, file 4 of the table at
+ * 0x8004402C: 18 slots of 12 bytes, word 0 the entry index in RAM, halfword
+ * k = entry k's first sector in the file). Arena a's entries start at
+ * 140 + 4*start[a] + 4*a (start at 0x800D5A14, count at 0x800D5A08): count
+ * descriptions, count emblems (the last, the player's, empty), count
+ * portraits, count second descriptions, then the whole arena's builds (64
+ * bytes each), names (pilot then AC, 24 bytes each), rewards (8) and AI
+ * (36). Every entry ends with its checksum (sum of its words + 0x12345678).
+ * Project Phantasma's arena (10), when installed, starts at entry 888.
+ *
+ * Per-opponent entries are loaded one by one, through 0x800BDE88 (a0 =
+ * entry) and 0x800586A0 (a0 = file, a1 = entry): the entry is pointed at the
+ * source arena's own. The whole-arena entries are read (asynchronously) by
+ * 0x800160C4 at four sites; once the game's CD queue is empty (checked where
+ * the game itself checks it, 0x800589DC) they are rebuilt from the sources.
+ * Arena 0's entry e is rank e + 1, so the run's slot 49 - e. */
+#define RUN_FILE_TABLE       0x8004402Cu
+#define RUN_FILE_COUNT       18u
+#define RUN_ARENA_COUNTS     0x800D5A08u
+#define RUN_ARENA_STARTS     0x800D5A14u
+#define RUN_A0_FIRST         140u
+#define RUN_PP_FIRST         888u
+#define RUN_PP_ARENA         10u
+#define RUN_LOAD_ONE         0x800BDE88u  /* a0 = entry */
+#define RUN_LOAD_FILE        0x800586A0u  /* a0 = file, a1 = entry */
+#define RUN_SIG_LOADER       0x27BDFFD8u
+#define RUN_CD_BUSY          0x800589DCu
+#define RUN_SIG_CD_BUSY      0x27BDFFE8u
+#define RUN_CDQ              0x80043C70u  /* the game's CD queue: write +0x378, read +0x37C */
+#define RUN_JAL_READ         0x0C005831u  /* jal 0x800160C4: a2 = bytes, a3 = buffer */
+#define RUN_READ_NAMES       0x800BBB3Cu  /* arena screen open (arena in s4) */
+#define RUN_READ_REWARDS     0x800BBCFCu
+#define RUN_READ_BUILDS      0x800C0250u  /* fight setup */
+#define RUN_READ_AI          0x800C04FCu
+#define RUN_ARENA_AT_BUILDS  0x800C01FCu  /* lbu a3,0x5D(s1) */
+#define RUN_ARENA_AT_BUILDS_I 0x9227005Du
+#define RUN_ARENA_AT_AI      0x800C04A8u  /* lbu v1,0x5D(s2) */
+#define RUN_ARENA_AT_AI_I    0x9243005Du
+enum { KIND_BUILDS = 0, KIND_NAMES, KIND_REWARDS, KIND_AI };
+
 #define RUN_HUB_TIMEOUT      (60u * 90u)  /* frames; fast forward makes this short */
 #define RUN_FADE_FRAMES      24u
 
@@ -345,6 +385,168 @@ static void run_a0_clear(struct CPUState *cpu, uint32_t address)
     if (run_a0(cpu, 16)) cpu->gpr[2] = 0;
 }
 
+/* ---- the run's opponents in arena 0 ---------------------------------------- */
+
+static uint32_t run_index(void)
+{
+    for (uint32_t f = 0; f < RUN_FILE_COUNT; ++f) {
+        const uint32_t ix = psx_mod_read_word(RUN_FILE_TABLE + f * 12u);
+        if ((ix >> 24) == 0x80u && psx_mod_read_half(ix) == 1u && psx_mod_read_half(ix + 2u) == 37u)
+            return ix;                                   /* MENU_TIM.T (stock or Phantasma's) */
+    }
+    return 0;
+}
+
+/* First entry and count of a source arena; 0 = not available. */
+static int run_source(uint32_t ix, uint8_t arena, uint32_t *first, uint32_t *count)
+{
+    if (arena == RUN_PP_ARENA) {
+        *first = RUN_PP_FIRST; *count = 50u;
+        /* Phantasma's index covers its block only once installed. */
+        return psx_mod_read_half(ix + 2u * (RUN_PP_FIRST + 203u)) >
+               psx_mod_read_half(ix + 2u * RUN_PP_FIRST);
+    }
+    if (arena > 8u) return 0;
+    *count = psx_mod_read_byte(RUN_ARENA_COUNTS + arena);
+    *first = RUN_A0_FIRST + 4u * psx_mod_read_byte(RUN_ARENA_STARTS + arena) + 4u * arena;
+    return *count != 0;
+}
+
+/* Arena 0's per-opponent entry -> the run's source entry (unchanged if not one). */
+static uint32_t run_remap(uint32_t entry)
+{
+    if (!run_on() || !run_at_hub || !run_state_ok) return entry;
+    if (entry < RUN_A0_FIRST || entry >= RUN_A0_FIRST + 4u * MOA_RUN_SLOTS) return entry;
+    const uint32_t kind = (entry - RUN_A0_FIRST) / MOA_RUN_SLOTS;
+    const uint32_t e = (entry - RUN_A0_FIRST) % MOA_RUN_SLOTS;
+    const struct moa_run_pick p = run_state.lineup.slot[MOA_RUN_SLOTS - 1u - e];
+    if (p.arena == MOA_RUN_PLAYER || p.arena == MOA_RUN_GHOST) return entry;
+    uint32_t first, count;
+    const uint32_t ix = run_index();
+    if (!ix || !run_source(ix, p.arena, &first, &count) || p.rank + 1u >= count) return entry;
+    return first + kind * count + p.rank;
+}
+
+static void run_load_one_entry(struct CPUState *cpu, uint32_t address)
+{
+    if (psx_mod_read_word(address) != RUN_SIG_LOADER) return;
+    cpu->gpr[4] = run_remap(cpu->gpr[4] & 0xFFFFu);
+}
+
+static void run_load_file_entry(struct CPUState *cpu, uint32_t address)
+{
+    if (psx_mod_read_word(address) != RUN_SIG_LOADER || (cpu->gpr[4] & 0xFFFFu) != 4u) return;
+    cpu->gpr[5] = run_remap(cpu->gpr[5] & 0xFFFFu);
+}
+
+static struct { int kind; uint32_t buf, bytes; } run_fix[4];
+static int run_fixes;
+static uint8_t run_arena_at_builds = 0xFF, run_arena_at_ai = 0xFF;
+
+static void run_queue_fix(int kind, uint8_t arena, struct CPUState *cpu)
+{
+    if (!run_on() || !run_at_hub || !run_state_ok || arena != RUN_ARENA) return;
+    const uint32_t bytes = cpu->gpr[6], buf = cpu->gpr[7];
+    if (bytes < 8u || bytes > 4096u || (bytes & 3u) || buf < 0x80000000u ||
+        buf + bytes > 0x80200000u || run_fixes >= 4)
+        return;
+    run_fix[run_fixes].kind = kind;
+    run_fix[run_fixes].buf = buf;
+    run_fix[run_fixes].bytes = bytes;
+    run_fixes++;
+}
+
+static void run_read_names(struct CPUState *c, uint32_t a)   { (void)a; run_queue_fix(KIND_NAMES, (uint8_t)c->gpr[20], c); }
+static void run_read_rewards(struct CPUState *c, uint32_t a) { (void)a; run_queue_fix(KIND_REWARDS, (uint8_t)c->gpr[20], c); }
+static void run_read_builds(struct CPUState *c, uint32_t a)  { (void)a; run_queue_fix(KIND_BUILDS, run_arena_at_builds, c); }
+static void run_read_ai(struct CPUState *c, uint32_t a)      { (void)a; run_queue_fix(KIND_AI, run_arena_at_ai, c); }
+static void run_arena_builds(struct CPUState *c, uint32_t a) { (void)a; run_arena_at_builds = psx_mod_read_byte(c->gpr[17] + 0x5Du); }
+static void run_arena_ai(struct CPUState *c, uint32_t a)     { (void)a; run_arena_at_ai = psx_mod_read_byte(c->gpr[18] + 0x5Du); }
+
+/* One record of a source arena's whole-arena entry. */
+static int run_record(uint32_t ix, struct moa_run_pick p, int kind, uint32_t stride, uint8_t *out)
+{
+    static uint8_t sec[4096];
+    static uint32_t have = 0xFFFFFFFFu;               /* the entry in sec */
+    uint32_t first, count;
+    if (!run_source(ix, p.arena, &first, &count) || p.rank >= count) return 0;
+    const uint32_t entry = first + 4u * count + (uint32_t)kind;
+    if (entry != have) {
+        const uint32_t a = psx_mod_read_half(ix + 2u * entry), b = psx_mod_read_half(ix + 2u * entry + 2u);
+        if (b <= a || (b - a) > 2u ||
+            !psx_mod_read_disc_sectors(run_state.lineup.menu_lba + a, b - a, sec)) {
+            have = 0xFFFFFFFFu;
+            return 0;
+        }
+        have = entry;
+    }
+    memcpy(out, sec + p.rank * stride, stride);
+    return 1;
+}
+
+/* Rebuild one whole-arena entry for the run, in place. */
+static void run_apply_fix(int kind, uint32_t buf, uint32_t bytes)
+{
+    static const uint32_t k_stride[4] = { 64u, 48u, 8u, 36u };
+    static uint8_t out[4096];
+    const uint32_t stride = k_stride[kind];
+    const uint32_t ix = run_index();
+    if (!ix || !run_state.lineup.menu_lba || MOA_RUN_SLOTS * stride + 4u > bytes) {
+        psx_mod_counter_add("moa.run.data_skipped", 1);
+        return;
+    }
+    for (uint32_t i = 0; i < bytes; ++i) out[i] = psx_mod_read_byte(buf + i);
+    for (uint32_t e = 0; e + 1u < MOA_RUN_SLOTS; ++e) {   /* entry 49: the player */
+        uint8_t *rec = out + e * stride;
+        const struct moa_run_pick p = run_state.lineup.slot[MOA_RUN_SLOTS - 1u - e];
+        if (kind == KIND_REWARDS) {                       /* P comes from the run */
+            memset(rec, 0, 4);
+            memset(rec + 4, 0xFF, 4);
+            continue;
+        }
+        if (p.arena == MOA_RUN_PLAYER) continue;
+        if (p.arena == MOA_RUN_GHOST) {
+            if (p.rank >= MOA_RUN_SLOTS) continue;
+            const struct moa_run_ghost *g = &run_state.lineup.ghost[p.rank];
+            if (kind == KIND_BUILDS) moa_run_ghost_record(g, rec);
+            else if (kind == KIND_NAMES) {
+                memset(rec, 0, 48);
+                memcpy(rec, g->pilot, strnlen(g->pilot, 16));
+                memcpy(rec + 24, g->ac, strnlen(g->ac, 16));
+            } else if (g->ai_from.arena != MOA_RUN_PLAYER && g->ai_from.arena != MOA_RUN_GHOST)
+                (void)run_record(ix, g->ai_from, kind, stride, rec);
+            continue;
+        }
+        if (!run_record(ix, p, kind, stride, rec)) psx_mod_counter_add("moa.run.data_missing", 1);
+    }
+    uint32_t sum = 0x12345678u;                           /* the entry's checksum */
+    for (uint32_t i = 0; i + 4u < bytes; i += 4u)
+        sum += (uint32_t)out[i] | (uint32_t)out[i + 1] << 8 | (uint32_t)out[i + 2] << 16 |
+               (uint32_t)out[i + 3] << 24;
+    out[bytes - 4] = (uint8_t)sum; out[bytes - 3] = (uint8_t)(sum >> 8);
+    out[bytes - 2] = (uint8_t)(sum >> 16); out[bytes - 1] = (uint8_t)(sum >> 24);
+    for (uint32_t i = 0; i < bytes; i += 4u)
+        psx_mod_write_word(buf + i, (uint32_t)out[i] | (uint32_t)out[i + 1] << 8 |
+                                    (uint32_t)out[i + 2] << 16 | (uint32_t)out[i + 3] << 24);
+    psx_mod_counter_add("moa.run.data_applied", 1);
+}
+
+/* The queued entries, once every read is in. */
+static void run_apply_fixes(void)
+{
+    if (!run_fixes) return;
+    const uint32_t rd = psx_mod_read_word(RUN_CDQ + 0x37Cu);
+    if (rd != psx_mod_read_word(RUN_CDQ + 0x378u) || psx_mod_read_byte(rd) != 0u) return;
+    for (int i = 0; i < run_fixes; ++i) run_apply_fix(run_fix[i].kind, run_fix[i].buf, run_fix[i].bytes);
+    run_fixes = 0;
+}
+
+static void run_cd_busy_entry(struct CPUState *cpu, uint32_t address)
+{
+    (void)cpu;
+    if (run_fixes && psx_mod_read_word(address) == RUN_SIG_CD_BUSY) run_apply_fixes();
+}
+
 /* A blocked hub entry does what an unknown entry does: nothing. */
 static int run_hub_pick_filter(struct CPUState *cpu, uint32_t address)
 {
@@ -380,6 +582,7 @@ static void run_sampler_entry(struct CPUState *cpu, uint32_t address)
 static void run_frame_hook(void)
 {
     if (!run_on()) return;
+    run_apply_fixes();
     if (run_loss_wait && !--run_loss_wait) {
         psx_mod_counter_add("moa.run.over", 1);
         psx_mod_request_return_to_launcher();
@@ -413,6 +616,15 @@ PSX_MOD_CONSTRUCTOR(moa_arena_run_boot_register)
     (void)psx_game_register_offline_function_filter(RUN_HUB_PICK, run_hub_pick_filter);
     (void)psx_game_register_offline_function_entry(RUN_FIGHT_SAMPLER, run_sampler_entry);
     (void)psx_game_register_offline_instruction(RUN_A0_OPEN, RUN_A0_OPEN_I, run_a0_open);
+    (void)psx_game_register_offline_function_entry(RUN_LOAD_ONE, run_load_one_entry);
+    (void)psx_game_register_offline_function_entry(RUN_LOAD_FILE, run_load_file_entry);
+    (void)psx_game_register_offline_function_entry(RUN_CD_BUSY, run_cd_busy_entry);
+    (void)psx_game_register_offline_instruction(RUN_READ_NAMES, RUN_JAL_READ, run_read_names);
+    (void)psx_game_register_offline_instruction(RUN_READ_REWARDS, RUN_JAL_READ, run_read_rewards);
+    (void)psx_game_register_offline_instruction(RUN_READ_BUILDS, RUN_JAL_READ, run_read_builds);
+    (void)psx_game_register_offline_instruction(RUN_READ_AI, RUN_JAL_READ, run_read_ai);
+    (void)psx_game_register_offline_instruction(RUN_ARENA_AT_BUILDS, RUN_ARENA_AT_BUILDS_I, run_arena_builds);
+    (void)psx_game_register_offline_instruction(RUN_ARENA_AT_AI, RUN_ARENA_AT_AI_I, run_arena_ai);
     (void)psx_game_register_offline_instruction(RUN_A0_SUBFIGHT, RUN_A0_SUBFIGHT_I, run_a0_subfight);
     (void)psx_game_register_offline_instruction(RUN_A0_RANKED, RUN_A0_RANKED_I, run_a0_ranked);
     (void)psx_game_register_offline_instruction(RUN_A0_CURSOR, RUN_A0_CURSOR_I, run_a0_cursor);

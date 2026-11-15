@@ -36,6 +36,10 @@ struct moa_run_source {
 
 struct moa_run_pick { uint8_t arena, rank; };   /* rank 0 = that arena's top */
 
+/* The 64-byte arena record of a ghost (its build, names and the run's paint). */
+struct moa_run_ghost;
+void moa_run_ghost_record(const struct moa_run_ghost *g, uint8_t rec[64]);
+
 /* The run's sources from the player's disc: each arena's opponent count from
  * the menu module's table (0x800D5A08), with the band each arena belongs to.
  * Phantasma (arena 10, 50 opponents) is added when `phantasma` is set.
@@ -55,8 +59,8 @@ void moa_run_seed_text(uint64_t seed, char out[17]);   /* 16 hex digits */
 int moa_run_score(const struct moa_run_source *src, int rank);
 
 /* Fill `out` (ranks 50..1 as out[0]..out[49]: easiest first) from the
- * sources. Phantasma sources are skipped unless `phantasma` is set.
- * Returns the number of slots filled (50 unless the roster is too small). */
+ * sources: out[0] is the player's place (MOA_RUN_PLAYER), 49 opponents above. Phantasma sources are skipped unless `phantasma` is set.
+ * Returns the number of slots filled, the player's included (50 unless the roster is too small). */
 int moa_run_lineup(const struct moa_run_source *src, int nsrc, int phantasma,
                    uint64_t seed, struct moa_run_pick out[MOA_RUN_SLOTS]);
 
@@ -72,6 +76,9 @@ int moa_run_start_ac(const struct moa_parts *p, uint64_t seed, uint8_t rec[13]);
 /* A lineup slot whose arena is MOA_RUN_GHOST is a ghost: `rank` is its
  * index in moa_run_lineup.ghost. */
 #define MOA_RUN_GHOST   0xFFu
+/* Slot 0 (rank 50) is the player's own place at the bottom of the ladder:
+ * 49 opponents above it, as in the game's arena 0. */
+#define MOA_RUN_PLAYER  0xFEu
 
 /* A losing AC from an earlier attempt, kept on the ladder for Retry. */
 struct moa_run_ghost {
@@ -81,6 +88,7 @@ struct moa_run_ghost {
     uint8_t  pad;
     char     pilot[17];
     char     ac[17];
+    struct moa_run_pick ai_from;   /* AI: copied from the opponent it displaced */
 };
 
 /* What Retry keeps: the arena itself. The seed made it; ghosts pile up. */
@@ -88,7 +96,8 @@ struct moa_run_lineup {
     uint64_t seed;
     uint8_t  phantasma;            /* the lineup used Phantasma opponents */
     uint8_t  ghosts;               /* ghosts on the ladder now */
-    uint8_t  pad[6];
+    uint8_t  pad[2];
+    uint32_t menu_lba;             /* GG/MS/MENU_TIM.T's first sector on the disc */
     struct moa_run_pick slot[MOA_RUN_SLOTS];          /* ranks 50..1 */
     struct moa_run_ghost ghost[MOA_RUN_SLOTS];
 };

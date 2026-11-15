@@ -25,6 +25,9 @@ unsigned char *moa_disc_read_range(const char *disc_path, const char *file_path,
                                    unsigned int offset, unsigned int bytes,
                                    unsigned int *file_size);
 
+/* A file's first sector on a disc image (0 = not found). */
+unsigned int moa_disc_file_lba(const char *disc_path, const char *file_path);
+
 #ifdef __cplusplus
 }
 #endif

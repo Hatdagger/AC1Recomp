@@ -130,7 +130,7 @@ int moa_run_lineup(const struct moa_run_source *src, int nsrc, int phantasma,
     if (!subs || !rest) goto done;
     for (int i = 0; i < nsrc; ++i) {
         if (src[i].band == MOA_BAND_PHANTASMA && !phantasma) continue;
-        for (int r = 0; r < src[i].entries; ++r) {
+        for (int r = 0; r + 1 < src[i].entries; ++r) {   /* the last is the player's */
             struct cand c = { { src[i].arena, (uint8_t)r }, moa_run_score(&src[i], r),
                               (uint32_t)moa_run_next(&rng) };
             if (src[i].band == MOA_BAND_SUB) subs[nsub++] = c; else rest[nrest++] = c;
@@ -143,7 +143,7 @@ int moa_run_lineup(const struct moa_run_source *src, int nsrc, int phantasma,
         int j = i + (int)moa_run_below(&rng, (uint32_t)(nsub - i));
         struct cand t = subs[i]; subs[i] = subs[j]; subs[j] = t;
     }
-    int need = MOA_RUN_SLOTS - take_sub;
+    int need = MOA_RUN_SLOTS - 1 - take_sub;
     if (need > nrest) need = nrest;
     /* The rest: sorted by score, cut into `need` equal buckets, one random
      * pick from each, so the ramp holds and the lineup varies. */
@@ -162,6 +162,8 @@ int moa_run_lineup(const struct moa_run_source *src, int nsrc, int phantasma,
         if (!is_sub[k]) { is_sub[k] = 1; ++i; }
     }
     int si = 0, ri = 0;
+    out[filled].arena = MOA_RUN_PLAYER;              /* rank 50: the player */
+    out[filled++].rank = 0;
     for (int k = 0; k < need + take_sub; ++k)
         out[filled++] = is_sub[k] ? subs[si++].p : chosen[ri++].p;
 done:
@@ -220,22 +222,25 @@ int moa_run_new(const struct moa_parts *p, const struct moa_run_source *src, int
 }
 
 /* The ghost goes in at rank `held`: that rank and every rank below it move
- * down one, and the bottom entry (rank 50) leaves the ladder. Slot i holds
- * rank 50 - i. */
+ * down one, and the bottom opponent (rank 49) leaves the ladder. Slot i holds
+ * rank 50 - i; slot 0 is the player's place. */
 static void run_add_ghost(struct moa_run_state *s, int held)
 {
     struct moa_run_lineup *l = &s->lineup;
     int g = 0;
     while (g < MOA_RUN_SLOTS && l->ghost[g].used) g++;
-    if (g == MOA_RUN_SLOTS || held < 1 || held > MOA_RUN_SLOTS) return;
-    const struct moa_run_pick out = l->slot[0];
+    if (g == MOA_RUN_SLOTS || held < 1 || held > MOA_RUN_SLOTS - 1) return;
+    const struct moa_run_pick out = l->slot[1];          /* rank 49: slot 0 is the player */
     if (out.arena == MOA_RUN_GHOST && out.rank < MOA_RUN_SLOTS) {
         l->ghost[out.rank].used = 0;                      /* pushed off the bottom */
         l->ghosts--;
         if (out.rank < g) g = out.rank;
     }
-    const int at = MOA_RUN_SLOTS - held;
-    memmove(&l->slot[0], &l->slot[1], (size_t)at * sizeof l->slot[0]);
+    const int at = MOA_RUN_SLOTS - held;                /* 1..49 */
+    const struct moa_run_pick displaced = l->slot[at];
+    const struct moa_run_pick ai = displaced.arena == MOA_RUN_GHOST && displaced.rank < MOA_RUN_SLOTS
+                                 ? l->ghost[displaced.rank].ai_from : displaced;
+    memmove(&l->slot[1], &l->slot[2], (size_t)(at - 1) * sizeof l->slot[0]);
     struct moa_run_ghost *gh = &l->ghost[g];
     memset(gh, 0, sizeof *gh);
     /* Step 1 owns only the starting AC's parts, so that is the build that lost;
@@ -243,6 +248,7 @@ static void run_add_ghost(struct moa_run_state *s, int held)
     memcpy(gh->rec, s->run.start_ac, sizeof gh->rec);
     gh->used = 1;
     gh->attempt = s->run.attempt;
+    gh->ai_from = ai;
     memcpy(gh->pilot, s->run.pilot, sizeof gh->pilot);
     memcpy(gh->ac, s->run.ac, sizeof gh->ac);
     l->slot[at].arena = MOA_RUN_GHOST;
@@ -347,9 +353,22 @@ static int owned_base(int cat)
     return -1;
 }
 
+static const uint8_t k_paint[12] = { 32, 36, 28, 16, 20, 12, 18, 24, 12, 12, 18, 12 };
+
+void moa_run_ghost_record(const struct moa_run_ghost *g, uint8_t rec[64])
+{
+    static struct moa_card c;
+    memset(&c, 0, sizeof c);
+    c.format = 4;
+    memcpy(c.rec, g->rec, 13);
+    snprintf(c.pilot, sizeof c.pilot, "%s", g->pilot);
+    snprintf(c.ac, sizeof c.ac, "%s", g->ac);
+    for (int i = 0; i < 48; i++) c.paint[i] = k_paint[i % 12];
+    moa_card_record(&c, rec);
+}
+
 void moa_run_make_save(const struct moa_run_state *s, uint8_t b[8192])
 {
-    static const uint8_t k_paint[12] = { 32, 36, 28, 16, 20, 12, 18, 24, 12, 12, 18, 12 };
     static struct moa_card c;
     memset(&c, 0, sizeof c);
     c.format = 4;

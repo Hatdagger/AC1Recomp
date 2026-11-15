@@ -83,6 +83,11 @@ static void new_run(LauncherModel* m) {
         g_run_status = "A RUN COULD NOT BE MADE FROM YOUR DISC.";
         return;
     }
+    g_run.lineup.menu_lba = moa_disc_file_lba(disc.c_str(), "GG/MS/MENU_TIM.T");
+    if (!g_run.lineup.menu_lba) {
+        g_run_status = "THE ARENA DATA COULD NOT BE FOUND ON YOUR DISC.";
+        return;
+    }
     std::snprintf(g_run.run.pilot, sizeof g_run.run.pilot, "%s", g_run_pilot);
     std::snprintf(g_run.run.ac, sizeof g_run.run.ac, "%s", g_run_ac);
     if (!start_run(m)) return;

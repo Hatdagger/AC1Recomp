@@ -227,6 +227,15 @@ unsigned char *moa_disc_read_range(const char *disc_path, const char *file_path,
     return out;
 }
 
+unsigned int moa_disc_file_lba(const char *disc_path, const char *file_path) {
+    struct disc d;
+    uint32_t lba = 0, size = 0;
+    if (!disc_path || !disc_open(&d, disc_path)) return 0;
+    if (!disc_find(&d, file_path, &lba, &size)) lba = 0;
+    disc_close(&d);
+    return lba;
+}
+
 int moa_phantasma_is_disc(const char *path) {
     struct disc d;
     uint32_t lba, size;

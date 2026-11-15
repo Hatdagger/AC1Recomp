@@ -285,8 +285,16 @@ static void load_garage() {
         if (!g_garage.has_ai) moa_card_set_preset(&g_garage, MOA_AI_PRESET_BALANCED);
         return;
     }
+    /* No saved garage AC: the game's own new-game AC (from a fresh Scenario
+     * save), weapons as the game gives them, original colours, no emblem. */
     moa_card_new(&g_garage);
-    moa_card_paint_from_emblem(&g_garage);
+    static const uint8_t kStartRec[13] = { 0, 5, 1, 3, 1, 0, 0, 40, 0, 0, 0, 0, 0 };
+    static const uint8_t kStartPaint[12] = { 32, 36, 28, 16, 20, 12, 18, 24, 12, 12, 18, 12 };
+    std::memcpy(g_garage.rec, kStartRec, sizeof kStartRec);
+    for (int sec = 0; sec < 4; ++sec) std::memcpy(g_garage.paint + sec * 12, kStartPaint, 12);
+    g_garage.plus = 0;
+    std::memset(g_garage.palette, 0, sizeof g_garage.palette);
+    std::memset(g_garage.emblem, 0, sizeof g_garage.emblem);
 }
 
 static bool save_garage() {

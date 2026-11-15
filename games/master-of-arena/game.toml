@@ -84,6 +84,8 @@ mod_instruction_sites = [
     # mission source picker (menu)
     "0x800954E4", "0x800955BC", "0x800955D0", "0x8009510C",
     "0x800556B8", "0x800556D4", "0x80055874", "0x80055894",
+    # Arena Run: arena 0 as one 50-rank ladder (menu)
+    "0x800BBA98", "0x800BBFB4", "0x800BBFE0", "0x800BC110", "0x800BC274",
 ]
 
 [runtime]

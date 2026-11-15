@@ -105,6 +105,30 @@
 #define RUN_SIG_SAMPLER      0x27BDFFE8u
 #define RUN_PAD_SELECT       0x0001u
 
+/* Arena 0 as one 50-rank ladder. Stock arena 0 is two lists in one: ranks
+ * 1-15 the ranked arena, 16-50 the sub arena (beaten flags only; the ranked
+ * list opens once the rank is 15 or better). In a run there is no sub arena:
+ * each site below takes the ranked arena's path for every rank. All guarded
+ * by the instruction word and arena 0 (state + 0x80 + 0x5D).
+ *   open      0x800BBA98 sb v0,0x60(s2): rows = the arena's count (s2+0x5F,
+ *             50), view (s2+0x5C) = ranked
+ *   win       0x800BBFB4 bnez a1 (0x8003EAC9, sub-arena fight): a1 = 0
+ *             0x800BBFE0 sltiu v0,v0,16 (rank < 16): v0 = 1, so a win over
+ *             anyone above moves the rank up one, as in the Ex arenas
+ *   result    0x800BC110 beqz v0 (rank < 16): v0 = 1, cursor on the rank
+ *   list      0x800BC274 beqz v0 (row < 15): v0 = 0, so beaten opponents
+ *             stay beaten (stock clears ranks 1-15 for refights) */
+#define RUN_A0_OPEN          0x800BBA98u
+#define RUN_A0_OPEN_I        0xA2420060u
+#define RUN_A0_SUBFIGHT      0x800BBFB4u
+#define RUN_A0_SUBFIGHT_I    0x14A00036u
+#define RUN_A0_RANKED        0x800BBFE0u
+#define RUN_A0_RANKED_I      0x2C420010u
+#define RUN_A0_CURSOR        0x800BC110u
+#define RUN_A0_CURSOR_I      0x10400015u
+#define RUN_A0_CLEAR         0x800BC274u
+#define RUN_A0_CLEAR_I       0x10400005u
+
 #define RUN_HUB_TIMEOUT      (60u * 90u)  /* frames; fast forward makes this short */
 #define RUN_FADE_FRAMES      24u
 
@@ -279,6 +303,48 @@ static void run_result_entry(struct CPUState *cpu, uint32_t address)
      * routine is found (see ARENA_RUN_DESIGN.md "Still to find"). */
 }
 
+/* Arena 0 sites: s2 (open) or s0 (the rest) = state + 0x80. */
+static int run_a0(struct CPUState *cpu, int reg)
+{
+    if (!run_on() || !run_at_hub) return 0;
+    const uint32_t b = cpu->gpr[reg];
+    return b >= 0x80000000u && b < 0x80200000u && psx_mod_read_byte(b + 0x5Du) == RUN_ARENA;
+}
+
+static void run_a0_open(struct CPUState *cpu, uint32_t address)
+{
+    (void)address;
+    if (!run_a0(cpu, 18)) return;
+    const uint32_t b = cpu->gpr[18];
+    cpu->gpr[2] = psx_mod_read_byte(b + 0x5Fu);           /* the arena's count */
+    psx_mod_write_byte(b + 0x5Cu, 0);                     /* the ranked list */
+    psx_mod_counter_add("moa.run.a0_open", 1);
+}
+
+static void run_a0_subfight(struct CPUState *cpu, uint32_t address)
+{
+    (void)address;
+    if (run_a0(cpu, 16)) cpu->gpr[5] = 0;
+}
+
+static void run_a0_ranked(struct CPUState *cpu, uint32_t address)
+{
+    (void)address;
+    if (run_a0(cpu, 16)) cpu->gpr[2] = 1;                 /* sltiu 1,16 -> 1 */
+}
+
+static void run_a0_cursor(struct CPUState *cpu, uint32_t address)
+{
+    (void)address;
+    if (run_a0(cpu, 16)) cpu->gpr[2] = 1;
+}
+
+static void run_a0_clear(struct CPUState *cpu, uint32_t address)
+{
+    (void)address;
+    if (run_a0(cpu, 16)) cpu->gpr[2] = 0;
+}
+
 /* A blocked hub entry does what an unknown entry does: nothing. */
 static int run_hub_pick_filter(struct CPUState *cpu, uint32_t address)
 {
@@ -346,5 +412,10 @@ PSX_MOD_CONSTRUCTOR(moa_arena_run_boot_register)
     (void)psx_game_register_offline_function_entry(RUN_RESULT, run_result_entry);
     (void)psx_game_register_offline_function_filter(RUN_HUB_PICK, run_hub_pick_filter);
     (void)psx_game_register_offline_function_entry(RUN_FIGHT_SAMPLER, run_sampler_entry);
+    (void)psx_game_register_offline_instruction(RUN_A0_OPEN, RUN_A0_OPEN_I, run_a0_open);
+    (void)psx_game_register_offline_instruction(RUN_A0_SUBFIGHT, RUN_A0_SUBFIGHT_I, run_a0_subfight);
+    (void)psx_game_register_offline_instruction(RUN_A0_RANKED, RUN_A0_RANKED_I, run_a0_ranked);
+    (void)psx_game_register_offline_instruction(RUN_A0_CURSOR, RUN_A0_CURSOR_I, run_a0_cursor);
+    (void)psx_game_register_offline_instruction(RUN_A0_CLEAR, RUN_A0_CLEAR_I, run_a0_clear);
     mod_register_frame_hook(run_frame_hook);
 }

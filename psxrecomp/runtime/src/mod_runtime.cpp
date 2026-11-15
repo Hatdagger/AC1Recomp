@@ -308,6 +308,18 @@ std::vector<ActiveFunctionEntryHook>& game_offline_entry_hooks() {
     return value;
 }
 
+/* The game's own instruction hooks for an offline feature (see
+ * psx_game_register_offline_instruction). Kept apart from the plan's table,
+ * which every plan replacement clears; never run in a netplay session. */
+struct GameInstructionHook {
+    uint32_t key, expected;
+    PSXModFunctionEntryCallback callback;
+};
+std::vector<GameInstructionHook>& game_offline_instruction_hooks() {
+    static std::vector<GameInstructionHook> value;
+    return value;
+}
+
 void update_function_entry_count() {
     g_psx_mod_function_entry_hooks = (uint32_t)(
         active_function_entry_hooks().size() + game_netplay_entry_hooks().size() +
@@ -338,7 +350,7 @@ void clear_function_entry_hooks() {
     active_guest_functions().clear();
     g_psx_mod_guest_functions = 0;
     active_instruction_hooks().clear();
-    g_psx_mod_instruction_hooks = 0;
+    g_psx_mod_instruction_hooks = (uint32_t)game_offline_instruction_hooks().size();
 }
 
 void build_function_entry_hooks(const RuntimeMods& s) {
@@ -367,7 +379,8 @@ void build_function_entry_hooks(const RuntimeMods& s) {
             instructions.push_back({hook.address, hook.expected, hook.callback, &plugin});
     std::stable_sort(instructions.begin(), instructions.end(),
                     [](const auto& a, const auto& b) { return a.key < b.key; });
-    g_psx_mod_instruction_hooks = (uint32_t)instructions.size();
+    g_psx_mod_instruction_hooks = (uint32_t)(instructions.size() +
+                                             game_offline_instruction_hooks().size());
 }
 
 const ModPackage* selected_package(const std::string& id) {
@@ -3221,9 +3234,22 @@ extern "C" int psx_mod_register_instruction_plugin(const char* id, uint32_t addr
 extern "C" void psx_mod_instruction(CPUState* cpu, uint32_t address, uint32_t instruction) {
     using namespace PSXRecompV4;
     if (!g_psx_mod_instruction_hooks || !cpu || address >= 0xC0000000u) return;
+    const auto key = function_entry_key(address);
+    /* The game's offline hooks first; never in a netplay session. */
+    const auto& game = game_offline_instruction_hooks();
+    if (!game.empty() && !psx_netplay_active()) {
+        auto g = std::lower_bound(game.begin(), game.end(), key,
+                                  [](const auto& h, uint32_t k) { return h.key < k; });
+        for (; g != game.end() && g->key == key; ++g) {
+            if (g->expected != instruction || psx_mod_read_word(address) != instruction) continue;
+            const uint32_t pc = cpu->pc;
+            g->callback(cpu, address);
+            if (cpu->pc != pc) std::abort();
+            cpu->gpr[0] = 0;
+        }
+    }
     if (mod_plan_hooks_parked()) return;
     const auto& hooks = active_instruction_hooks();
-    const auto key = function_entry_key(address);
     auto it = std::lower_bound(hooks.begin(), hooks.end(), key,
                               [](const auto& h, uint32_t k) { return h.key < k; });
     for (; it != hooks.end() && it->key == key; ++it) {
@@ -3281,6 +3307,21 @@ extern "C" int psx_game_register_offline_function_entry(
     uint32_t address, PSXModFunctionEntryCallback callback) {
     return callback ? register_game_hook(PSXRecompV4::game_offline_entry_hooks(),
                                          address, callback, nullptr) : 0;
+}
+
+extern "C" int psx_game_register_offline_instruction(
+    uint32_t address, uint32_t expected, PSXModFunctionEntryCallback callback) {
+    using namespace PSXRecompV4;
+    if (!address || (address & 3u) || !callback) return 0;
+    const uint32_t key = function_entry_key(address);
+    auto& table = game_offline_instruction_hooks();
+    for (const auto& h : table)
+        if (h.key == key && h.expected == expected && h.callback == callback) return 1;
+    table.push_back({key, expected, callback});
+    std::stable_sort(table.begin(), table.end(),
+                     [](const auto& a, const auto& b) { return a.key < b.key; });
+    g_psx_mod_instruction_hooks = (uint32_t)(active_instruction_hooks().size() + table.size());
+    return 1;
 }
 
 extern "C" int psx_game_register_offline_function_filter(

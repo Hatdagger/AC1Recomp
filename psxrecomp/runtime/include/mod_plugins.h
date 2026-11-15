@@ -92,6 +92,12 @@ int psx_game_register_offline_function_entry(
     uint32_t address, PSXModFunctionEntryCallback callback);
 int psx_game_register_offline_function_filter(
     uint32_t address, PSXModFunctionFilterCallback filter);
+/* An offline feature's instruction hook: same contract as
+ * psx_mod_register_instruction_plugin (runs before the instruction, the word
+ * must match, no PC change), but owned by the game, not a mod plan. Compiled
+ * disc code reaches it only at addresses in [recompiler] mod_instruction_sites. */
+int psx_game_register_offline_instruction(
+    uint32_t address, uint32_t expected, PSXModFunctionEntryCallback callback);
 /* Offline only. Ask for uncapped fast forward (presenting every 8th frame)
  * while a game feature runs unattended, and clear the request when the player
  * should take over. Ignored under netplay; cleared when a session ends. */

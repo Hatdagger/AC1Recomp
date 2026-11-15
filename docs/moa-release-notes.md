@@ -6,6 +6,21 @@ your own copy of Armored Core: Master of Arena (USA).**
 This is a test release. Please report problems in this repository's Issues
 (what you did, what you saw, Windows or Linux/Steam Deck).
 
+## What's new in 0.8.3
+
+- **Mission source picker:** MISSIONS now asks where the missions come from
+  first, in the same kind of list window as the Ex Arena categories:
+  Armored Core (greyed out until its missions are added), Project Phantasma
+  and Master of Arena. Project Phantasma has its own mission list: for
+  testing, all of its working missions are listed and unlocked (1, 7, 9, 11
+  and 14 are still hidden while they are fixed). The "PP:" and "M:" name
+  prefixes are gone. Your Master of Arena mission progress is not changed by
+  playing Phantasma missions.
+- **Public address in the Versus Room:** when you host a LAN room, the ROOM
+  panel now shows your public IP address and port under the LAN address, so
+  friends outside your network know what to join (the UDP port has to be
+  forwarded to your PC).
+
 ## What's new in 0.8.2
 
 - **Fast loading:** the emulated CD drive now delivers game data much faster

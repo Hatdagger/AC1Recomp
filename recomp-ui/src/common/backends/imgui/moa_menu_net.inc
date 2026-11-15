@@ -978,10 +978,26 @@ static void draw_lobby_page(LauncherModel* m, const LauncherTheme& th,
         std::snprintf(buf, sizeof buf, "%d OF %d", s.seated_players, s.max_slots);
         text(g, 474.0f, y, 10.0f, kText, buf);
         y += 17.0f;
+        bool show_public = false;
         if (m->netplay_local_room && m->netplay_host_endpoint[0]) {
             text(g, 394.0f, y, 10.0f, kDim, "ADDRESS");
             text(g, 474.0f, y, 10.0f, kBright, m->netplay_host_endpoint);
             y += 17.0f;
+            /* The public address (STUN, resolved once and cached, as on the
+             * Lobby Settings page) with the room's port. */
+            if (s.is_host) {
+                np_ensure_public_ip(m);
+                const char* port = std::strrchr(m->netplay_host_endpoint, ':');
+                if (m->netplay_public_ip[0] &&
+                    std::strcmp(m->netplay_public_ip, "Unavailable") != 0) {
+                    std::snprintf(buf, sizeof buf, "%s%s", m->netplay_public_ip,
+                                  port ? port : "");
+                    text(g, 394.0f, y, 10.0f, kDim, "PUBLIC");
+                    text(g, 474.0f, y, 10.0f, kBright, buf);
+                    y += 17.0f;
+                    show_public = true;
+                }
+            }
         }
         if (card_known) {
             text(g, 394.0f, y, 10.0f, kDim, "P2 CARD");
@@ -1004,8 +1020,11 @@ static void draw_lobby_page(LauncherModel* m, const LauncherTheme& th,
         }
         if (s.is_host && s.seated_players < 2 && m->netplay_local_room)
             text(g, 394.0f, y + 64.0f, 10.0f, kDim,
-                 "Pilots on this network see the room in their list. Anyone "
-                 "else can join by the address above.", 208.0f);
+                 show_public
+                     ? "Pilots on this network see the room in their list. Others "
+                       "join by the public address (UDP port forwarded to this PC)."
+                     : "Pilots on this network see the room in their list. Anyone "
+                       "else can join by the address above.", 208.0f);
         if (m->netplay_status[0])
             text(g, 394.0f, 330.0f, 10.0f, kWarn, m->netplay_status, 208.0f);
     }

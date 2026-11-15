@@ -212,6 +212,8 @@ static uint32_t run_back_start;
 static int run_stage;
 static uint32_t run_newgame_seen;          /* run_frames when that menu last ran */
 static int run_result_seen;                /* this fight's result is booked */
+static int run_credit_hold;                /* a booked win: credits to restore once applied */
+static uint32_t run_credit_value;
 static int run_save_pending;               /* a win waits for the autosave */
 
 /* A plain log beside the run file (<run file>.log), for test reports: the
@@ -556,6 +558,16 @@ static void run_result_entry(struct CPUState *cpu, uint32_t address)
         return;
     }
     if (!psx_mod_read_byte(RUN_FIGHT_DONE)) {
+        if (run_credit_hold) {                 /* the arena's own reward is not paid */
+            run_credit_hold = 0;
+            const uint32_t now = psx_mod_read_word(RUN_CREDITS);
+            if (now != run_credit_value) {
+                run_log("win: arena reward %d undone (credits %u -> %u)",
+                        (int)(now - run_credit_value), (unsigned)now, (unsigned)run_credit_value);
+                psx_mod_write_word(RUN_CREDITS, run_credit_value);
+                psx_mod_counter_add("moa.run.reward_undone", 1);
+            }
+        }
         run_result_seen = 0;
         run_autosave(cpu);                     /* the result is applied now */
         return;
@@ -591,6 +603,8 @@ static void run_result_entry(struct CPUState *cpu, uint32_t address)
     const uint32_t credits = psx_mod_read_word(RUN_CREDITS);
     if (credits != had) psx_mod_counter_add("moa.run.credits_mismatch", 1);
     psx_mod_write_word(RUN_CREDITS, run_state.run.points);
+    run_credit_value = run_state.run.points;
+    run_credit_hold = 1;
     run_log("win: P %u -> %u (credits were %u)", (unsigned)had,
             (unsigned)run_state.run.points, (unsigned)credits);
     (void)moa_run_save(path, &run_state);
@@ -722,21 +736,28 @@ static void run_arena_ai(struct CPUState *c, uint32_t a)     { (void)a; run_aren
 /* One record of a source arena's whole-arena entry. */
 static int run_record(uint32_t ix, struct moa_run_pick p, int kind, uint32_t stride, uint8_t *out)
 {
-    static uint8_t sec[4096];
-    static uint32_t have = 0xFFFFFFFFu;               /* the entry in sec */
+    /* Each source entry is read from disc once and kept: a lineup draws from
+     * many arenas, and re-reading per opponent stalled the arena screen. */
+    enum { CACHE = 64 };
+    static uint8_t sec[CACHE][4096];
+    static uint32_t key[CACHE], lba[CACHE];
+    static int used;
     uint32_t first, count;
     if (!run_source(ix, p.arena, &first, &count) || p.rank >= count) return 0;
     const uint32_t entry = first + 4u * count + (uint32_t)kind;
-    if (entry != have) {
+    int c = 0;
+    while (c < used && (key[c] != entry || lba[c] != run_state.lineup.menu_lba)) ++c;
+    if (c == used) {
         const uint32_t a = psx_mod_read_half(ix + 2u * entry), b = psx_mod_read_half(ix + 2u * entry + 2u);
+        if (used == CACHE) used = c = 0;              /* full: start over */
         if (b <= a || (b - a) > 2u ||
-            !psx_mod_read_disc_sectors(run_state.lineup.menu_lba + a, b - a, sec)) {
-            have = 0xFFFFFFFFu;
+            !psx_mod_read_disc_sectors(run_state.lineup.menu_lba + a, b - a, sec[c]))
             return 0;
-        }
-        have = entry;
+        key[c] = entry; lba[c] = run_state.lineup.menu_lba;
+        used = c + 1;
     }
-    memcpy(out, sec + p.rank * stride, stride);
+    if ((p.rank + 1u) * stride > 4096u) return 0;
+    memcpy(out, sec[c] + p.rank * stride, stride);
     return 1;
 }
 

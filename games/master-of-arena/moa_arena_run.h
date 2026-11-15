@@ -24,6 +24,7 @@ enum moa_run_band {
     MOA_BAND_LATER_EX,    /* later Ex arenas: each harder than the one before */
     MOA_BAND_MASTER,      /* master arena: top band */
     MOA_BAND_PHANTASMA,   /* ranks 11-49 low/middle, top 10 high */
+    MOA_BAND_MAIN,        /* the scenario's main arena: its 50 ranks span low to high */
 };
 
 struct moa_run_source {

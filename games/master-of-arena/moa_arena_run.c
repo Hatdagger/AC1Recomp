@@ -9,14 +9,17 @@
 
 /* ---- sources ------------------------------------------------------------------
  *
- * CONFIRM: which arena number is which. The order below is the working
- * assumption until the arena list's names are read from the menu module:
- * 0 main (master band), 1-4 the leg-type Ex arenas, 5-8 the later Ex arenas
- * in order. The sub arena's number is not known yet (see "still to find"). */
+ * The arena numbers, from the Ex Arena list in the menu module (0x800D5A20)
+ * and the opponent counts beside it (0x800D5A08):
+ *   0 main arena (50)   1 Humanoid  2 Four Legs  3 Reverse Joint  4 Caterpillar (10 each)
+ *   5 Champion (16)     6 Guest (31)   7 FromSoft (10)   8 Master (20, "Extra difficult")
+ *   9 Custom (player-made, not used)   10 Project Phantasma (when installed).
+ * The sub arena is not among them; where its opponents live is still to find. */
 static const struct { uint8_t band, order; } k_arena_band[9] = {
-    { MOA_BAND_MASTER, 0 },
+    { MOA_BAND_MAIN, 0 },
     { MOA_BAND_LEG_EX, 0 }, { MOA_BAND_LEG_EX, 0 }, { MOA_BAND_LEG_EX, 0 }, { MOA_BAND_LEG_EX, 0 },
-    { MOA_BAND_LATER_EX, 0 }, { MOA_BAND_LATER_EX, 1 }, { MOA_BAND_LATER_EX, 2 }, { MOA_BAND_LATER_EX, 3 },
+    { MOA_BAND_LATER_EX, 0 }, { MOA_BAND_LATER_EX, 1 }, { MOA_BAND_LATER_EX, 2 },
+    { MOA_BAND_MASTER, 0 },
 };
 #define MENU_BASE     0x80050DD8u
 #define MENU_ENTRY    206u
@@ -94,6 +97,7 @@ int moa_run_score(const struct moa_run_source *src, int rank)
     case MOA_BAND_LEG_EX:   base = 30; width = 30; break;
     case MOA_BAND_LATER_EX: base = 50 + 8 * src->order; width = 20; break;
     case MOA_BAND_MASTER:   base = 72; width = 25; break;
+    case MOA_BAND_MAIN:     base = 8;  width = 70; break;
     case MOA_BAND_PHANTASMA:
         if (rank < 10) return 85 + (9 - rank) * 15 / 9;     /* top 10: high band */
         return 5 + (n - 1 - rank) * 50 / (n > 11 ? n - 11 : 1);  /* 11-49: low/middle */

@@ -16,7 +16,6 @@
 
 #include "../../../../../games/master-of-arena/moa_parts.h"
 #include "../../../../../games/master-of-arena/moa_ac_view.h"
-#include <map>
 
 static moa_parts g_parts;
 static int g_parts_state = 0;           /* 0 not read, 1 ok, -1 failed */

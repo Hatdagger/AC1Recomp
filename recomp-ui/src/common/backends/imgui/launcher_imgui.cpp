@@ -51,6 +51,7 @@
 #endif
 #include "imgui_impl_opengl3.h"
 
+#include <map>
 #include <atomic>
 #include <mutex>
 #include <thread>

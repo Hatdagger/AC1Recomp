@@ -213,16 +213,16 @@ static const char* part_folder(int cat) {
 
 /* The part turning on its own in the box (the garage's left window).
  * Returns false when there is no picture for it (the caller says why). */
-static bool draw_part_view(const Gfx& g, float x, float y, float w, float h, int cat, int id,
+static bool draw_kind_view(const Gfx& g, float x, float y, float w, float h, const char* kind, int id,
                            const uint8_t paint[48]) {
     if (!models_installed() || !moa_acv_has_part_models(models_dir().c_str())) return false;
     char key[96];
-    std::snprintf(key, sizeof key, "%d/%d/", cat, id);
+    std::snprintf(key, sizeof key, "%s/%d/", kind, id);
     std::string k = key;
     k.append((const char*)paint, 48);
     if (k != g_part_key) {
         moa_acv_free(g_part_acv);
-        g_part_acv = moa_acv_load_part(models_dir().c_str(), part_folder(cat), id, paint);
+        g_part_acv = moa_acv_load_part(models_dir().c_str(), kind, id, paint);
         g_part_key = k;
     }
     if (!g_part_acv) return false;
@@ -234,6 +234,11 @@ static bool draw_part_view(const Gfx& g, float x, float y, float w, float h, int
     if (g_part_tex.id)
         g.dl->AddImage(tid(g_part_tex), at(g, x, y), at(g, x + w, y + h));
     return true;
+}
+
+static bool draw_part_view(const Gfx& g, float x, float y, float w, float h, int cat, int id,
+                           const uint8_t paint[48]) {
+    return draw_kind_view(g, x, y, w, h, part_folder(cat), id, paint);
 }
 
 /* ---- details and comparison ----------------------------------------------- */

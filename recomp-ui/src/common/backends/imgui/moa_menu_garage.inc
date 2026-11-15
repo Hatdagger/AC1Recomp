@@ -1,12 +1,14 @@
 /* EXTRA GARAGE: the launcher's own garage, around one shared AC (g_garage).
  *
- *   ASSEMBLY            build the garage AC (the AC builder)
- *   OPTION PARTS        its optional parts, on their own screen
+ *   ASSEMBLY            the game's Assembly screen on the garage AC
+ *   OPTIONAL PARTS      the game's Optional Parts screen, plus HUMAN PLUS
+ *   DESIGN              PAINT, EMBLEM, AC NAME, PILOT NAME
+ *   AI PROGRAMMING      the garage AC's AI (travels with it as an AI card)
+ *   MEMORY CARD         memory card manager (below)
  *   AI CARD MANAGEMENT  the AI card list: edit, rename, delete, AI settings
- *   DATA                memory card manager (below)
  *   AI ARENA SETUP      PLAYER VS AI / AI VS AI
  *
- * DATA works on the .mcd files in the memory card folder (L1 / R1 switch
+ * MEMORY CARD works on the .mcd files in the memory card folder (L1 / R1 switch
  * between them). Only Master of Arena saves (BASLUS-0103x) can be loaded,
  * exported or deleted; other games' saves are listed and left alone. Nothing
  * is ever overwritten: new saves go into a free block, and every change keeps
@@ -19,8 +21,9 @@ static bool g_moved(bool hovered) {
     return hovered && (ImGui::GetIO().MouseDelta.x != 0.0f || ImGui::GetIO().MouseDelta.y != 0.0f);
 }
 
-enum GarageRow { G_ASSEMBLY = 0, G_OPTIONS, G_CARDS, G_DATA, G_ARENA, G__COUNT };
-static int g_garage_sub = 0;   /* 0 the list, 1 DATA, 2 AI ARENA SETUP's two modes */
+enum GarageRow { G_ASSEMBLY = 0, G_OPTIONS, G_DESIGN, G_AI, G_DATA, G_CARDS, G_ARENA, G__COUNT };
+enum DesignRow { D_PAINT = 0, D_EMBLEM, D_AC_NAME, D_PILOT, D__COUNT };
+static int g_garage_sub = 0;   /* 0 the list, 1 MEMORY CARD, 2 AI ARENA SETUP, 3 DESIGN */
 
 static void open_garage_page(LauncherModel* m) {
     (void)m;
@@ -174,7 +177,7 @@ static std::vector<int> dc_targets(int cur_save) {
     return v;
 }
 
-enum DcRow { DC_SAVE_GARAGE = 0, DC_STORY, DC_IMPORT, DC_SAVES };
+enum DcRow { DC_SAVE_GARAGE = 0, DC_STORY, DC_IMPORT, DC_TO_CARD, DC_SAVES };
 enum DcAction { DA_LOAD = 0, DA_EXPORT, DA_DELETE, DA_CANCEL, DA__COUNT };
 
 static void dc_action(LauncherModel* m, int action, int cur_save) {
@@ -258,12 +261,12 @@ static void draw_data_page(LauncherModel* m, const Gfx& g, const Input& in) {
                   g_dc_files.empty() ? "NO MEMORY CARD"
                       : upper(std::filesystem::path(dc_path()).filename().u8string().c_str()).c_str(),
                   g_dc_files.empty() ? 0 : g_dc_file + 1, (int)g_dc_files.size());
-    header(g, "DATA", sub);
-    panel(g, 24.0f, 76.0f, 270.0f, 340.0f, "MEMORY CARD");
+    header(g, "MEMORY CARD", sub);
+    panel(g, 24.0f, 76.0f, 270.0f, 340.0f, "SAVES");
     int activate = -1;
     for (int i = top; i < rows && i < top + visible; ++i) {
         std::string label, value;
-        bool enabled = g_dc_ok || g_dc_files.empty() || i == DC_SAVE_GARAGE;
+        bool enabled = g_dc_ok || g_dc_files.empty() || i == DC_SAVE_GARAGE || i == DC_TO_CARD;
         bool marked = false;
         if (i == DC_SAVE_GARAGE) { label = "SAVE AS VERSUS UNIT"; value = upper(g_garage.ac); }
         else if (i == DC_STORY) {
@@ -274,6 +277,7 @@ static void draw_data_page(LauncherModel* m, const Gfx& g, const Input& in) {
                 value = upper(t.pilot[0] ? t.pilot : t.file);
             }
         }
+        else if (i == DC_TO_CARD) { label = "EXPORT AS AI CARD"; value = upper(g_garage.ac); }
         else if (i == DC_IMPORT) {
             label = "IMPORT AI CARD";
             if (g_ai_cards.empty()) { value = "NO CARDS"; enabled = false; }
@@ -317,6 +321,11 @@ static void draw_data_page(LauncherModel* m, const Gfx& g, const Input& in) {
                  "pick the save; a backup of the card is kept.", 278.0f);
         }
     }
+    else if (cur == DC_TO_CARD)
+        text(g, 324.0f, 92.0f, 10.0f, kText,
+             "Writes the garage AC, with its AI from AI PROGRAMMING, as a new AI "
+             "card in the memory card folder. It then shows in AI CARD MANAGEMENT "
+             "and AI ARENA SETUP.", 278.0f);
     else
         text(g, 324.0f, 92.0f, 10.0f, kText,
              "Writes the chosen AI card's AC as a new save in a free block. Left "
@@ -421,6 +430,16 @@ static void draw_data_page(LauncherModel* m, const Gfx& g, const Input& in) {
     if (activate < 0) return;
     cur = activate;
     char err[160] = {0};
+    if (activate == DC_TO_CARD) {
+        const std::string path = unused_card_path(ai_card_folder(m), g_garage.ac);
+        if (!path.empty() && moa_card_write_png(&g_garage, path.c_str())) {
+            scan_ai_cards(m);
+            note("EXPORTED AS AN AI CARD");
+        } else {
+            note("THE AI CARD COULD NOT BE WRITTEN");
+        }
+        return;
+    }
     if (activate == DC_STORY) {
         if (m->in_session) { note("CLOSE THE GAME FIRST"); return; }
         if (g_dc_story.empty()) { note("NO STORY SAVE ON THIS CARD"); return; }
@@ -453,68 +472,127 @@ static void draw_data_page(LauncherModel* m, const Gfx& g, const Input& in) {
 
 /* ---- the garage list -------------------------------------------------------- */
 
+/* DESIGN > AC NAME / PILOT NAME: typed in place on the garage AC. */
+static void garage_name_done() {
+    g_garage = g_edit;
+    if (!save_garage()) note("THE GARAGE AC COULD NOT BE WRITTEN");
+}
+
 static void draw_garage_page(LauncherModel* m, const Gfx& g, const Input& in) {
     if (g_garage_sub == 1) { draw_data_page(m, g, in); return; }
-    const bool arena = g_garage_sub == 2;
-    const int count = arena ? 2 : G__COUNT;
-    static int s_cur[2] = {0, 0};
-    int& cur = s_cur[arena ? 1 : 0];
-    if (in.up) cur = (cur + count - 1) % count;
-    if (in.down) cur = (cur + 1) % count;
+    const bool arena = g_garage_sub == 2, design = g_garage_sub == 3;
+    const int count = arena ? 2 : design ? D__COUNT : G__COUNT;
+    static int s_cur[3] = {0, 0, 0};
+    int& cur = s_cur[arena ? 1 : design ? 2 : 0];
+    const bool naming = design && g_name_edit != 0;
+    if (!naming) {
+        if (in.up) cur = (cur + count - 1) % count;
+        if (in.down) cur = (cur + 1) % count;
+    }
 
-    header(g, arena ? "AI ARENA SETUP" : "EXTRA GARAGE", arena ? "EXTRA GARAGE" : "LAUNCHER GARAGE");
-    panel(g, 24.0f, 76.0f, 270.0f, 340.0f, "SELECT");
-    static const char* const kRows[G__COUNT] = { "ASSEMBLY", "OPTION PARTS", "AI CARD MANAGEMENT",
-                                                 "DATA", "AI ARENA SETUP" };
+    static const char* const kRows[G__COUNT] = { "ASSEMBLY", "OPTIONAL PARTS", "DESIGN", "AI PROGRAMMING",
+                                                 "MEMORY CARD", "AI CARD MANAGEMENT", "AI ARENA SETUP" };
     static const char* const kArena[2] = { "PLAYER VS AI", "AI VS AI" };
+    static const char* const kDesign[D__COUNT] = { "PAINT", "EMBLEM", "AC NAME", "PILOT NAME" };
     static const char* const kInfo[G__COUNT] = {
-        "Build the garage AC: parts, paint and emblem, shown in 3D when the models "
-        "are installed (EXTRAS). It is kept between launches.",
-        "The garage AC's optional parts, with the slots each one takes from the "
-        "core and what it does.",
+        "The game's Assembly screen: change the garage AC's parts slot by slot. "
+        "It is kept between launches.",
+        "Fit optional parts into the core's slots, and switch HUMAN PLUS.",
+        "Paint, emblem and the AC and pilot names.",
+        "The garage AC's AI. It goes with the AC when you export it as an AI card "
+        "(MEMORY CARD > EXPORT AS AI CARD).",
+        "Memory card manager: load an AC from a save into the garage, save the "
+        "garage AC as a versus unit or put it into a story save, export it as an "
+        "AI card, export saves as AI cards, delete saves (a backup is kept).",
         "Your AI cards: edit their AI, rename, delete, and change their AC. "
         "Cards live in the memory card folder.",
-        "Memory card manager: load an AC from a save into the garage, save the "
-        "garage AC as a versus unit or put it into a story save, save an AI card "
-        "to the card, export saves as AI cards, delete saves (a backup is kept).",
         "Set up an arena match: PLAYER VS AI, where you fly unit 1, or AI VS AI.",
     };
     static const char* const kArenaInfo[2] = {
         "You fly unit 1 (the garage AC or an AI card's AC) against an AI card.",
         "Two AI cards fight each other while you watch.",
     };
+    static const char* const kDesignInfo[D__COUNT] = {
+        "The AC's colours: one scheme, or head, core, arms and legs apart.",
+        "The emblem on the shoulder: a picture cut to the game's 64 x 64 in 16 colours.",
+        "Up to 7 letters. Type, or up / down for the letter.",
+        "Up to 7 letters. Type, or up / down for the letter.",
+    };
+    const char* const* labels = arena ? kArena : design ? kDesign : kRows;
+    const char* const* info = arena ? kArenaInfo : design ? kDesignInfo : kInfo;
+
+    header(g, arena ? "AI ARENA SETUP" : design ? "DESIGN" : "EXTRA GARAGE",
+           arena || design ? "EXTRA GARAGE" : "LAUNCHER GARAGE");
+
+    /* the game's GARAGE: tall boxed entries, the orange bar on the highlight */
+    const float lx = 24.0f, top = 62.0f, lw = 250.0f, eh = 38.0f;
     int activate = -1;
     for (int i = 0; i < count; ++i) {
-        bool hovered = false;
-        if (row(g, 25.0f, 90.0f + kRowH * i, 268.0f, i == cur, true, arena ? kArena[i] : kRows[i],
-                nullptr, false, false, &hovered))
-            activate = i;
-        if (g_moved(hovered)) cur = i;
+        const float y = top + (eh + 6.0f) * i;
+        game_box(g, lx, y, lw, eh);
+        if (i == cur) game_bar(g, lx + 4.0f, y + 4.0f, lw - 8.0f, eh - 8.0f, labels[i]);
+        else {
+            const float tw = text_width(g, 14.0f, labels[i]);
+            text(g, lx + (lw - tw) * 0.5f, y + (eh - 14.0f) * 0.5f - 1.0f, 14.0f, kText, labels[i]);
+        }
+        if (design && (i == D_AC_NAME || i == D_PILOT)) {
+            const int which = i == D_AC_NAME ? 1 : 2;
+            const std::string v = name_shown(which);
+            text_right(g, lx + lw - 10.0f, y + eh - 13.0f, 9.0f, g_name_edit == which ? kHi : kDim, upper(v).c_str());
+        }
+        const ImVec2 r0 = at(g, lx, y), r1 = at(g, lx + lw, y + eh);
+        if (!naming && ImGui::IsMouseHoveringRect(r0, r1)) {
+            if (g_moved(true)) cur = i;
+            if (ImGui::IsMouseClicked(0)) activate = i;
+        }
     }
 
-    panel(g, 310.0f, 76.0f, 306.0f, 150.0f, "GARAGE AC");
-    draw_emblem(g, 324.0f, 92.0f, 96.0f, g_garage);
-    text(g, 432.0f, 92.0f, 13.0f, kBright, upper(g_garage.ac).c_str());
-    text(g, 432.0f, 112.0f, 10.0f, kDim, "PILOT");
-    text(g, 432.0f, 126.0f, 11.0f, kText, upper(g_garage.pilot).c_str());
-    panel(g, 310.0f, 242.0f, 306.0f, 174.0f, "INFO");
-    text(g, 324.0f, 258.0f, 11.0f, kHi, arena ? kArena[cur] : kRows[cur]);
-    text(g, 324.0f, 280.0f, 11.0f, kText, arena ? kArenaInfo[cur] : kInfo[cur], 278.0f);
+    /* the preview window: the garage AC turning on black */
+    const float rx = 290.0f, rw = 326.0f;
+    game_box(g, rx, top, rw, 260.0f);
+    draw_acv(g, rx + 2.0f, top + 2.0f, rw - 4.0f, 256.0f, design ? g_edit : g_garage);
+    draw_emblem(g, rx + 10.0f, top + 10.0f, 32.0f, design ? g_edit : g_garage);
+    text_right(g, rx + rw - 10.0f, top + 10.0f, 12.0f, kBright, upper(g_garage.ac).c_str());
+    text_right(g, rx + rw - 10.0f, top + 26.0f, 10.0f, kDim, upper(g_garage.pilot).c_str());
+    game_box(g, rx, top + 268.0f, rw, 86.0f);
+    text(g, rx + 12.0f, top + 278.0f, 11.0f, kHi, labels[cur]);
+    text(g, rx + 12.0f, top + 296.0f, 10.0f, kText, info[cur], rw - 24.0f);
+
+    if (naming) {
+        footer(g, "UP / DOWN  LETTER   LEFT / RIGHT  MOVE   X  DELETE   A  DONE  (or type)");
+        name_input(in);
+        if (!g_name_edit) garage_name_done();
+        return;
+    }
     footer(g, "A / ENTER  SELECT      D-PAD  MOVE      B / ESC  BACK");
 
     if (in.back) {
-        if (arena) g_garage_sub = 0; else g_state.garage_page = false;
+        if (arena || design) g_garage_sub = 0; else g_state.garage_page = false;
         return;
     }
     if (in.confirm) activate = cur;
     if (activate < 0) return;
     cur = activate;
     if (arena) { open_arena(m, activate == 0 ? 0 : 1); return; }
+    if (design) {
+        switch (activate) {
+            case D_PAINT:   open_garage_screen(m, AI_SUB_PAINT); break;
+            case D_EMBLEM:  open_garage_screen(m, AI_SUB_EMBLEM); break;
+            case D_AC_NAME: case D_PILOT:
+                g_edit = g_garage;
+                g_name_edit = activate == D_AC_NAME ? 1 : 2;
+                g_name_pos = 0;
+                break;
+        }
+        return;
+    }
     switch (activate) {
         case G_ASSEMBLY: open_assembly(m); break;
-        case G_OPTIONS:  open_option_parts(m); break;
-        case G_CARDS:    open_card_management(m); break;
+        case G_OPTIONS:  open_garage_screen(m, AI_SUB_OPTS); break;
+        case G_DESIGN:   load_garage(); g_edit = g_garage; g_garage_sub = 3; s_cur[2] = 0; break;
+        case G_AI:       open_garage_screen(m, AI_SUB_EDIT); break;
         case G_DATA:     open_data_page(m); break;
+        case G_CARDS:    open_card_management(m); break;
         case G_ARENA:    g_garage_sub = 2; break;
     }
 }

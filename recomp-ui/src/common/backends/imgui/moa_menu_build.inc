@@ -273,14 +273,13 @@ enum { B_AC = 0, B_PILOT, B_SLOT0, B_OPTS = B_SLOT0 + 11, B_PAINT, B_EMBLEM, B_P
 /* Opened from the main menu's ASSEMBLY (not the AI Battle card list): back
  * then returns to the main menu. */
 static bool g_build_standalone = false;
-static bool g_opts_standalone = false;   /* OPTION PARTS straight from EXTRA GARAGE */
 
 /* Back to EXTRA GARAGE: the AC goes into the garage, kept for next time. */
 static void leave_to_garage() {
     g_garage = g_edit;
     save_garage();
     g_build_standalone = false;
-    g_opts_standalone = false;
+    g_from_garage = false;
     g_ai_sub = AI_SUB_SETUP;
     g_state.ai_page = false;
 }
@@ -647,9 +646,7 @@ static void draw_ai_asm(LauncherModel* m, const Gfx& g, const Input& in) {
     if (verdict) text(g, sx, top + 344.0f, 10.0f, vcol, verdict, w - 28.0f);
 
     if (g_details_open) draw_asm_details(g, sl.label, cat, id);
-    footer(g, g_build_standalone
-              ? "UP/DOWN  SLOT   LEFT/RIGHT  PART   Y/TRIANGLE  DETAILS   A  LIST   X  NAME, PAINT...   R-STICK  ZOOM   B  BACK"
-              : "UP/DOWN  SLOT   LEFT/RIGHT  PART   Y/TRIANGLE  DETAILS   A  LIST   R-STICK  ZOOM   B  BACK");
+    footer(g, "UP/DOWN  SLOT   LEFT/RIGHT  PART   Y/TRIANGLE  DETAILS   A  LIST   R-STICK  ZOOM   B  BACK");
 
     if (in.info) { g_details_open = !g_details_open; return; }
     if (in.back) {
@@ -661,11 +658,6 @@ static void draw_ai_asm(LauncherModel* m, const Gfx& g, const Input& in) {
     if (in.up) g_asm_slot = (g_asm_slot + kAsmCount - 1) % kAsmCount;
     if (in.down) g_asm_slot = (g_asm_slot + 1) % kAsmCount;
     if (in.left || in.right) step_part(byte, sl.optional, in.left ? -1 : 1);
-    if (in.alt && g_build_standalone && !g_details_open) {
-        g_asm_from_build = true;   /* the rest of the build; B comes back here */
-        g_ai_sub = AI_SUB_BUILD;
-        return;
-    }
     if (in.confirm && !locked && !g_details_open) {
         int k = -1;
         for (int i = 0; i < kSlotCount; ++i) if (kSlots[i].byte == byte) k = i;
@@ -769,45 +761,95 @@ static void draw_ai_pick(const Gfx& g, const Input& in) {
     g_pick_to_asm = false;
 }
 
-/* ---- OPTIONS ---- */
+/* ---- OPTIONAL PARTS: the game's screen ----
+ *
+ * As the garage shows it: the optional parts down the left, the highlighted
+ * one in the orange bar, a lit box beside the ones fitted. Right: that part
+ * alone, turning (models/menu/option/NN), its type, the slots it needs and
+ * the slots the core has free; the description line runs along the bottom.
+ * HUMAN PLUS sits under the list as OFF / FULL.
+ */
 
 static void draw_ai_opts(const Gfx& g, const Input& in) {
-    move_cursor(PAGE_AI_OPTS, MOA_OPTIONS, in, MOA_OPTIONS);
+    const int rows = MOA_OPTIONS + 1;              /* + HUMAN PLUS */
+    const int plus_row = MOA_OPTIONS;
     int& cur = g_state.cursor[PAGE_AI_OPTS];
+    if (in.up) cur = (cur + rows - 1) % rows;
+    if (in.down) cur = (cur + 1) % rows;
+    if (cur < 0 || cur >= rows) cur = 0;
     struct moa_build_check chk;
     moa_build_check(&g_parts, g_edit.rec, g_edit.plus, &chk);
     const unsigned mask = g_edit.rec[10] | (g_edit.rec[11] << 8);
     const int free_slots = chk.slots_max - chk.slots_used;
-    char sub[48];
-    std::snprintf(sub, sizeof sub, "%d OF %d SLOTS USED", chk.slots_used, chk.slots_max);
-    header(g, "OPTIONAL PARTS", sub);
-    panel(g, 24.0f, 62.0f, 380.0f, MOA_OPTIONS * kRowH + 12.0f, "OPTIONS");
+    header(g, "OPTIONAL PARTS", upper(g_edit.ac[0] ? g_edit.ac : "AC").c_str());
+
+    /* the list */
+    const float lx = 24.0f, top = 60.0f, lw = 290.0f, rh = 24.0f;
+    game_box(g, lx, top, lw, rh * rows + 12.0f);
     int activate = -1;
-    for (int i = 0; i < MOA_OPTIONS; ++i) {
-        const bool on = (mask >> i) & 1u;
-        const bool fits = on || g_parts.option[i].slots <= free_slots;
-        char label[48];
-        std::snprintf(label, sizeof label, "%-10s %s", g_parts.option[i].name, g_parts.option[i].what);
-        bool hovered = false;
-        if (row(g, 25.0f, 74.0f + kRowH * i, 378.0f, i == cur, fits, label, "", true, on, &hovered))
-            activate = i;
-        if (hovered && (ImGui::GetIO().MouseDelta.x != 0.0f || ImGui::GetIO().MouseDelta.y != 0.0f)) cur = i;
+    for (int i = 0; i < rows; ++i) {
+        const float y = top + 6.0f + rh * i;
+        const bool plus = i == plus_row;
+        const bool on = plus ? g_edit.plus != 0 : ((mask >> i) & 1u) != 0;
+        const bool fits = plus || on || g_parts.option[i].slots <= free_slots;
+        /* the fitted box */
+        g.dl->AddRect(at(g, lx + 8.0f, y + 3.0f), at(g, lx + 30.0f, y + rh - 3.0f), kGameBlue, 0.0f, 0, 1.5f * g.s);
+        if (on) g.dl->AddRectFilled(at(g, lx + 12.0f, y + 7.0f), at(g, lx + 26.0f, y + rh - 7.0f),
+                                    IM_COL32(232, 150, 48, 255));
+        const char* name = plus ? "HUMAN PLUS" : g_parts.option[i].name;
+        if (i == cur) game_bar(g, lx + 36.0f, y + 1.0f, lw - 44.0f, rh - 2.0f, name);
+        else text(g, lx + 44.0f, y + 5.0f, 12.0f, fits ? kText : kDim, name);
+        if (plus) text_right(g, lx + lw - 12.0f, y + 6.0f, 10.0f, i == cur ? kBright : kHi, plus_text(g_edit.plus).c_str());
+        const ImVec2 r0 = at(g, lx, y), r1 = at(g, lx + lw, y + rh);
+        if (ImGui::IsMouseHoveringRect(r0, r1)) {
+            if (ImGui::GetIO().MouseDelta.x != 0.0f || ImGui::GetIO().MouseDelta.y != 0.0f) cur = i;
+            if (ImGui::IsMouseClicked(0)) activate = i;
+        }
     }
-    panel(g, 420.0f, 62.0f, 196.0f, MOA_OPTIONS * kRowH + 12.0f, "WHAT IT DOES");
-    text(g, 434.0f, 78.0f, 12.0f, kBright, g_parts.option[cur].name);
-    text(g, 434.0f, 96.0f, 10.0f, kDim, g_parts.option[cur].what);
-    char b[32];
-    std::snprintf(b, sizeof b, "%d SLOT%s", g_parts.option[cur].slots, g_parts.option[cur].slots == 1 ? "" : "S");
-    text(g, 434.0f, 112.0f, 10.0f, kHi, b);
-    text(g, 434.0f, 134.0f, 10.0f, kText, moa_option_effect(cur), 170.0f);
-    footer(g, "A  ON / OFF      B  BACK");
+
+    /* the part alone */
+    const float rx = 326.0f, rw = 290.0f;
+    game_box(g, rx, top, rw, 200.0f);
+    char b[48];
+    if (cur == plus_row) {
+        const char* t = "HUMAN PLUS";
+        text(g, rx + (rw - text_width(g, 20.0f, t)) * 0.5f, top + 86.0f, 20.0f, kHi, t);
+    } else if (!draw_kind_view(g, rx + 4.0f, top + 4.0f, rw - 8.0f, 192.0f, "option", cur, g_edit.paint)) {
+        const char* t = !models_installed() ? "EXTRAS > INSTALL 3D AC MODELS"
+                                            : "INSTALL THE 3D MODELS AGAIN (EXTRAS) FOR PART PICTURES";
+        text(g, rx + 14.0f, top + 92.0f, 10.0f, kDim, t, rw - 28.0f);
+    }
+    game_box(g, rx, top + 206.0f, rw, 62.0f);
+    if (cur == plus_row) {
+        text(g, rx + 14.0f, top + 214.0f, 11.0f, kText, "PILOT OPERATION");
+        text(g, rx + 14.0f, top + 230.0f, 11.0f, kText, ("NOW  " + plus_text(g_edit.plus)).c_str());
+        text(g, rx + 14.0f, top + 246.0f, 11.0f, kText, "NO SLOTS USED");
+    } else {
+        text(g, rx + 14.0f, top + 214.0f, 11.0f, kText, upper(g_parts.option[cur].what).c_str());
+        std::snprintf(b, sizeof b, "%d SLOT%s  REQUIRED", g_parts.option[cur].slots, g_parts.option[cur].slots == 1 ? "" : "S");
+        text(g, rx + 14.0f, top + 230.0f, 11.0f, kText, b);
+        std::snprintf(b, sizeof b, "%d SLOT%s  AVAILABLE", free_slots, free_slots == 1 ? "" : "S");
+        text(g, rx + 14.0f, top + 246.0f, 11.0f, free_slots < 0 ? kWarn : kText, b);
+    }
+    /* the description line */
+    game_box(g, lx, top + rh * rows + 20.0f, 592.0f, 26.0f);
+    text(g, lx + 10.0f, top + rh * rows + 26.0f, 11.0f, kText,
+         cur == plus_row ? "Lets the AC go over the load and energy limits. OFF or FULL."
+                         : moa_option_effect(cur), 572.0f);
+
+    footer(g, "UP/DOWN  PART      A / LEFT / RIGHT  FIT / REMOVE      B  BACK");
     if (in.back) {
-        if (g_opts_standalone) leave_to_garage(); else g_ai_sub = AI_SUB_BUILD;
+        if (g_from_garage) leave_to_garage(); else g_ai_sub = AI_SUB_BUILD;
         return;
     }
     if (in.confirm || in.left || in.right) activate = cur;
     if (activate < 0) return;
     cur = activate;
+    if (activate == plus_row) {
+        g_edit.plus = g_edit.plus ? 0 : 9;      /* full = 9 */
+        g_edit_dirty = true;
+        return;
+    }
     const bool on = (mask >> activate) & 1u;
     if (!on && g_parts.option[activate].slots > free_slots) { note("NOT ENOUGH SLOTS ON THIS CORE"); return; }
     const unsigned nm = on ? (mask & ~(1u << activate)) : (mask | (1u << activate));
@@ -881,7 +923,7 @@ static void draw_ai_paint(const Gfx& g, const Input& in) {
     for (int t = 0; t < 4; ++t) text(g, 354.0f + t * 60.0f, 266.0f, 9.0f, kDim, kTones[t]);
     footer(g, "LEFT / RIGHT  1      L1 / R1  8      A  SELECT      B  BACK");
 
-    if (in.back) { g_ai_sub = AI_SUB_BUILD; return; }
+    if (in.back) { if (g_from_garage) leave_to_garage(); else g_ai_sub = AI_SUB_BUILD; return; }
     const int step = in.left ? -1 : in.right ? 1 : in.page_down ? -8 : in.page_up ? 8 : 0;
     if (step) {
         if (cur == P_SECTION && !same && (in.left || in.right))
@@ -996,7 +1038,7 @@ static void draw_ai_emblem(LauncherModel* m, const Gfx& g, const Input& in) {
          "for one. The centre square is used and cut to the game's 64 x 64 emblem in 16 colours.",
          250.0f);
     footer(g, "A  USE      B  BACK");
-    if (in.back) { g_ai_sub = AI_SUB_BUILD; return; }
+    if (in.back) { if (g_from_garage) leave_to_garage(); else g_ai_sub = AI_SUB_BUILD; return; }
     if (in.confirm) activate = cur;
     if (activate < 0) return;
     cur = activate;

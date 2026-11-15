@@ -27,6 +27,10 @@ static int  g_ws_action_cur = 0;
 static bool g_confirm_delete = false;
 static bool g_confirm_discard = false;
 static bool g_edit_from_build = false;  /* the AI editor was opened from the builder */
+/* The screen was opened straight from EXTRA GARAGE (OPTIONAL PARTS, DESIGN,
+ * AI PROGRAMMING): back keeps the garage AC and returns to the garage menu. */
+static bool g_from_garage = false;
+static void leave_to_garage();
 static void open_build(const AiCard& c);
 static void open_build_new();
 
@@ -362,7 +366,8 @@ static void draw_ai_edit(LauncherModel* m, const Gfx& g, const Input& in) {
         return;
     }
     if (in.back) {
-        if (g_edit_from_build) g_ai_sub = AI_SUB_BUILD;   /* the builder saves */
+        if (g_from_garage) leave_to_garage();             /* AI PROGRAMMING: kept in the garage */
+        else if (g_edit_from_build) g_ai_sub = AI_SUB_BUILD;   /* the builder saves */
         else if (g_edit_dirty) g_confirm_discard = true;
         else g_ai_sub = AI_SUB_CARDS;
         return;

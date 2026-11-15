@@ -378,6 +378,7 @@ static void open_ai_page(LauncherModel* m) {
     scan_ai_cards(m);
     g_state.ai_page = true;
     g_ai_sub = AI_SUB_SETUP;
+    g_from_garage = false;
     g_state.cursor[PAGE_AI] = 0;
     g_state.note[0] = '\0';
 }
@@ -395,14 +396,33 @@ static void open_assembly(LauncherModel* m) {
     open_asm(0, false);      /* straight to the game's Assembly screen */
 }
 
-/* EXTRA GARAGE > OPTION PARTS: the garage AC's optional parts on their own. */
-static void open_option_parts(LauncherModel* m) {
+/* EXTRA GARAGE > OPTIONAL PARTS / DESIGN > PAINT, EMBLEM / AI PROGRAMMING:
+ * one of the builder's screens on the garage AC; back returns to the garage. */
+static void open_garage_screen(LauncherModel* m, int sub) {
     open_assembly(m);
-    if (!parts_ready(m)) { g_state.ai_page = false; g_build_standalone = false; note("THE PART LIST COULD NOT BE READ FROM THE DISC"); return; }
     g_build_standalone = false;
-    g_opts_standalone = true;
-    g_ai_sub = AI_SUB_OPTS;
-    g_state.cursor[PAGE_AI_OPTS] = 0;
+    if (sub == AI_SUB_OPTS && !parts_ready(m)) {
+        g_state.ai_page = false;
+        note("THE PART LIST COULD NOT BE READ FROM THE DISC");
+        return;
+    }
+    g_from_garage = true;
+    g_ai_sub = sub;
+    if (sub == AI_SUB_OPTS) g_state.cursor[PAGE_AI_OPTS] = 0;
+    if (sub == AI_SUB_PAINT) {
+        g_split_paint = !paint_uniform();
+        g_paint_section = 0;
+        g_state.cursor[PAGE_AI_PAINT] = 0; g_state.top[PAGE_AI_PAINT] = 0;
+    }
+    if (sub == AI_SUB_EMBLEM) {
+        g_state.cursor[PAGE_AI_EMBLEM] = 0; g_state.top[PAGE_AI_EMBLEM] = 0;
+        g_emblem_files.clear();
+    }
+    if (sub == AI_SUB_EDIT) {
+        g_edit_from_build = false;
+        g_confirm_discard = false;
+        g_state.cursor[PAGE_AI_EDIT] = 0;
+    }
 }
 
 /* EXTRA GARAGE > AI CARD MANAGEMENT: the card list (the old card workshop). */

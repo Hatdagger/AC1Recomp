@@ -67,22 +67,50 @@ int moa_run_start_ac(const struct moa_parts *p, uint64_t seed, uint8_t rec[13]);
 /* ---- the run file -------------------------------------------------------- */
 
 #define MOA_RUN_MAGIC   0x4E555241u   /* "ARUN" */
-#define MOA_RUN_VERSION 2u
+#define MOA_RUN_VERSION 3u
+
+/* A lineup slot whose arena is MOA_RUN_GHOST is a ghost: `rank` is its
+ * index in moa_run_lineup.ghost. */
+#define MOA_RUN_GHOST   0xFFu
+
+/* A losing AC from an earlier attempt, kept on the ladder for Retry. */
+struct moa_run_ghost {
+    uint8_t  rec[13];              /* the build, as moa_run_state.start_ac */
+    uint8_t  used;                 /* 1 = on the ladder */
+    uint8_t  attempt;              /* the attempt it came from */
+    uint8_t  pad;
+    char     pilot[17];
+    char     ac[17];
+};
+
+/* What Retry keeps: the arena itself. The seed made it; ghosts pile up. */
+struct moa_run_lineup {
+    uint64_t seed;
+    uint8_t  phantasma;            /* the lineup used Phantasma opponents */
+    uint8_t  ghosts;               /* ghosts on the ladder now */
+    uint8_t  pad[6];
+    struct moa_run_pick slot[MOA_RUN_SLOTS];          /* ranks 50..1 */
+    struct moa_run_ghost ghost[MOA_RUN_SLOTS];
+};
+
+/* What Retry resets: this attempt's player. */
+struct moa_run_progress {
+    uint8_t  start_ac[13];
+    uint8_t  attempt;              /* 0 = the first; a Retry adds one */
+    uint8_t  wins;                 /* opponents beaten; rank = 50 - wins */
+    uint8_t  points;               /* P: one per win */
+    uint8_t  over;                 /* 1 = lost: Retry or New Run only */
+    uint8_t  best;                 /* most wins of any attempt */
+    uint8_t  pad[2];
+    char     pilot[17];            /* ASCII, as typed in the launcher */
+    char     ac[17];               /* may be empty */
+    /* step 2 adds shop stock and owned parts here. */
+};
 
 struct moa_run_state {
     uint32_t magic, version;
-    uint64_t seed;
-    uint8_t  start_ac[13];
-    uint8_t  phantasma;            /* the lineup used Phantasma opponents */
-    uint8_t  wins;                 /* opponents beaten; rank = 50 - wins */
-    uint8_t  points;               /* P: one per win */
-    uint8_t  over;                 /* 1 = lost; the file is wiped on read */
-    uint8_t  pad[3];
-    char     pilot[17];            /* ASCII, as typed in the launcher */
-    char     ac[17];               /* may be empty */
-    uint8_t  pad2[2];
-    struct moa_run_pick lineup[MOA_RUN_SLOTS];
-    /* step 2 adds shop stock and owned parts here (version 2). */
+    struct moa_run_lineup   lineup;
+    struct moa_run_progress run;
 };
 
 /* Path of the run file for a memory card file: "<card>.arenarun". */
@@ -90,7 +118,18 @@ void moa_run_path(const char *card_path, char *out, unsigned out_size);
 
 int moa_run_new(const struct moa_parts *p, const struct moa_run_source *src, int nsrc,
                 int phantasma, uint64_t seed, struct moa_run_state *out);
-int moa_run_load(const char *path, struct moa_run_state *out);   /* 1 = a live run */
+
+/* Retry a lost run: the ghost of the losing AC takes the last rank it held
+ * (nothing if it never won), then a new random legal AC at 0 P. 1 = ok. */
+int moa_run_retry(const struct moa_parts *p, struct moa_run_state *s);
+
+/* A new win (the caller checks it beat someone not beaten before). */
+int moa_run_win(struct moa_run_state *s);
+/* A loss: the run is over (kept for Retry). */
+void moa_run_lose(struct moa_run_state *s);
+
+/* 1 = a live run, 2 = a lost run (Retry), 0 = none. */
+int moa_run_load(const char *path, struct moa_run_state *out);
 int moa_run_save(const char *path, const struct moa_run_state *s);
 void moa_run_wipe(const char *path);
 

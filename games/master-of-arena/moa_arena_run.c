@@ -213,10 +213,72 @@ int moa_run_new(const struct moa_parts *p, const struct moa_run_source *src, int
     memset(s, 0, sizeof *s);
     s->magic = MOA_RUN_MAGIC;
     s->version = MOA_RUN_VERSION;
-    s->seed = seed;
-    s->phantasma = (uint8_t)(phantasma != 0);
-    if (!moa_run_start_ac(p, seed, s->start_ac)) return 0;
-    return moa_run_lineup(src, nsrc, phantasma, seed, s->lineup) == MOA_RUN_SLOTS;
+    s->lineup.seed = seed;
+    s->lineup.phantasma = (uint8_t)(phantasma != 0);
+    if (!moa_run_start_ac(p, seed, s->run.start_ac)) return 0;
+    return moa_run_lineup(src, nsrc, phantasma, seed, s->lineup.slot) == MOA_RUN_SLOTS;
+}
+
+/* The ghost goes in at rank `held`: that rank and every rank below it move
+ * down one, and the bottom entry (rank 50) leaves the ladder. Slot i holds
+ * rank 50 - i. */
+static void run_add_ghost(struct moa_run_state *s, int held)
+{
+    struct moa_run_lineup *l = &s->lineup;
+    int g = 0;
+    while (g < MOA_RUN_SLOTS && l->ghost[g].used) g++;
+    if (g == MOA_RUN_SLOTS || held < 1 || held > MOA_RUN_SLOTS) return;
+    const struct moa_run_pick out = l->slot[0];
+    if (out.arena == MOA_RUN_GHOST && out.rank < MOA_RUN_SLOTS) {
+        l->ghost[out.rank].used = 0;                      /* pushed off the bottom */
+        l->ghosts--;
+        if (out.rank < g) g = out.rank;
+    }
+    const int at = MOA_RUN_SLOTS - held;
+    memmove(&l->slot[0], &l->slot[1], (size_t)at * sizeof l->slot[0]);
+    struct moa_run_ghost *gh = &l->ghost[g];
+    memset(gh, 0, sizeof *gh);
+    /* Step 1 owns only the starting AC's parts, so that is the build that lost;
+     * step 2 (buying parts) records the build at the loss instead. */
+    memcpy(gh->rec, s->run.start_ac, sizeof gh->rec);
+    gh->used = 1;
+    gh->attempt = s->run.attempt;
+    memcpy(gh->pilot, s->run.pilot, sizeof gh->pilot);
+    memcpy(gh->ac, s->run.ac, sizeof gh->ac);
+    l->slot[at].arena = MOA_RUN_GHOST;
+    l->slot[at].rank = (uint8_t)g;
+    l->ghosts++;
+}
+
+int moa_run_retry(const struct moa_parts *p, struct moa_run_state *s)
+{
+    if (!s->run.over) return 0;
+    if (s->run.wins > 0) run_add_ghost(s, MOA_RUN_SLOTS - s->run.wins);
+    struct moa_run_progress n;
+    memset(&n, 0, sizeof n);
+    n.attempt = (uint8_t)(s->run.attempt + 1);
+    n.best = s->run.best;
+    memcpy(n.pilot, s->run.pilot, sizeof n.pilot);
+    memcpy(n.ac, s->run.ac, sizeof n.ac);
+    /* A new build each attempt: the seed and the attempt number. */
+    uint64_t k = s->lineup.seed ^ (0x9E3779B97F4A7C15ull * (uint64_t)n.attempt);
+    if (!moa_run_start_ac(p, moa_run_next(&k), n.start_ac)) return 0;
+    s->run = n;
+    return 1;
+}
+
+int moa_run_win(struct moa_run_state *s)
+{
+    if (s->run.over || s->run.wins >= MOA_RUN_SLOTS - 1) return 0;
+    s->run.wins++;
+    s->run.points++;
+    if (s->run.wins > s->run.best) s->run.best = s->run.wins;
+    return 1;
+}
+
+void moa_run_lose(struct moa_run_state *s)
+{
+    s->run.over = 1;
 }
 
 int moa_run_load(const char *path, struct moa_run_state *s)
@@ -227,8 +289,7 @@ int moa_run_load(const char *path, struct moa_run_state *s)
     fclose(f);
     if (got != sizeof *s || s->magic != MOA_RUN_MAGIC || s->version != MOA_RUN_VERSION)
         return 0;
-    if (s->over) { moa_run_wipe(path); return 0; }   /* a lost run never continues */
-    return 1;
+    return s->run.over ? 2 : 1;                       /* a lost run: Retry only */
 }
 
 int moa_run_save(const char *path, const struct moa_run_state *s)
@@ -292,15 +353,15 @@ void moa_run_make_save(const struct moa_run_state *s, uint8_t b[8192])
     static struct moa_card c;
     memset(&c, 0, sizeof c);
     c.format = 4;
-    memcpy(c.rec, s->start_ac, 13);
-    snprintf(c.pilot, sizeof c.pilot, "%s", s->pilot);
-    snprintf(c.ac, sizeof c.ac, "%s", s->ac);
+    memcpy(c.rec, s->run.start_ac, 13);
+    snprintf(c.pilot, sizeof c.pilot, "%s", s->run.pilot);
+    snprintf(c.ac, sizeof c.ac, "%s", s->run.ac);
     for (int i = 0; i < 48; i++) c.paint[i] = k_paint[i % 12];
     moa_card_to_save(&c, b);
     for (uint32_t at = RS_ACNAME; at <= RS_PILOT; at += RS_PILOT - RS_ACNAME) {
         uint32_t i = 0;                       /* the game ends a name with one '>' */
         while (i + 1 < RS_NAME_BYTES && b[at + i] != '>') i += 2;
-        if (!s->ac[0] && at == RS_ACNAME) i = 0;
+        if (!s->run.ac[0] && at == RS_ACNAME) i = 0;
         b[at + i] = '>';
         memset(b + at + i + 1, 0, RS_NAME_BYTES - i - 1);
     }
@@ -310,16 +371,16 @@ void moa_run_make_save(const struct moa_run_state *s, uint8_t b[8192])
     memset(b + RS_OWNED, 0, 256);
     for (int r = 0; r < 13; r++) {
         const int base = owned_base(moa_record_cat(r));
-        if (base < 0 || s->start_ac[r] == 255) continue;
-        b[RS_OWNED + base + s->start_ac[r]]++;
+        if (base < 0 || s->run.start_ac[r] == 255) continue;
+        b[RS_OWNED + base + s->run.start_ac[r]]++;
         if (moa_record_cat(r) != MOA_CAT_BACK)       /* back weapons stay on sale */
-            b[RS_SHOP + base + s->start_ac[r]] = 0;
+            b[RS_SHOP + base + s->run.start_ac[r]] = 0;
     }
     /* The new game's own starter parts, not in this AC, go on sale. */
     static const uint8_t k_starter[] = { 5, 18, 30, 56, 93, 108, 143, 157, 197, 218, 243 };
     for (size_t i = 0; i < sizeof k_starter; i++)
         if (!b[RS_OWNED + k_starter[i]]) b[RS_SHOP + k_starter[i]] = 1;
-    const uint32_t p = s->points;
+    const uint32_t p = s->run.points;
     for (int i = 0; i < 4; i++) {
         b[RS_CREDITS + i] = (uint8_t)(p >> (8 * i));
         b[RS_CREDITS_SHOWN + i] = (uint8_t)(p >> (8 * i));

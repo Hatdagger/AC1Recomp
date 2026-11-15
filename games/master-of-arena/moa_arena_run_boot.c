@@ -65,6 +65,46 @@
 #define RUN_SIG_HUB_RESUME   0x27BDFFE8u
 
 
+/* Arena result (menu module): runs on the arena screen each frame and, when
+ * a fight has just finished (byte 0x8003EA7C), books it and clears that
+ * byte with the halfwords below. a0 = screen state; arena number at
+ * a0 + 0x80 + 0x5D, beaten flags pointer at a0 + 0x80 + 0x58. Before the
+ * booking it waits on 0x800589DC, so the fight can be seen for a few frames
+ * first: the hook books it once, on the first sight. */
+#define RUN_RESULT           0x800BBEA8u
+#define RUN_SIG_RESULT       0x27BDFFE0u  /* addiu sp,sp,-32 */
+#define RUN_FIGHT_DONE       0x8003EA7Cu  /* byte: a fight just finished */
+#define RUN_FIGHT_WON        0x8003EAB0u  /* half: non-zero on a win */
+#define RUN_FIGHT_OPPONENT   0x8003EAD5u  /* byte: the opponent's index */
+#define RUN_STATE_ARENA      (0x80u + 0x5Du)
+#define RUN_STATE_FLAGS      (0x80u + 0x58u)
+#define RUN_ARENA            0u           /* the run's opponents replace arena 0 */
+#define RUN_CREDITS          0x8003EA94u  /* u32, save +456 (moa_ai_battle.c) */
+#define RUN_LOSS_FRAMES      (60u * 4u)   /* the result is shown, then the launcher */
+
+/* Hub: X on an entry calls 0x80056414 (a0 = hub state). It reads the
+ * entry at a0 + 0xBE (signed byte, 0-7) and jumps through the table at
+ * 0x80050ED8; 2 opens Missions (0x800943B4), 5 the Arena and 6 the Ex Arena
+ * (0x800BA64C with a0 = 0 / 1). Any other value takes the table's default:
+ * set byte 1 of the state at a0 + 0xAC and go on with 0x80057C2C (the hub
+ * waiting for input), which is what a blocked entry does.
+ * CONFIRM in game: which of 0, 1, 3, 4, 7 are Garage and Shop (the counter
+ * moa.run.hub_entry_N shows the entry each pick was). */
+#define RUN_HUB_PICK         0x80056414u
+#define RUN_SIG_HUB_PICK     0x27BDFFE8u
+#define RUN_HUB_ENTRY        0xBEu
+#define RUN_HUB_FLAGS        0xACu
+#define RUN_HUB_NEXT         0x80057C2Cu
+#define RUN_HUB_ARENA        5
+#define RUN_HUB_ALLOWED      ((1u << 0) | (1u << 3) | (1u << RUN_HUB_ARENA))  /* guess: 0 garage, 3 shop */
+
+/* Arena engine: the controller sampler runs only while the engine (a fight
+ * or its replay) is up, so SELECT, which offers leaving the fight without
+ * a result, is taken out there. START (pause) is left alone. */
+#define RUN_FIGHT_SAMPLER    0x8007F69Cu
+#define RUN_SIG_SAMPLER      0x27BDFFE8u
+#define RUN_PAD_SELECT       0x0001u
+
 #define RUN_HUB_TIMEOUT      (60u * 90u)  /* frames; fast forward makes this short */
 #define RUN_FADE_FRAMES      24u
 
@@ -77,6 +117,9 @@ static int run_state_ok;
 enum { STAGE_TITLE = 0, STAGE_LOADGAME, STAGE_LOADING };
 static int run_stage;
 static uint32_t run_newgame_seen;          /* run_frames when that menu last ran */
+static int run_result_seen;                /* this fight's result is booked */
+static uint32_t run_loss_wait;             /* frames until the launcher reopens */
+static const char *run_file_path(void) { return getenv("PSX_MOA_RUN_FILE"); }
 
 static int run_on(void)
 {
@@ -99,8 +142,8 @@ static void run_apply_state(void)
 {
     /* The save carries the run; the run file is read for what comes next
      * (results, P, the arena). */
-    const char *path = getenv("PSX_MOA_RUN_FILE");
-    run_state_ok = path && path[0] && moa_run_load(path, &run_state);
+    const char *path = run_file_path();
+    run_state_ok = path && path[0] && moa_run_load(path, &run_state) == 1;
     if (!run_state_ok) psx_mod_counter_add("moa.run.file_missing", 1);
 }
 
@@ -193,9 +236,88 @@ static void run_hub_entry(struct CPUState *cpu, uint32_t address)
     run_reach_hub("moa.run.hub_reached");
 }
 
+/* A fight's result in the run's arena: a new win pays 1 P, a loss ends the
+ * run (the file keeps it for Retry) and hands back to the launcher. */
+static void run_result_entry(struct CPUState *cpu, uint32_t address)
+{
+    if (!run_on() || !run_at_hub || !run_state_ok ||
+        psx_mod_read_word(address) != RUN_SIG_RESULT)
+        return;
+    if (!psx_mod_read_byte(RUN_FIGHT_DONE)) { run_result_seen = 0; return; }
+    if (run_result_seen) return;
+    run_result_seen = 1;
+    const uint32_t st = cpu->gpr[4];
+    if (st < 0x80000000u || st >= 0x80200000u) return;
+    if (psx_mod_read_byte(st + RUN_STATE_ARENA) != RUN_ARENA) return;
+    const char *path = run_file_path();
+    if (!psx_mod_read_half(RUN_FIGHT_WON)) {
+        moa_run_lose(&run_state);
+        (void)moa_run_save(path, &run_state);
+        run_loss_wait = RUN_LOSS_FRAMES;
+        psx_mod_counter_add("moa.run.loss", 1);
+        return;
+    }
+    /* Only a first win over that opponent counts (refights pay nothing). */
+    const uint32_t flags = psx_mod_read_word(st + RUN_STATE_FLAGS);
+    const uint8_t who = psx_mod_read_byte(RUN_FIGHT_OPPONENT);
+    if (flags < 0x80000000u || flags >= 0x80200000u || who >= MOA_RUN_SLOTS ||
+        psx_mod_read_byte(flags + who) == 1u) {
+        psx_mod_counter_add("moa.run.refight", 1);
+        return;
+    }
+    const uint32_t had = run_state.run.points;
+    if (!moa_run_win(&run_state)) return;
+    /* P is the game's credits. Step 1 has nothing to spend them on, so the
+     * credits are the run's P: if not, leave them (and say so). */
+    if (psx_mod_read_word(RUN_CREDITS) == had)
+        psx_mod_write_word(RUN_CREDITS, run_state.run.points);
+    else
+        psx_mod_counter_add("moa.run.credits_mismatch", 1);
+    (void)moa_run_save(path, &run_state);
+    psx_mod_counter_add("moa.run.win", 1);
+    /* TODO autosave: the game's own save to the run card, once its save
+     * routine is found (see ARENA_RUN_DESIGN.md "Still to find"). */
+}
+
+/* A blocked hub entry does what an unknown entry does: nothing. */
+static int run_hub_pick_filter(struct CPUState *cpu, uint32_t address)
+{
+    if (!run_on() || !run_at_hub || psx_mod_read_word(address) != RUN_SIG_HUB_PICK) return 0;
+    const uint32_t st = cpu->gpr[4];
+    if (st < 0x80000000u || st >= 0x80200000u) return 0;
+    const int8_t entry = (int8_t)psx_mod_read_byte(st + RUN_HUB_ENTRY);
+    static const char *const k_names[8] = {
+        "moa.run.hub_entry_0", "moa.run.hub_entry_1", "moa.run.hub_entry_2",
+        "moa.run.hub_entry_3", "moa.run.hub_entry_4", "moa.run.hub_entry_5",
+        "moa.run.hub_entry_6", "moa.run.hub_entry_7" };
+    if (entry < 0 || entry > 7) return 0;
+    psx_mod_counter_add(k_names[entry], 1);
+    if (RUN_HUB_ALLOWED & (1u << entry)) return 0;
+    const uint32_t flags = psx_mod_read_word(st + RUN_HUB_FLAGS);
+    if (flags >= 0x80000000u && flags < 0x80200000u) psx_mod_write_byte(flags + 1u, 1);
+    psx_mod_write_word(st + 0x78u, RUN_HUB_NEXT);
+    psx_mod_counter_add("moa.run.hub_blocked", 1);
+    return 1;
+}
+
+static void run_sampler_entry(struct CPUState *cpu, uint32_t address)
+{
+    (void)cpu;
+    if (!run_on() || !run_at_hub || psx_mod_read_word(address) != RUN_SIG_SAMPLER) return;
+    const uint16_t b = psx_mod_read_half(RUN_PAD_BUFFER + 2u);
+    if (!(b & RUN_PAD_SELECT)) {                  /* held (active low) */
+        psx_mod_write_half(RUN_PAD_BUFFER + 2u, (uint16_t)(b | RUN_PAD_SELECT));
+        psx_mod_counter_add("moa.run.select_blocked", 1);
+    }
+}
+
 static void run_frame_hook(void)
 {
     if (!run_on()) return;
+    if (run_loss_wait && !--run_loss_wait) {
+        psx_mod_counter_add("moa.run.over", 1);
+        psx_mod_request_return_to_launcher();
+    }
     if (run_autopilot) {
         if (!psx_mod_fast_forward_requested()) psx_mod_request_fast_forward(1);
         const uint32_t f = run_frames++;
@@ -221,5 +343,8 @@ PSX_MOD_CONSTRUCTOR(moa_arena_run_boot_register)
     (void)psx_game_register_offline_function_filter(RUN_MOVIE_PLAY, run_movie_filter);
     (void)psx_game_register_offline_function_entry(RUN_HUB_RESUME, run_hub_entry);
     (void)psx_game_register_offline_function_entry(RUN_NEWGAME_FRAME, run_newgame_entry);
+    (void)psx_game_register_offline_function_entry(RUN_RESULT, run_result_entry);
+    (void)psx_game_register_offline_function_filter(RUN_HUB_PICK, run_hub_pick_filter);
+    (void)psx_game_register_offline_function_entry(RUN_FIGHT_SAMPLER, run_sampler_entry);
     mod_register_frame_hook(run_frame_hook);
 }

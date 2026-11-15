@@ -64,6 +64,8 @@ mod_function_entry_funcs = [
     "0x800167A0",
     # menu: mission source picker (mod_builtin_moa_phantasma.c)
     "0x80095058", "0x80056528", "0x80093CD8",
+    # Arena Run (moa_arena_run_boot.c): LOAD GAME menu, arena result, hub pick
+    "0x800AC4B4", "0x800BBEA8", "0x80056414",
 ]
 
 # Instruction hooks of the game's plugins (psxrecomp/runtime/src/

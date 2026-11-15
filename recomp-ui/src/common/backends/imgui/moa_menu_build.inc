@@ -28,10 +28,9 @@ static int g_paint_section = 0;
 static std::string g_emblem_pending;     /* picked by the file dialog */
 static std::vector<std::string> g_emblem_files;
 
-static const int kNameMax = 7;           /* builder: NAME_MAX */
+static const int kNameMax = 8;           /* the game's name length */
 static const char kNameChars[] =
-    " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-.,!?/&*#@:;'\"()[]+=<$%~|"
-    "abcdefghijklmnopqrstuvwxyz";
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 
 /* The builder's slots: label, record byte, may be empty. */
 static const struct { const char* label; int byte; bool optional; } kSlots[] = {
@@ -219,55 +218,130 @@ static bool build_blocked() {
 
 static char* name_buf(int which) { return which == 1 ? g_edit.ac : g_edit.pilot; }
 
-static void name_input(const Input& in) {
+/* The name editor: an on-screen keyboard (letters and digits, 8 at most).
+ * D-pad / stick move, A types the key, X deletes, Y rolls a random callsign,
+ * L1 / R1 switch upper / lower case, B, START or DONE finish. A keyboard
+ * types as usual (Backspace deletes, Enter or Esc finish). */
+static int g_kb_row = 0, g_kb_col = 0;
+static bool g_kb_lower = false;
+static const char* const kKbRows[4] = { "1234567890", "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM" };
+enum { KB_SHIFT = 0, KB_DEL, KB_RANDOM, KB_DONE, KB__ACTIONS };
+static const char* const kKbActions[KB__ACTIONS] = { "SHIFT", "DELETE", "RANDOM", "DONE" };
+
+static int kb_row_len(int r) { return r < 4 ? (int)std::strlen(kKbRows[r]) : KB__ACTIONS; }
+
+static char kb_key(int r, int c) {
+    const char ch = kKbRows[r][c];
+    return (g_kb_lower && ch >= 'A' && ch <= 'Z') ? (char)(ch - 'A' + 'a') : ch;
+}
+
+/* Random names: an adjective and a thing, four letters at most each, joined
+ * with capitals (RedOgre, BlueCone), or an adjective and a number (Big23).
+ * No space: names are letters and digits, 8 at most. */
+static const char* const kNameAdj[] = {
+    "Red", "Blue", "Big", "Bad", "Old", "Mad", "Gray", "Gold", "Dark", "Wild",
+    "Grim", "Iron", "Cold", "Hot", "Lone", "Fast", "Slow", "Tiny", "Huge", "Pale",
+    "Sly", "Bold", "Dead", "Lost", "Odd", "Pink", "Teal", "Sour", "Rust", "Zero",
+};
+static const char* const kNameThing[] = {
+    "Ogre", "Cone", "Wolf", "Crow", "Fang", "Bolt", "Moth", "Toad", "Bear", "Hawk",
+    "Lynx", "Mole", "Ram", "Eel", "Wasp", "Orca", "Yeti", "Duke", "King", "Fox",
+    "Gun", "Drum", "Rook", "Tank", "Claw", "Dog", "Cat", "Bat", "Kite", "Nail",
+};
+
+static void kb_random(char* s) {
+    const int na = (int)(sizeof kNameAdj / sizeof kNameAdj[0]);
+    const int nt = (int)(sizeof kNameThing / sizeof kNameThing[0]);
+    const char* a = kNameAdj[std::rand() % na];
+    if (std::rand() % 4 == 0)
+        std::snprintf(s, (size_t)kNameMax + 1, "%s%d", a, 1 + std::rand() % 99);
+    else
+        std::snprintf(s, (size_t)kNameMax + 1, "%s%s", a, kNameThing[std::rand() % nt]);
+}
+
+static void name_input(const Gfx& g, const Input& in) {
     char* s = name_buf(g_name_edit);
     int len = (int)std::strlen(s);
     if (len > kNameMax) { s[kNameMax] = 0; len = kNameMax; }
+    bool done = false;
     auto put = [&](char ch) {
-        if (g_name_pos >= kNameMax) return;
-        if (g_name_pos >= len) { while (len < g_name_pos) s[len++] = ' '; s[len++] = ch; s[len] = 0; }
-        else s[g_name_pos] = ch;
-        if (g_name_pos < kNameMax - 1) g_name_pos++;
-        g_edit_dirty = true;
+        if (len >= kNameMax || !std::strchr(kNameChars, ch)) return;
+        s[len++] = ch; s[len] = 0; g_edit_dirty = true;
     };
-    /* Keyboard typing. */
+    auto del = [&]() { if (len > 0) { s[--len] = 0; g_edit_dirty = true; } };
+    auto press = [&](int r, int c) {
+        if (r < 4) { put(kb_key(r, c)); return; }
+        switch (c) {
+        case KB_SHIFT: g_kb_lower = !g_kb_lower; break;
+        case KB_DEL: del(); break;
+        case KB_RANDOM: kb_random(s); len = (int)std::strlen(s); g_edit_dirty = true; break;
+        default: done = true; break;
+        }
+    };
+
+    /* a keyboard */
     ImGuiIO& io = ImGui::GetIO();
-    bool typed_space = false;
     for (int i = 0; i < io.InputQueueCharacters.Size; ++i) {
         const ImWchar c = io.InputQueueCharacters[i];
-        if (c < 128 && std::strchr(kNameChars, (int)c) && c != 0) { put((char)c); if (c == ' ') typed_space = true; }
+        if (c > 32 && c < 128) put((char)c);
     }
-    if (ImGui::IsKeyPressed(ImGuiKey_Backspace, true)) {
-        if (g_name_pos > 0 && (g_name_pos >= len || s[g_name_pos] == ' ')) g_name_pos--;
-        if (g_name_pos < len) { std::memmove(s + g_name_pos, s + g_name_pos + 1, (size_t)(len - g_name_pos)); }
-        g_edit_dirty = true;
-        return;
+    if (ImGui::IsKeyPressed(ImGuiKey_Backspace, true) || in.alt) del();
+    if (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false) ||
+        ImGui::IsKeyPressed(ImGuiKey_Escape, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
+        in.start)
+        done = true;
+    if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceUp, false)) press(4, KB_RANDOM);
+    if (in.page_up || in.page_down) g_kb_lower = !g_kb_lower;
+
+    /* the cursor on the keys */
+    if (in.up && g_kb_row > 0) g_kb_row--;
+    if (in.down && g_kb_row < 4) g_kb_row++;
+    if (in.left) g_kb_col = g_kb_col > 0 ? g_kb_col - 1 : kb_row_len(g_kb_row) - 1;
+    if (in.right) g_kb_col = g_kb_col + 1 < kb_row_len(g_kb_row) ? g_kb_col + 1 : 0;
+    if (g_kb_col >= kb_row_len(g_kb_row)) g_kb_col = kb_row_len(g_kb_row) - 1;
+    if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false)) press(g_kb_row, g_kb_col);
+
+    /* drawing: a box over the lower part of the screen */
+    const float bx = 90.0f, by = 196.0f, bw = 460.0f, bh = 238.0f;
+    panel(g, bx, by, bw, bh, g_name_edit == 1 ? "AC NAME" : "PILOT NAME");
+    {
+        char shown[16];
+        const bool blink = std::fmod(ImGui::GetTime(), 0.8) < 0.5;
+        std::snprintf(shown, sizeof shown, "%s%s", s, (blink && len < kNameMax) ? "_" : "");
+        g.dl->AddRectFilled(at(g, bx + 130.0f, by + 14.0f), at(g, bx + 330.0f, by + 44.0f), kBg);
+        g.dl->AddRect(at(g, bx + 130.0f, by + 14.0f), at(g, bx + 330.0f, by + 44.0f), kLine);
+        text(g, bx + 142.0f, by + 20.0f, 16.0f, kBright, shown);
+        char count[8];
+        std::snprintf(count, sizeof count, "%d/%d", len, kNameMax);
+        text_right(g, bx + bw - 14.0f, by + 24.0f, 10.0f, len >= kNameMax ? kHi : kDim, count);
     }
-    if (in.left && g_name_pos > 0) g_name_pos--;
-    if (in.right && g_name_pos < kNameMax - 1 && g_name_pos < len) g_name_pos++;
-    if (in.up || in.down) {
-        const char cur = g_name_pos < len ? s[g_name_pos] : ' ';
-        const char* at = std::strchr(kNameChars, cur);
-        const int n = (int)std::strlen(kNameChars);
-        int k = at ? (int)(at - kNameChars) : 0;
-        k = (k + (in.down ? 1 : n - 1)) % n;
-        const int keep = g_name_pos;
-        put(kNameChars[k]);
-        g_name_pos = keep;
+    const float cw = 40.0f, ch = 28.0f, gap = 4.0f;
+    for (int r = 0; r < 5; ++r) {
+        const int n = kb_row_len(r);
+        const float kw = r < 4 ? cw : (10.0f * cw + 9.0f * gap - 3.0f * gap) / 4.0f;
+        const float rw = (float)n * kw + (float)(n - 1) * gap;
+        const float x0 = bx + (bw - rw) * 0.5f, y = by + 56.0f + (float)r * (ch + gap);
+        for (int c = 0; c < n; ++c) {
+            const float x = x0 + (float)c * (kw + gap);
+            const bool sel = r == g_kb_row && c == g_kb_col;
+            const ImVec2 a = at(g, x, y), b = at(g, x + kw, y + ch);
+            if (ImGui::IsMouseHoveringRect(a, b, false) && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                g_kb_row = r; g_kb_col = c; press(r, c);
+            }
+            g.dl->AddRectFilled(a, b, sel ? IM_COL32(240, 160, 32, 90) : kBg);
+            g.dl->AddRect(a, b, sel ? kHi : kLine);
+            char one[2] = { r < 4 ? kb_key(r, c) : 0, 0 };
+            const char* label = r < 4 ? one : (c == KB_SHIFT && g_kb_lower) ? "ABC" : (c == KB_SHIFT ? "abc" : kKbActions[c]);
+            const float size = r < 4 ? 14.0f : 11.0f;
+            const float tw = text_width(g, size, label);
+            text(g, x + (kw - tw) * 0.5f, y + (ch - size) * 0.5f - 1.0f, size, sel ? kBright : kText, label);
+        }
     }
-    if (in.alt && g_name_pos < len) {           /* X: delete this character */
-        std::memmove(s + g_name_pos, s + g_name_pos + 1, (size_t)(len - g_name_pos));
-        g_edit_dirty = true;
-    }
-    const bool done = (in.confirm && !typed_space) || ImGui::IsKeyPressed(ImGuiKey_Escape, false) ||
-                      ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
-                      ImGui::IsKeyPressed(ImGuiKey_GamepadFaceUp, false);
-    if (done) {
-        /* trim trailing spaces */
-        int l = (int)std::strlen(s);
-        while (l > 0 && s[l - 1] == ' ') s[--l] = 0;
-        g_name_edit = 0;
-    }
+    text(g, bx + 14.0f, by + bh - 18.0f, 10.0f, kDim,
+         "A  KEY    X  DELETE    Y  RANDOM    L1 / R1  CASE    B / START  DONE", bw - 28.0f);
+
+    g_name_pos = (int)std::strlen(s);
+    if (done) g_name_edit = 0;
 }
 
 static std::string name_shown(int which) {
@@ -408,9 +482,6 @@ static void draw_ai_build(LauncherModel* m, const Gfx& g, const Input& in) {
         }
         build_totals(g, 354.0f, 272.0f);
     }
-    if (g_name_edit)
-        text(g, 354.0f, 400.0f, 10.0f, kHi,
-             "UP / DOWN  LETTER   LEFT / RIGHT  MOVE   X  DELETE   A  DONE  (or type)", 250.0f);
     if (g_confirm_discard) {
         panel(g, 360.0f, 330.0f, 236.0f, 64.0f, "UNSAVED CHANGES");
         text(g, 374.0f, 346.0f, 11.0f, kWarn, "LEAVE WITHOUT SAVING?");
@@ -419,7 +490,7 @@ static void draw_ai_build(LauncherModel* m, const Gfx& g, const Input& in) {
     footer(g, on_slot ? "A  ASSEMBLY SCREEN   LEFT / RIGHT  CHANGE   Y / TRIANGLE  DETAILS   B  BACK"
                       : "A  SELECT      LEFT / RIGHT  CHANGE      B  BACK");
 
-    if (g_name_edit) { name_input(in); return; }
+    if (g_name_edit) { name_input(g, in); return; }
     if (g_details_open) {
         if (in.info || in.back || in.confirm) g_details_open = false;
         return;
@@ -502,7 +573,6 @@ static void draw_ai_build(LauncherModel* m, const Gfx& g, const Input& in) {
  * scroll. A opens the slot's full list, zoom is the right stick.
  */
 
-static const ImU32 kGameBlue = IM_COL32(72, 80, 176, 255);
 static const ImU32 kWireRed  = IM_COL32(200, 36, 36, 255);
 static const ImU32 kWireGrey = IM_COL32(176, 176, 176, 255);
 
@@ -515,6 +585,8 @@ static void open_asm(int slot, bool from_build) {
 
 /* The slot's part: none for 255, and for the hand slot its "NO WEAPON". */
 static bool asm_empty(int byte, int id) { return id == 255 || (byte == 4 && id == 0); }
+
+static const ImU32 kGameBlue = IM_COL32(72, 80, 176, 255);
 
 static void game_box(const Gfx& g, float x, float y, float w, float h) {
     g.dl->AddRectFilled(at(g, x, y), at(g, x + w, y + h), IM_COL32(0, 0, 0, 255));

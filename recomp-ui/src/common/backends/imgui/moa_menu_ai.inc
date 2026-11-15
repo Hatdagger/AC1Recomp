@@ -118,6 +118,7 @@ static void rescan_on(const LauncherModel* m, const std::string& path) {
 
 static void open_editor(const AiCard& c) {
     g_edit = c.card;
+    moa_build_normalise(g_edit.rec);
     g_edit_path = c.path;
     if (!g_edit.has_ai) moa_card_set_preset(&g_edit, MOA_AI_PRESET_BALANCED);
     g_edit_dirty = !c.card.has_ai;      /* an old card gains AI when saved */

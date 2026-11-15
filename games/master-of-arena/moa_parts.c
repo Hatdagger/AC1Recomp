@@ -132,6 +132,7 @@ int moa_record_cat(int b)
 
 void moa_build_normalise(uint8_t rec[13])
 {
+    if (rec[2] == 255) rec[2] = 0;   /* the game never fields an AC without arms */
     if (rec[2] >= 12 && rec[2] != 255) { rec[4] = 0; rec[5] = 255; }   /* weapon arms */
     if (rec[3] >= 27 && rec[3] != 255) rec[12] = 255;                 /* caterpillar */
     rec[11] &= 0x0F;                                                  /* 12 option bits */

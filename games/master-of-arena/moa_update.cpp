@@ -78,12 +78,12 @@ void set(State s, const std::string& msg) {
 
 /* ---- versions ------------------------------------------------------------- */
 
-bool parse_version(const std::string& s, int v[3]) {
-    v[0] = v[1] = v[2] = 0;
+bool parse_version(const std::string& s, int v[4]) {
+    v[0] = v[1] = v[2] = v[3] = 0;
     size_t i = 0;
     while (i < s.size() && !std::isdigit((unsigned char)s[i])) ++i;
     if (i == s.size()) return false;
-    for (int k = 0; k < 3 && i < s.size(); ++k) {
+    for (int k = 0; k < 4 && i < s.size(); ++k) {
         v[k] = std::atoi(s.c_str() + i);
         while (i < s.size() && std::isdigit((unsigned char)s[i])) ++i;
         if (i < s.size() && s[i] == '.') ++i; else break;
@@ -92,10 +92,10 @@ bool parse_version(const std::string& s, int v[3]) {
 }
 
 int compare(const std::string& a, const std::string& b) {
-    int x[3], y[3];
+    int x[4], y[4]; /* 4th part for point releases like 0.8.3.1 */
     parse_version(a, x);
     parse_version(b, y);
-    for (int i = 0; i < 3; ++i)
+    for (int i = 0; i < 4; ++i)
         if (x[i] != y[i]) return x[i] < y[i] ? -1 : 1;
     return 0;
 }

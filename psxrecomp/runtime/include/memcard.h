@@ -55,6 +55,10 @@ int memcard_write_sector(int card, int sector, const uint8_t* buf);
 void memcard_flush(int card);
 void memcard_flush_all(void);
 
+/* Call once per vblank: flushes a dirty card after it has been idle for a
+ * short period (sector writes are deferred instead of hitting disk). */
+void memcard_vblank_tick(void);
+
 /* Check if card is present */
 int memcard_is_present(int card);
 

@@ -19,7 +19,15 @@
 #include <sys/stat.h>
 #ifdef _WIN32
 #include <direct.h>
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 #endif
+
+/* Deferred write-back: guest sector writes only touch the RAM image; the
+ * file is rewritten once the card has been quiet for this many vblanks
+ * (~0.5 s at 60 Hz). Previously every 128-byte sector rewrote the whole
+ * 128 KB file (64+ full rewrites per save block). */
+#define MEMCARD_FLUSH_IDLE_FRAMES 30
 
 #define MAX_CARDS 2
 
@@ -28,6 +36,7 @@ typedef struct {
     char filepath[512];
     int present;
     int dirty;
+    int idle_frames; /* vblanks left before a deferred flush; 0 = none */
 } MemCard;
 
 static MemCard cards[MAX_CARDS];
@@ -237,22 +246,45 @@ int memcard_write_sector(int card, int sector, const uint8_t* buf) {
 
     memcpy(cards[card].data + sector * MEMCARD_SECTOR_SIZE, buf, MEMCARD_SECTOR_SIZE);
     cards[card].dirty = 1;
+    cards[card].idle_frames = MEMCARD_FLUSH_IDLE_FRAMES;
     return 0;
+}
+
+/* Write the whole image to "<path>.tmp" then replace the card file, so a
+ * crash mid-write never leaves a truncated card. */
+static int memcard_write_file_atomic(const char *path, const uint8_t *data) {
+    char tmp[600];
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    FILE *f = fopen(tmp, "wb");
+    if (!f) return 0;
+    size_t n = fwrite(data, 1, MEMCARD_SIZE, f);
+    int flush_ok = (fflush(f) == 0);
+    int close_ok = (fclose(f) == 0);
+    if (n != MEMCARD_SIZE || !flush_ok || !close_ok) { remove(tmp); return 0; }
+#ifdef _WIN32
+    if (!MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        remove(tmp); return 0;
+    }
+#else
+    if (rename(tmp, path) != 0) { remove(tmp); return 0; }
+#endif
+    return 1;
 }
 
 void memcard_flush(int card) {
     if (card < 0 || card >= MAX_CARDS) return;
+    cards[card].idle_frames = 0;
     if (!cards[card].dirty) return;
     if (cards[card].filepath[0] == '\0') return;
 
-    FILE* f = fopen(cards[card].filepath, "wb");
-    if (f) {
-        size_t n = fwrite(cards[card].data, 1, MEMCARD_SIZE, f);
-        int flush_ok = (fflush(f) == 0);
-        int close_ok = (fclose(f) == 0);
-        if (n == MEMCARD_SIZE && flush_ok && close_ok) {
-            cards[card].dirty = 0;
-        }
+    if (memcard_write_file_atomic(cards[card].filepath, cards[card].data))
+        cards[card].dirty = 0;
+}
+
+void memcard_vblank_tick(void) {
+    for (int i = 0; i < MAX_CARDS; i++) {
+        if (cards[i].idle_frames > 0 && --cards[i].idle_frames == 0)
+            memcard_flush(i);
     }
 }
 

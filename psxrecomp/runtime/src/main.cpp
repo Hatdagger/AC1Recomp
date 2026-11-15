@@ -9478,6 +9478,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
      * by any resume_at (savestate / selfcheck / RB) during that quantum — the
      * next tick has a live native chain under its dispatch again. */
     psx_scheduler_top_level_resume_clear();
+    memcard_vblank_tick();
     int probe_turbo = 0;
     int probe_reached = 0;
     struct PostLoadProbeScope {

@@ -6,8 +6,13 @@ your own copy of Armored Core: Master of Arena (USA).**
 This is a test release. Please report problems in this repository's Issues
 (what you did, what you saw, Windows or Linux/Steam Deck).
 
-## What's new in 0.8.3
+## What's new in 0.8.3.1
 
+- **Faster saving:** saving to the memory card no longer rewrites the whole
+  card file for every small piece of the save; the card file is now written
+  once, about half a second after the game finishes saving. The file is
+  written to a temporary copy first and then swapped in, so a crash mid-save
+  can't damage your card.
 - **New launcher menu:** START GAME, MULTIPLAYER, EXTRA GARAGE, EXTRAS,
   SETTINGS, MODS, UPDATES, EXIT.
   - **MULTIPLAYER** (was Network Play) is LAN and direct IP only. Online

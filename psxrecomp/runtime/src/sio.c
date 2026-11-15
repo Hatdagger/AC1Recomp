@@ -1890,8 +1890,9 @@ static void mc_process_byte(uint8_t tx_byte) {
         sio_stat |= SIO_STAT_ACK;
 
         if (tx_byte == expected && mc_sector < MEMCARD_SECTORS) {
+            /* Deferred: memcard_vblank_tick() writes the file once the
+             * save goes quiet (was a full 128 KB rewrite per sector). */
             memcard_write_sector(mc_slot, mc_sector, mc_data);
-            memcard_flush(mc_slot);
             mc_checksum = 0x47; /* Good */
         } else if (mc_sector >= MEMCARD_SECTORS) {
             mc_checksum = 0xFF; /* Bad sector */

@@ -110,16 +110,16 @@ static void np_script_load(unsigned player)
 {
     const uint8_t ph = player ? PH_GUEST : PH_HOST, port = (uint8_t)(player + 1);
     np_add(K_ROW, ph, 1, (uint16_t)(1 + player), 0, 0);
-    TAP(ph, 1, PAD_X, 70);
-    for (int i = 0; i < 4; i++) TAP(ph, port, PAD_DOWN, 18);   /* SYSTEM */
-    TAP(ph, port, PAD_X, 70);                                    /* DATA LOAD */
-    TAP(ph, port, PAD_X, 110);                                   /* SLOT 1 / SLOT 2 */
-    if (player) TAP(ph, port, PAD_DOWN, 24);                     /* SLOT 2 */
+    TAP(ph, 1, PAD_X, 40);
+    for (int i = 0; i < 4; i++) TAP(ph, port, PAD_DOWN, 10);   /* SYSTEM */
+    TAP(ph, port, PAD_X, 40);                                    /* DATA LOAD */
+    TAP(ph, port, PAD_X, 60);                                   /* SLOT 1 / SLOT 2 */
+    if (player) TAP(ph, port, PAD_DOWN, 14);                     /* SLOT 2 */
     TAP(ph, port, PAD_X, 480);                                   /* search the card */
-    TAP(ph, port, PAD_X, 70);                                    /* save 1: "Load?" */
+    TAP(ph, port, PAD_X, 40);                                    /* save 1: "Load?" */
     TAP(ph, port, PAD_X, 720);                                   /* yes */
-    TAP(ph, port, PAD_O, 50);                                    /* out of SYSTEM */
-    TAP(ph, port, PAD_O, 150);                                   /* out of AC SETUP */
+    TAP(ph, port, PAD_O, 30);                                    /* out of SYSTEM */
+    TAP(ph, port, PAD_O, 90);                                   /* out of AC SETUP */
 }
 
 static void np_script_build(void)
@@ -385,6 +385,7 @@ static void np_overlay_off(void)
 {
     if (!np_overlay_up) return;
     np_overlay_up = 0;
+    psx_mod_set_game_audio_muted(0);
     psx_game_netplay_loading_screen(NULL, 0);
     psx_mod_set_loading_image(NULL, 0, 0);
     moa_screen_set_steps(NULL, 0);
@@ -432,12 +433,16 @@ static void np_frame_hook(void)
     if (phase == PH_COUNT) { snprintf(line, sizeof line, "Battle Starting  %d", digit); text = line; }
     const int permille = phase * 200 + (phase == PH_COUNT ? (4 - digit) * 50 : 0);
     psx_game_netplay_loading_screen(text, permille / 10);
+    if (!np_overlay_up) psx_mod_set_game_audio_muted(1);
     np_overlay_up = 1;
     np_font();
     if (!moa_screen_ready()) return;          /* the plain loading screen */
     static uint64_t last_ms;
+    static int last_key = -1;
     const uint64_t now = np_now_ms();
-    if (now - last_ms < 40u) return;
+    const int key = phase * 16 + digit;
+    if (key == last_key && now - last_ms < 250u) return;
+    last_key = key;
     last_ms = now;
     np_units();
     moa_screen_set_steps(steps, 5);

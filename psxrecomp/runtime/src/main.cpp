@@ -710,6 +710,10 @@ extern "C" void psx_mod_play_tone(int hz, int ms) {
     s_tone_phase = 0.0;
     s_tone_left.store(s_tone_total);
 }
+/* Game sound held silent by trusted game code (an overlay over a scripted
+ * stretch); host tones still play. Presentation only. */
+static std::atomic<int> s_mod_mute{0};
+extern "C" void psx_mod_set_game_audio_muted(int on) { s_mod_mute.store(on ? 1 : 0); }
 static void host_tone_mix(int16_t *buf, int frames) {
     int left = s_tone_left.load();
     if (left <= 0 || frames <= 0) return;
@@ -4391,6 +4395,7 @@ static void sdl_audio_pump(bool discard_output = false) {
             sdl_audio_gain_ramp(sdl_audio_buf, frames, g, g);
         }
     }
+    if (s_mod_mute.load()) std::memset(sdl_audio_buf, 0, (size_t)frames * 2u * sizeof(int16_t));
     host_tone_mix(sdl_audio_buf, frames);
     if (legacy) {
         /* T3 tap: the exact post-fade bytes handed to the host audio queue. */

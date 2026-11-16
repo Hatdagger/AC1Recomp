@@ -115,6 +115,8 @@ void psx_game_netplay_loading_screen(const char *text, int percent);
  * volume (never through the SPU: offline and netplay alike). A new tone
  * replaces the one playing; hz <= 0 stops it. */
 void psx_mod_play_tone(int hz, int ms);
+/* Silence the game's sound on this PC (host tones still play). */
+void psx_mod_set_game_audio_muted(int on);
 /* The output window's size in pixels; 0x0 when there is none (headless). */
 void psx_mod_window_size(int *w, int *h);
 /* Port `slot`'s buttons as the host controller holds them, PSX layout,

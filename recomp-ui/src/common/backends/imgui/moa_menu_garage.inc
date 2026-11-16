@@ -55,9 +55,12 @@ static bool g_dc_details = false;
 static int  g_dc_menu = -1;                   /* action menu open: its cursor */
 static bool g_dc_confirm = false;             /* delete: asking */
 static int  g_dc_import = 0;                  /* IMPORT AI CARD: which card */
-static std::vector<moa_story_save> g_dc_story; /* story saves on the chosen card */
-static int  g_dc_story_pick = 0;              /* PUT INTO STORY SAVE: which save */
-static bool g_dc_story_confirm = false;       /* PUT INTO STORY SAVE: asking */
+static std::vector<moa_story_save> g_dc_story; /* MoA saves on the chosen card */
+static int  g_dc_story_pick = 0;              /* SAVE TO CARD: 0 new, else a save */
+static bool g_dc_story_confirm = false;       /* SAVE TO CARD over a save: asking */
+/* SAVE TO CARD's choice: 0 = a new save, k = g_dc_story[k - 1]. */
+static int dc_save_choices() { return 1 + (int)g_dc_story.size(); }
+static int dc_save_pick() { return g_dc_story_pick % dc_save_choices(); }
 
 static uint32_t mc_u32(const uint8_t* p) {
     return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
@@ -95,7 +98,7 @@ static void dc_read_card() {
     moa_story_save list[15];
     const int n = moa_memcard_list_story(g_dc_files[(size_t)g_dc_file].c_str(), list, 15);
     for (int i = 0; i < n; ++i) g_dc_story.push_back(list[i]);
-    if (g_dc_story_pick >= (int)g_dc_story.size()) g_dc_story_pick = 0;
+    if (g_dc_story_pick >= dc_save_choices()) g_dc_story_pick = 0;
 }
 
 static void dc_scan(LauncherModel* m) {
@@ -178,7 +181,7 @@ static std::vector<int> dc_targets(int cur_save) {
     return v;
 }
 
-enum DcRow { DC_SAVE_GARAGE = 0, DC_STORY, DC_IMPORT, DC_TO_CARD, DC_SAVES };
+enum DcRow { DC_SAVE_GARAGE = 0, DC_IMPORT, DC_TO_CARD, DC_SAVES };
 enum DcAction { DA_LOAD = 0, DA_EXPORT, DA_DELETE, DA_CANCEL, DA__COUNT };
 
 static void dc_action(LauncherModel* m, int action, int cur_save) {
@@ -269,13 +272,12 @@ static void draw_data_page(LauncherModel* m, const Gfx& g, const Input& in) {
         std::string label, value;
         bool enabled = g_dc_ok || g_dc_files.empty() || i == DC_SAVE_GARAGE || i == DC_TO_CARD;
         bool marked = false;
-        if (i == DC_SAVE_GARAGE) { label = "SAVE AS VERSUS UNIT"; value = upper(g_garage.ac); }
-        else if (i == DC_STORY) {
-            label = "PUT INTO STORY SAVE";
-            if (g_dc_story.empty()) { value = "NO STORY SAVE"; enabled = false; }
+        if (i == DC_SAVE_GARAGE) {
+            label = "SAVE TO CARD";
+            if (dc_save_pick() == 0) value = "NEW SAVE";
             else {
-                const moa_story_save& t = g_dc_story[(size_t)(g_dc_story_pick % (int)g_dc_story.size())];
-                value = upper(t.pilot[0] ? t.pilot : t.file);
+                const moa_story_save& t = g_dc_story[(size_t)(dc_save_pick() - 1)];
+                value = upper(t.pilot[0] ? t.pilot : t.ac[0] ? t.ac : t.file);
             }
         }
         else if (i == DC_TO_CARD) { label = "EXPORT AS AI CARD"; value = upper(g_garage.ac); }
@@ -299,27 +301,23 @@ static void draw_data_page(LauncherModel* m, const Gfx& g, const Input& in) {
 
     panel(g, 310.0f, 76.0f, 306.0f, 216.0f, g_dc_details ? "PARTS" : "SAVE");
     if (cur_save >= 0) draw_save_info(g, g_dc_saves[(size_t)cur_save], g_dc_details);
-    else if (cur == DC_SAVE_GARAGE)
-        text(g, 324.0f, 92.0f, 10.0f, kText,
-             "Writes the garage AC as a new versus unit in a free block: the AC "
-             "only, no parts owned, so it is for VS mode (AC SETUP > SYSTEM > "
-             "DATA LOAD), not for story mode. Nothing is overwritten.", 278.0f);
-    else if (cur == DC_STORY) {
-        if (g_dc_story.empty()) {
+    else if (cur == DC_SAVE_GARAGE) {
+        if (dc_save_pick() == 0) {
             text(g, 324.0f, 92.0f, 10.0f, kText,
-                 "No story save on this card. Save in story mode first, then fit the "
-                 "garage AC into it here.", 278.0f);
+                 "Writes the garage AC as a new save in a free block, owning every "
+                 "part it carries, for story or VS mode. Nothing is overwritten. "
+                 "Left and right pick an existing save instead.", 278.0f);
         } else {
-            const moa_story_save& t = g_dc_story[(size_t)(g_dc_story_pick % (int)g_dc_story.size())];
+            const moa_story_save& t = g_dc_story[(size_t)(dc_save_pick() - 1)];
             char b[96];
             text(g, 324.0f, 92.0f, 12.0f, kBright, upper(t.pilot[0] ? t.pilot : "PILOT").c_str());
             std::snprintf(b, sizeof b, "%s   %u C   %d PARTS OWNED", t.file, (unsigned)t.money, t.owned);
             text(g, 324.0f, 112.0f, 10.0f, kDim, b);
             text(g, 324.0f, 132.0f, 10.0f, kText,
-                 "Fits the garage AC into this story save: parts, optional parts, "
+                 "Puts the garage AC into this save: parts, optional parts, "
                  "paint, emblem and AC name. Parts the save does not own are added "
                  "to it. Money, pilot, progress and Human PLUS stay. Left and right "
-                 "pick the save; a backup of the card is kept.", 278.0f);
+                 "pick the save (or NEW SAVE); a backup of the card is kept.", 278.0f);
         }
     }
     else if (cur == DC_TO_CARD)
@@ -359,8 +357,8 @@ static void draw_data_page(LauncherModel* m, const Gfx& g, const Input& in) {
         return;
     }
     if (g_dc_story_confirm) {
-        panel(g, 140.0f, 170.0f, 360.0f, 90.0f, "STORY SAVE");
-        const moa_story_save& t = g_dc_story[(size_t)(g_dc_story_pick % (int)g_dc_story.size())];
+        panel(g, 140.0f, 170.0f, 360.0f, 90.0f, "SAVE TO CARD");
+        const moa_story_save& t = g_dc_story[(size_t)(dc_save_pick() - 1)];
         char b[120];
         std::snprintf(b, sizeof b, "REPLACE %s'S AC WITH %s?", upper(t.pilot[0] ? t.pilot : t.file).c_str(),
                       upper(g_garage.ac[0] ? g_garage.ac : "AC").c_str());
@@ -373,7 +371,8 @@ static void draw_data_page(LauncherModel* m, const Gfx& g, const Input& in) {
         char err[160] = {0};
         int added = 0;
         if (moa_memcard_fit_story(dc_path().c_str(), t.slot, &g_garage, &added, err, sizeof err)) {
-            std::snprintf(b, sizeof b, "PUT INTO THE STORY SAVE (%d PART%s ADDED). LOAD IT IN STORY MODE.",
+            std::snprintf(b, sizeof b, "SAVED INTO %s (%d PART%s ADDED).",
+                          upper(t.pilot[0] ? t.pilot : t.file).c_str(),
                           added, added == 1 ? "" : "S");
             note(b);
         } else {
@@ -417,9 +416,9 @@ static void draw_data_page(LauncherModel* m, const Gfx& g, const Input& in) {
         cur = 0; top = 0;
         return;
     }
-    if (cur == DC_STORY && !g_dc_story.empty() && (in.left || in.right)) {
-        const int n = (int)g_dc_story.size();
-        g_dc_story_pick = (g_dc_story_pick + (in.left ? n - 1 : 1)) % n;
+    if (cur == DC_SAVE_GARAGE && (in.left || in.right)) {
+        const int n = dc_save_choices();
+        g_dc_story_pick = (dc_save_pick() + (in.left ? n - 1 : 1)) % n;
     }
     if (cur == DC_IMPORT && !g_ai_cards.empty() && (in.left || in.right)) {
         const int n = (int)g_ai_cards.size();
@@ -441,9 +440,8 @@ static void draw_data_page(LauncherModel* m, const Gfx& g, const Input& in) {
         }
         return;
     }
-    if (activate == DC_STORY) {
+    if (activate == DC_SAVE_GARAGE && dc_save_pick() > 0) {
         if (m->in_session) { note("CLOSE THE GAME FIRST"); return; }
-        if (g_dc_story.empty()) { note("NO STORY SAVE ON THIS CARD"); return; }
         g_dc_story_confirm = true;
         return;
     }
@@ -457,7 +455,7 @@ static void draw_data_page(LauncherModel* m, const Gfx& g, const Input& in) {
             c = &g_ai_cards[(size_t)(g_dc_import % (int)g_ai_cards.size())].card;
         }
         if (moa_memcard_add_unit(path.c_str(), c, err, sizeof err)) {
-            note(activate == DC_SAVE_GARAGE ? "SAVED AS A VERSUS UNIT ON THE CARD"
+            note(activate == DC_SAVE_GARAGE ? "SAVED AS A NEW SAVE ON THE CARD"
                                              : "SAVED AS A NEW SAVE ON THE CARD");
             dc_scan(m);
         } else {
@@ -550,7 +548,7 @@ static void draw_garage_page(LauncherModel* m, const Gfx& g, const Input& in) {
         "The garage AC's AI. It goes with the AC when you export it as an AI card "
         "(MEMORY CARD > EXPORT AS AI CARD).",
         "Memory card manager: load an AC from a save into the garage, save the "
-        "garage AC as a versus unit or put it into a story save, export it as an "
+        "garage AC to the card (a new save or over one), export it as an "
         "AI card, export saves as AI cards, delete saves (a backup is kept).",
         "Your AI cards: edit their AI, rename, delete, and change their AC. "
         "Cards live in the memory card folder.",

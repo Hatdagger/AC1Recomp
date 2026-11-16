@@ -899,8 +899,8 @@ static int read_card_image(const char *path, uint8_t *mc)
     return got == 131072 && mc[0] == 'M' && mc[1] == 'C';
 }
 
-/* A story save: a used directory slot named BASLUS-01030?, a valid Scenario
- * block, and parts owned (the launcher's versus units own none). */
+/* A Master of Arena save: a used directory slot named BASLUS-01030? holding a
+ * valid Scenario block (story saves and versus units alike). */
 static int is_story(const uint8_t *mc, int slot, int *owned)
 {
     const uint8_t *fr = mc + slot * 128;
@@ -910,7 +910,7 @@ static int is_story(const uint8_t *mc, int slot, int *owned)
     int n = 0;
     for (int i = 0; i < 256; i++) n += b[SAVE_OWNED + i] != 0;
     if (owned) *owned = n;
-    return n > 0;
+    return 1;          /* versus units too: any MoA save can take the garage AC */
 }
 
 int moa_memcard_list_story(const char *path, struct moa_story_save *out, int max)

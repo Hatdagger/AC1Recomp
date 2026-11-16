@@ -74,12 +74,17 @@ static int moa_link_engine_loaded(void)
 /* The versus menu fills both player blocks (each player's AC and the stage)
  * exactly as the link engine expects them after its cable exchange. The exe
  * reads the mode byte when the menu returns: 1 launches the link engine. */
+/* moa_netplay_setup.c */
+void moa_np_setup_menu_versus(void);
+void moa_np_setup_link_start(void);
+
 static void moa_menu_versus_entry(struct CPUState *cpu, uint32_t address)
 {
     (void)cpu; (void)address;
     if (!moa_code_is(MOA_MENU_VERSUS, 0x27BDFFC0u, 0x00002021u)) return;
     psx_mod_write_byte(MOA_MODE_BYTE, 1);
     psx_mod_counter_add("moa.link.menu_launch", 1);
+    moa_np_setup_menu_versus();
 }
 
 /* First link code of a match. The role negotiation itself still runs (its
@@ -99,6 +104,7 @@ static void moa_link_roles_entry(struct CPUState *cpu, uint32_t address)
     psx_mod_write_word(MOA_LINK + 924u, MOA_CLOSED_FD);
     psx_mod_write_word(MOA_LINK + 928u, MOA_CLOSED_FD);
     psx_mod_counter_add("moa.link.roles", 1);
+    moa_np_setup_link_start();
 }
 
 /* AC data exchange: both blocks are already filled by the menu. */
@@ -107,6 +113,7 @@ static int moa_link_exchange_filter(struct CPUState *cpu, uint32_t address)
     (void)cpu; (void)address;
     if (!moa_link_engine_loaded()) return 0;
     psx_mod_counter_add("moa.link.exchange_skipped", 1);
+    moa_np_setup_link_start();
     return 1;
 }
 

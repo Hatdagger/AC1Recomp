@@ -107,6 +107,14 @@ void psx_mod_set_loading_screen(const char *text, int percent);
  * above is then only logged). Copied; NULL clears it. Render it at the
  * window's aspect from psx_mod_window_size. */
 void psx_mod_set_loading_image(const uint32_t *argb, int w, int h);
+/* Netplay form of the loading screen for trusted game code: presentation
+ * only (each peer shows its own; the guest never sees it). The picture is
+ * psx_mod_set_loading_image, which works in both. */
+void psx_game_netplay_loading_screen(const char *text, int percent);
+/* A host tone of `hz` for `ms`, mixed over the game's sound after the master
+ * volume (never through the SPU: offline and netplay alike). A new tone
+ * replaces the one playing; hz <= 0 stops it. */
+void psx_mod_play_tone(int hz, int ms);
 /* The output window's size in pixels; 0x0 when there is none (headless). */
 void psx_mod_window_size(int *w, int *h);
 /* Port `slot`'s buttons as the host controller holds them, PSX layout,

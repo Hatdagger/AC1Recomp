@@ -35,6 +35,11 @@ void moa_screen_set_units(const struct moa_screen_unit *unit1,
 /* The steps a session goes through, shown in a row under the bar. */
 enum { MOA_STEP_SETUP = 0, MOA_STEP_STAGING, MOA_STEP_GATHERING, MOA_STEP_COMPLETE, MOA_STEP_COUNT };
 
+/* Another row of steps (static strings, up to MOA_SCREEN_STEPS_MAX); NULL
+ * or 0 puts back the AI Battle row. */
+#define MOA_SCREEN_STEPS_MAX 6
+void moa_screen_set_steps(const char *const *names, int count);
+
 /* One frame. win_w x win_h: the window (0 = unknown, 4:3). status: the
  * glowing line. step: MOA_STEP_*, lit in the row of steps. permille: bar fill 0..1000 (< 0: no bar). limit_secs: shown
  * under the bar when > 0. fade: 0 = full picture .. 1 = black. now_ms: a

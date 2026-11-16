@@ -1060,6 +1060,7 @@ static void moa_loading_show(const char *log_text, int step, int permille, float
         "Setting up...", "Staging...", "Gathering battle simulation data...", "Simulation complete" };
     if (moa_decided || moa_outro_ms) step = MOA_STEP_COMPLETE;
     const char *status = status_text[step];
+    moa_screen_set_steps(NULL, 0);
     psx_mod_set_loading_screen(log_text, permille >= 0 ? permille / 10 : -1);
     if (!moa_screen_ready()) {
         uint32_t bytes = 0;

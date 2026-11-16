@@ -695,6 +695,41 @@ extern "C" void psx_mod_request_return_to_launcher(void) {
     psx_request_return_to_lobby();   /* the same scheduler escape */
 }
 
+/* Host tones a trusted game plays over the game's sound (a countdown's
+ * ticks): sine bursts mixed into the host output after the master volume,
+ * never into the SPU, so guest state is untouched and netplay peers stay in
+ * step. One tone at a time; a new one replaces the last. */
+static std::atomic<int> s_tone_hz{0};
+static std::atomic<int> s_tone_left{0};      /* output frames still to play */
+static int s_tone_total = 0;
+static double s_tone_phase = 0.0;
+extern "C" void psx_mod_play_tone(int hz, int ms) {
+    if (hz <= 0 || ms <= 0) { s_tone_left.store(0); return; }
+    s_tone_hz.store(hz);
+    s_tone_total = ms * 44100 / 1000;
+    s_tone_phase = 0.0;
+    s_tone_left.store(s_tone_total);
+}
+static void host_tone_mix(int16_t *buf, int frames) {
+    int left = s_tone_left.load();
+    if (left <= 0 || frames <= 0) return;
+    const double step = 2.0 * 3.14159265358979 * (double)s_tone_hz.load() / 44100.0;
+    const int total = s_tone_total > 0 ? s_tone_total : 1;
+    const int n = frames < left ? frames : left;
+    for (int i = 0; i < n; i++) {
+        const int pos = total - left + i;          /* 5 ms attack, linear release */
+        double env = 1.0 - (double)pos / (double)total;
+        if (pos < 220) env *= (double)pos / 220.0;
+        const int v = (int)(std::sin(s_tone_phase) * env * 9000.0);
+        s_tone_phase += step;
+        for (int c = 0; c < 2; c++) {
+            int m = buf[2 * i + c] + v;
+            buf[2 * i + c] = (int16_t)(m > 32767 ? 32767 : (m < -32768 ? -32768 : m));
+        }
+    }
+    s_tone_left.store(left - n);
+}
+
 /* A plugin's loading screen: while set, the game picture is replaced by a
  * black screen with the message and a progress bar in the OSD box, redrawn
  * about ten times a second of wall time. */
@@ -702,8 +737,17 @@ static int g_mod_loading = 0;
 static int mod_loading_image_ready(void);
 static uint64_t s_mod_loading_last_ms = 0;
 static char s_mod_loading_text[200];
+static void mod_loading_screen_set(const char *text, int percent, int allow_netplay);
 extern "C" void psx_mod_set_loading_screen(const char *text, int percent) {
-    if (!text || !text[0] || psx_netplay_active()) {
+    mod_loading_screen_set(text, percent, 0);
+}
+/* The same for trusted game code during a netplay session: presentation only
+ * (host state, never seen by the guest), so each peer may show its own. */
+extern "C" void psx_game_netplay_loading_screen(const char *text, int percent) {
+    mod_loading_screen_set(text, percent, 1);
+}
+static void mod_loading_screen_set(const char *text, int percent, int allow_netplay) {
+    if (!text || !text[0] || (psx_netplay_active() && !allow_netplay)) {
         if (g_mod_loading) {
             g_mod_loading = 0;
             s_mod_loading_text[0] = '\0';
@@ -4347,6 +4391,7 @@ static void sdl_audio_pump(bool discard_output = false) {
             sdl_audio_gain_ramp(sdl_audio_buf, frames, g, g);
         }
     }
+    host_tone_mix(sdl_audio_buf, frames);
     if (legacy) {
         /* T3 tap: the exact post-fade bytes handed to the host audio queue. */
         audio_trace_pcm(AUDIO_TAP_HOST, sdl_audio_buf, frames);

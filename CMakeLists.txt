@@ -141,6 +141,8 @@ if(TARGET psx-master-of-arena)
     # Netplay runs the link versus engine in place of the cable.
     target_sources(psx-master-of-arena PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_link_netplay.c"
+        # Netplay auto-setup (host's autosetup=1 title option).
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_netplay_setup.c"
         # AI Battle: the arena opponent AI flies both ACs (offline only).
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_ai_battle.c"
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_screen.c"

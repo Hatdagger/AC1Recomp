@@ -404,6 +404,7 @@ int stbi_write_png_to_func(void (*func)(void *, void *, int), void *context,
 #define SAVE_PAINT    0x250                    /* 48 colour values */
 #define SAVE_EMBLEM   0x480                    /* 64x64, 4 bits per pixel */
 #define SAVE_CLUT     0xC80                    /* 16 x 15-bit colours */
+#define SAVE_CONFIG   0xCCC                    /* game options: 12 u32 pad bits, then sound */
 #define SAVE_PLUS     0xDEC                    /* Human PLUS state; [0] = level */
 #define SAVE_VALID    0xE58                    /* 1 = a save the loader accepts */
 #define SAVE_MONEY    0x1C8                    /* u32 credits (RAM 0x8003EA74) */
@@ -683,6 +684,33 @@ void moa_card_to_save(const struct moa_card *c, uint8_t b[MOA_SAVE_BLOCK])
         b[SAVE_CLUT + 2 * i] = (uint8_t)(c->palette[i] & 255);
         b[SAVE_CLUT + 2 * i + 1] = (uint8_t)((c->palette[i] >> 8) & 0x7F);
     }
+    {   /* The game's garage lists only owned parts: own everything fitted
+           (as PUT INTO STORY SAVE), so the AC can be entered and changed. */
+        uint8_t q[13];
+        memcpy(q, r, 13);
+        if (q[2] >= 12 && q[2] != 0xFF) { q[4] = 0; q[5] = 0xFF; }
+        if (q[3] >= 27 && q[3] != 0xFF) q[12] = 0xFF;
+        for (int byte = 0; byte < 13; byte++) {
+            if (byte == 10 || byte == 11 || (byte == 4 && q[byte] == 0)) continue;
+            const int k = moa_owned_index(byte, q[byte]);
+            if (k >= 0) b[SAVE_OWNED + k] = 1;
+        }
+        const unsigned mask = q[10] | (unsigned)(q[11] & 0x0F) << 8;
+        for (int o = 0; o < 12; o++) {
+            if (!(mask & (1u << o))) continue;
+            const int k = moa_owned_index(10, o);
+            if (k >= 0) b[SAVE_OWNED + k] = 1;
+        }
+    }
+    {   /* The game's options travel with the save: zero here means no
+           buttons and no sound once it is loaded. Defaults as the game
+           writes them on a new save. */
+        static const uint8_t cfg[] = {
+            0x10,0,0,0, 0x40,0,0,0, 0x80,0,0,0, 0x20,0,0,0, 0,4,0,0, 0,8,0,0,
+            0,1,0,0, 0,2,0,0, 0,0x20,0,0, 0,0x40,0,0, 0,0x10,0,0, 0,0x80,0,0,
+            0x01,0x3F,0x1F,0x00, 0x01 };
+        memcpy(b + SAVE_CONFIG, cfg, sizeof cfg);
+    }
     b[SAVE_PLUS] = c->plus;
     b[SAVE_PLUS + 2] = c->plus ? 1 : 0;        /* the level waives the load limits */
     b[SAVE_VALID] = 1;
@@ -886,8 +914,8 @@ static int read_card_image(const char *path, uint8_t *mc)
     return got == 131072 && mc[0] == 'M' && mc[1] == 'C';
 }
 
-/* A story save: a used directory slot named BASLUS-01030?, a valid Scenario
- * block, and parts owned (the launcher's versus units own none). */
+/* A Master of Arena save: a used directory slot named BASLUS-01030? holding a
+ * valid Scenario block (story saves and versus units alike). */
 static int is_story(const uint8_t *mc, int slot, int *owned)
 {
     const uint8_t *fr = mc + slot * 128;
@@ -897,7 +925,7 @@ static int is_story(const uint8_t *mc, int slot, int *owned)
     int n = 0;
     for (int i = 0; i < 256; i++) n += b[SAVE_OWNED + i] != 0;
     if (owned) *owned = n;
-    return n > 0;
+    return 1;          /* versus units too: any MoA save can take the garage AC */
 }
 
 int moa_memcard_list_story(const char *path, struct moa_story_save *out, int max)

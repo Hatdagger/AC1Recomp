@@ -6,12 +6,10 @@ your own copy of Armored Core: Master of Arena (USA).**
 This is a test release. Please report problems in this repository's Issues
 (what you did, what you saw, Windows or Linux/Steam Deck).
 
-## What's new in 0.8.3.1
+## What's new in 0.8.4.3
 
-- **Faster saving:** saving to the memory card no longer rewrites the whole
-  card file for every small piece of the save; the card file is now written
-  once, about half a second after the game finishes saving. The file is
-  written to a temporary copy first and then swapped in, so a crash mid-save
-  can't damage your card.
-- **Updater:** now understands four-part version numbers like 0.8.3.1, so
-  point releases show up as updates.
+- **MEMORY CARD: one SAVE TO CARD option.** SAVE AS VERSUS UNIT and PUT INTO
+  STORY SAVE are now a single row. Left and right choose NEW SAVE or any
+  Master of Arena save on the card (story saves and versus units alike).
+  Saving over a save keeps its money, pilot, progress and Human Plus, adds
+  any parts it doesn't own, and keeps a backup of the card.

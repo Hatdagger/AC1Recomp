@@ -427,17 +427,31 @@ static int owned_base(int cat)
     return -1;
 }
 
-static const uint8_t k_paint[12] = { 32, 36, 28, 16, 20, 12, 18, 24, 12, 12, 18, 12 };
+/* A random paint scheme for one attempt (the same for its ghost later):
+ * base, optional, detail, joint, RGB 0..63, on all four sections. */
+void moa_run_paint(uint64_t seed, uint8_t attempt, uint8_t paint[48])
+{
+    uint64_t k = seed ^ 0xC0105EEDull ^ (0x9E3779B97F4A7C15ull * (uint64_t)(attempt + 1));
+    uint8_t c[12];
+    for (int i = 0; i < 6; i++) c[i] = (uint8_t)(10 + moa_run_below(&k, 47));   /* base, optional */
+    for (int i = 0; i < 3; i++) c[6 + i] = (uint8_t)(c[i] * 3 / 5);            /* detail: darker base */
+    const uint8_t j = (uint8_t)(8 + moa_run_below(&k, 14));                      /* joint: dark grey */
+    c[9] = c[10] = c[11] = j;
+    for (int i = 0; i < 48; i++) paint[i] = c[i % 12];
+}
 
-void moa_run_ghost_record(const struct moa_run_ghost *g, uint8_t rec[64])
+/* The game's builder default when the player left the AC name blank. */
+static const char *run_ac_name(const char *ac) { return ac[0] ? ac : "NEW AC"; }
+
+void moa_run_ghost_record(const struct moa_run_ghost *g, uint64_t seed, uint8_t rec[64])
 {
     static struct moa_card c;
     memset(&c, 0, sizeof c);
     c.format = 4;
     memcpy(c.rec, g->rec, 13);
     snprintf(c.pilot, sizeof c.pilot, "%s", g->pilot);
-    snprintf(c.ac, sizeof c.ac, "%s", g->ac);
-    for (int i = 0; i < 48; i++) c.paint[i] = k_paint[i % 12];
+    snprintf(c.ac, sizeof c.ac, "%s", run_ac_name(g->ac));
+    moa_run_paint(seed, g->attempt, c.paint);
     moa_card_record(&c, rec);
 }
 
@@ -448,13 +462,12 @@ void moa_run_make_save(const struct moa_run_state *s, uint8_t b[8192])
     c.format = 4;
     memcpy(c.rec, s->run.start_ac, 13);
     snprintf(c.pilot, sizeof c.pilot, "%s", s->run.pilot);
-    snprintf(c.ac, sizeof c.ac, "%s", s->run.ac);
-    for (int i = 0; i < 48; i++) c.paint[i] = k_paint[i % 12];
+    snprintf(c.ac, sizeof c.ac, "%s", run_ac_name(s->run.ac));
+    moa_run_paint(s->lineup.seed, s->run.attempt, c.paint);
     moa_card_to_save(&c, b);
     for (uint32_t at = RS_ACNAME; at <= RS_PILOT; at += RS_PILOT - RS_ACNAME) {
         uint32_t i = 0;                       /* the game ends a name with one '>' */
         while (i + 1 < RS_NAME_BYTES && b[at + i] != '>') i += 2;
-        if (!s->run.ac[0] && at == RS_ACNAME) i = 0;
         b[at + i] = '>';
         memset(b + at + i + 1, 0, RS_NAME_BYTES - i - 1);
     }

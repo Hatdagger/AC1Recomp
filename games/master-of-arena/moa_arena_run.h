@@ -44,7 +44,9 @@ struct moa_run_pick { uint8_t arena, rank; };   /* rank 0 = that arena's top */
 
 /* The 64-byte arena record of a ghost (its build, names and the run's paint). */
 struct moa_run_ghost;
-void moa_run_ghost_record(const struct moa_run_ghost *g, uint8_t rec[64]);
+void moa_run_ghost_record(const struct moa_run_ghost *g, uint64_t seed, uint8_t rec[64]);
+/* The attempt's random paint (seed + attempt), as a card's 48 paint bytes. */
+void moa_run_paint(uint64_t seed, uint8_t attempt, uint8_t paint[48]);
 
 /* The run's sources from the player's disc: each arena's opponent count from
  * the menu module's table (0x800D5A08), with the band each arena belongs to.

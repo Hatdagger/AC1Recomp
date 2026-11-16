@@ -870,7 +870,14 @@ static void run_apply_fix(int kind, uint32_t buf, uint32_t bytes)
         if (p.arena == MOA_RUN_GHOST) {
             if (p.rank >= MOA_RUN_SLOTS) continue;
             const struct moa_run_ghost *g = &run_state.lineup.ghost[p.rank];
-            if (kind == KIND_BUILDS) moa_run_ghost_record(g, rec);
+            if (kind == KIND_BUILDS) {
+                char was[64], now[64];
+                for (int i = 0; i < 16; ++i) snprintf(was + 3 * i, 4, "%02x ", rec[i]);
+                moa_run_ghost_record(g, run_state.lineup.seed, rec);
+                for (int i = 0; i < 16; ++i) snprintf(now + 3 * i, 4, "%02x ", rec[i]);
+                run_log("ghost build at entry %u: stock %s", (unsigned)e, was);
+                run_log("ghost build at entry %u: ghost %s", (unsigned)e, now);
+            }
             else if (kind == KIND_NAMES) {
                 memset(rec, 0, 48);
                 memcpy(rec, g->pilot, strnlen(g->pilot, 16));
@@ -958,6 +965,7 @@ static void run_sampler_entry(struct CPUState *cpu, uint32_t address)
             last = now;
             run_log("fight: done %u, won %u, lost %u", done, won, lost);
         }
+        if (!won && !lost) run_result_seen = 0;   /* a new fight: its result is not booked yet */
         if (done && !won && lost) run_book_loss("in fight");
     }
     const uint16_t b = psx_mod_read_half(RUN_PAD_BUFFER + 2u);

@@ -684,6 +684,24 @@ void moa_card_to_save(const struct moa_card *c, uint8_t b[MOA_SAVE_BLOCK])
         b[SAVE_CLUT + 2 * i] = (uint8_t)(c->palette[i] & 255);
         b[SAVE_CLUT + 2 * i + 1] = (uint8_t)((c->palette[i] >> 8) & 0x7F);
     }
+    {   /* The game's garage lists only owned parts: own everything fitted
+           (as PUT INTO STORY SAVE), so the AC can be entered and changed. */
+        uint8_t q[13];
+        memcpy(q, r, 13);
+        if (q[2] >= 12 && q[2] != 0xFF) { q[4] = 0; q[5] = 0xFF; }
+        if (q[3] >= 27 && q[3] != 0xFF) q[12] = 0xFF;
+        for (int byte = 0; byte < 13; byte++) {
+            if (byte == 10 || byte == 11 || (byte == 4 && q[byte] == 0)) continue;
+            const int k = moa_owned_index(byte, q[byte]);
+            if (k >= 0) b[SAVE_OWNED + k] = 1;
+        }
+        const unsigned mask = q[10] | (unsigned)(q[11] & 0x0F) << 8;
+        for (int o = 0; o < 12; o++) {
+            if (!(mask & (1u << o))) continue;
+            const int k = moa_owned_index(10, o);
+            if (k >= 0) b[SAVE_OWNED + k] = 1;
+        }
+    }
     {   /* The game's options travel with the save: zero here means no
            buttons and no sound once it is loaded. Defaults as the game
            writes them on a new save. */

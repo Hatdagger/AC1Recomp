@@ -843,7 +843,40 @@ static void draw_net_rooms(LauncherModel* m, const Gfx& g, const Input& in) {
 
 /* ---- the room ---------------------------------------------------------------------- */
 
-enum LobbyRow { LOBBY_START = 0, LOBBY_CARD, LOBBY_SETTINGS, LOBBY_MODS, LOBBY_LEAVE };
+enum LobbyRow { LOBBY_START = 0, LOBBY_AUTO, LOBBY_AC, LOBBY_STAGE, LOBBY_CARD, LOBBY_SETTINGS, LOBBY_MODS, LOBBY_LEAVE };
+
+/* ---- netplay auto-setup ----
+ * Each pilot picks an AC (one of the AC cards); the launcher puts it alone on
+ * a session-only card as slot 1 (PSX_MEMCARD1_SESSION: the host's is the
+ * match's slot 1, the guest brings it as slot 2). With AUTO SETUP on, the
+ * host's title options (PSX_NET_GAME_OPTS "autosetup=1;stage=N") make both
+ * games load the two ACs and start the match by themselves
+ * (games/master-of-arena/moa_netplay_setup.c). */
+static bool g_np_auto = true;
+static int  g_np_pick = -1;                     /* index into g_ai_cards */
+static int  g_np_stage = 1;                     /* kStages: GREEN SILO */
+static bool g_np_scanned = false;
+
+static void np_auto_apply(bool is_host) {
+    set_env("PSX_MEMCARD1_SESSION", "");
+    set_env("PSX_MOA_NP_CARD", "");
+    if (is_host) set_env("PSX_NET_GAME_OPTS", "");
+    if (g_np_pick < 0 || g_np_pick >= (int)g_ai_cards.size()) return;
+    std::error_code ec;
+    const std::filesystem::path dir = std::filesystem::temp_directory_path(ec);
+    if (ec) return;
+    const std::string card = (dir / "moa-netplay-card1.mcd").string();
+    const moa_card* units[1] = { &g_ai_cards[(size_t)g_np_pick].card };
+    if (!moa_memcard_write_units(card.c_str(), units, 1)) return;
+    set_env("PSX_MEMCARD1_SESSION", card.c_str());
+    set_env("PSX_MOA_NP_CARD", g_ai_cards[(size_t)g_np_pick].path.c_str());
+    if (!is_host || !g_np_auto) return;
+    int stage = kStages[g_np_stage].id;
+    if (stage == 0) stage = kStages[std::rand() % (kStageCount - 1)].id;
+    char opts[48];
+    std::snprintf(opts, sizeof opts, "autosetup=1;stage=%d", stage);
+    set_env("PSX_NET_GAME_OPTS", opts);
+}
 
 static void draw_lobby_page(LauncherModel* m, const LauncherTheme& th,
                             const Gfx& g, const Input& in) {
@@ -854,7 +887,7 @@ static void draw_lobby_page(LauncherModel* m, const LauncherTheme& th,
     np_ingest_last_error(m, np);
     const int has_card = np_local_memcard_has_card(m);
     if (np->memcard_offer_set && has_card >= 0)
-        (void)np->memcard_offer_set(np->ctx, has_card, -1);
+        (void)np->memcard_offer_set(np->ctx, g_np_pick >= 0 ? 1 : has_card, -1);
     if (np->local_launch_gate_set)
         np->local_launch_gate_set(np->ctx, launcher_model_can_launch(m) ? 1 : 0);
     if (np->launch_pending && np->launch_pending(np->ctx))
@@ -889,11 +922,21 @@ static void draw_lobby_page(LauncherModel* m, const LauncherTheme& th,
     const bool card_row = card_known && (s.is_host ? np->guest_memcard_set != nullptr
                                                    : local_slot == 1 && card_offered);
 
+    if (!g_np_scanned) { scan_ai_cards(m); g_np_scanned = true; }
+    const bool np_picked = g_np_pick >= 0 && g_np_pick < (int)g_ai_cards.size();
+    /* Auto setup needs the guest's card: the host allows it, the guest's
+     * pick shares it (that is the guest's "confirmed"). */
+    if (s.is_host && g_np_auto && card_known && !card_allowed && np->guest_memcard_set)
+        (void)np->guest_memcard_set(np->ctx, 1);
+    const bool np_wait_host = s.is_host && g_np_auto && !np_picked;
+    const bool np_wait_guest = s.is_host && g_np_auto && s.seated_players >= 2 && !card_shared;
     const bool can_start = s.seated_players >= 2 && !s.local_rom_missing &&
                            s.peers_not_ready == 0 && s.peers_missing_files == 0 &&
-                           s.local_missing_files == 0;
+                           s.local_missing_files == 0 && !np_wait_host && !np_wait_guest;
     const char* waiting =
         s.seated_players < 2 ? "Waiting for another pilot to join."
+        : np_wait_host ? "Pick your AC."
+        : np_wait_guest ? "Waiting for the other pilot to pick an AC."
         : s.local_rom_missing ? "The game disc was not found on this machine."
         : s.local_missing_files > 0 ? "This room's mods need files you have not selected."
         : s.peers_not_ready > 0 ? "Waiting for the other pilot to be ready."
@@ -901,10 +944,19 @@ static void draw_lobby_page(LauncherModel* m, const LauncherTheme& th,
         : nullptr;
 
     struct Entry { LobbyRow id; const char* label; bool toggle; bool on; };
-    Entry entries[5];
+    Entry entries[8];
     int count = 0;
+    static char ac_label[64], stage_label[48];
+    std::snprintf(ac_label, sizeof ac_label, "MY AC: %s",
+                  np_picked ? upper(g_ai_cards[(size_t)g_np_pick].label).c_str() : "NONE");
+    std::snprintf(stage_label, sizeof stage_label, "STAGE: %s", kStages[g_np_stage].name);
     if (s.is_host)
         entries[count++] = { LOBBY_START, "START MATCH", false, false };
+    if (s.is_host)
+        entries[count++] = { LOBBY_AUTO, "AUTO SETUP", true, g_np_auto };
+    entries[count++] = { LOBBY_AC, ac_label, false, false };
+    if (s.is_host && g_np_auto)
+        entries[count++] = { LOBBY_STAGE, stage_label, false, false };
     if (card_row)
         entries[count++] = { LOBBY_CARD, s.is_host ? "GUEST MEMORY CARD"
                                                    : "BRING MY MEMORY CARD",
@@ -1048,7 +1100,24 @@ static void draw_lobby_page(LauncherModel* m, const LauncherTheme& th,
     }
     if (activate < 0) return;
     switch (entries[activate].id) {
+        case LOBBY_AUTO:
+            g_np_auto = !g_np_auto;
+            break;
+        case LOBBY_AC: {
+            const int n = (int)g_ai_cards.size();
+            if (n == 0) { scan_ai_cards(m); note("NO AC CARDS FOUND"); break; }
+            g_np_pick = g_np_pick + 1 >= n ? -1 : g_np_pick + 1;
+            np_auto_apply(s.is_host);
+            /* The guest's pick goes out as its card for slot 2. */
+            if (!s.is_host && np->memcard_offer_set)
+                (void)np->memcard_offer_set(np->ctx, 1, g_np_pick >= 0 ? 1 : 0);
+            break;
+        }
+        case LOBBY_STAGE:
+            g_np_stage = (g_np_stage + 1) % kStageCount;
+            break;
         case LOBBY_START:
+            np_auto_apply(true);
             if (can_start) np_lobby_start(m, np);
             else note("NOT READY TO START YET");
             break;

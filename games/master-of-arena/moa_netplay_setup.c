@@ -359,7 +359,7 @@ static void np_units(void)
     const int me = psx_netplay_local_port() == 1 ? 1 : 0;
     FILE *f = path && path[0] ? fopen(path, "rb") : NULL;
     if (f) {
-        static uint8_t data[64 * 1024];
+        static uint8_t data[4 * 1024 * 1024];
         static struct moa_card card;
         const size_t n = fread(data, 1, sizeof data, f);
         fclose(f);

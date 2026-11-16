@@ -9915,6 +9915,16 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
 
     refresh_host_display_cadence(0, 0);
 
+    /* Netplay with a game's loading screen up: the game picture is hidden, so
+     * the frame is not presented; the screen is redrawn about 4 times a
+     * second. Pacing and the netplay epilogue still run (skip_pace stays 0):
+     * only host presentation work is saved. */
+    if (g_mod_loading && psx_netplay_active()) {
+        const uint64_t now = (uint64_t)SDL_GetTicks();
+        if (now - s_mod_loading_last_ms < 250u) return ep;
+        s_mod_loading_last_ms = now;
+    }
+
     /* TCP turbo is for automated validation and trace capture. It keeps the
      * simulation advancing and the debug server polling, but removes frontend
      * presentation and wall-clock pacing. */

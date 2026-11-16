@@ -150,7 +150,7 @@ static int cand_cmp(const void *a, const void *b)
     return x->jitter < y->jitter ? -1 : x->jitter > y->jitter;
 }
 
-/* Rogue Arena Demo: 15 opponents drawn at random from every source (each
+/* Rogue Arena Demo: 14 opponents drawn at random from every source (each
  * arena's last entry is the player's), no repeats, then sorted by strength
  * so the ladder still gets harder towards rank 1. */
 int moa_run_lineup(const struct moa_run_source *src, int nsrc, int phantasma,
@@ -177,7 +177,7 @@ int moa_run_lineup(const struct moa_run_source *src, int nsrc, int phantasma,
         all[i].jitter = (uint32_t)moa_run_next(&rng);
     }
     qsort(all, (size_t)need, sizeof *all, cand_cmp);
-    out[filled].arena = MOA_RUN_PLAYER;              /* rank 16: the player */
+    out[filled].arena = MOA_RUN_PLAYER;              /* rank 15: the player */
     out[filled++].rank = 0;
     for (int k = 0; k < need; ++k) out[filled++] = all[k].p;
     free(all);
@@ -266,8 +266,8 @@ int moa_run_new(const struct moa_parts *p, const struct moa_run_source *src, int
 }
 
 /* The ghost goes in at rank `held`: that rank and every rank below it move
- * down one, and the bottom opponent (rank 15) leaves the ladder. Slot i holds
- * rank 16 - i; slot 0 is the player's place. */
+ * down one, and the bottom opponent (rank 14) leaves the ladder. Slot i holds
+ * rank 15 - i; slot 0 is the player's place. */
 static void run_add_ghost(struct moa_run_state *s, int held)
 {
     struct moa_run_lineup *l = &s->lineup;
@@ -280,7 +280,7 @@ static void run_add_ghost(struct moa_run_state *s, int held)
         l->ghosts--;
         if (out.rank < g) g = out.rank;
     }
-    const int at = MOA_RUN_LADDER - held;               /* 1..15 */
+    const int at = MOA_RUN_LADDER - held;               /* 1..14 */
     const struct moa_run_pick displaced = l->slot[at];
     const struct moa_run_pick ai = displaced.arena == MOA_RUN_GHOST && displaced.rank < MOA_RUN_SLOTS
                                  ? l->ghost[displaced.rank].ai_from : displaced;

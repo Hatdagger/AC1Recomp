@@ -16,9 +16,9 @@ extern "C" {
 #endif
 
 #define MOA_RUN_SLOTS 50     /* storage (arena 0 holds 50 entries on the disc) */
-/* Rogue Arena Demo: the ladder is the player's place (rank 16) and 15
- * opponents above it (ranks 15-1); arena 0's entries 16-49 are hidden. */
-#define MOA_RUN_LADDER 16
+/* Rogue Arena Demo: the ladder is the player's place (rank 15) and 14
+ * opponents above it (ranks 14-1); arena 0's entries 15-49 are hidden. */
+#define MOA_RUN_LADDER 15
 
 /* Where an opponent comes from. Each source is one arena block. */
 enum moa_run_band {

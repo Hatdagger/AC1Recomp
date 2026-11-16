@@ -179,7 +179,7 @@ static void draw_run_page(LauncherModel* m, const Gfx& g, const Input& in) {
     }
     if (!g_name_edit) move_cursor(PAGE_RUN, R_ROWS, in, R_ROWS);
     int& cur = g_state.cursor[PAGE_RUN];
-    header(g, "ROGUE ARENA DEMO", "15 OPPONENTS  ONE LIFE");
+    header(g, "ROGUE ARENA DEMO", "14 OPPONENTS  ONE LIFE");
     panel(g, 24.0f, 76.0f, 592.0f, 166.0f, "SELECT");
     char seed[17];
     moa_run_seed_text(g_run_seed, seed);
@@ -208,7 +208,7 @@ static void draw_run_page(LauncherModel* m, const Gfx& g, const Input& in) {
 
     panel(g, 24.0f, 248.0f, 592.0f, 168.0f, "RULES");
     text(g, 38.0f, 264.0f, 11.0f, kText,
-         "Demo: 15 opponents, random lineup. A random legal AC against 15 opponents "
+         "Demo: 14 opponents, random lineup. A random legal AC against 14 opponents "
          "from every arena, weakest first. Wins pay the game's prize money; starting "
          "frame and internal parts are worth 1 credit. One loss ends the run. Your "
          "own saves are not touched.", 560.0f);

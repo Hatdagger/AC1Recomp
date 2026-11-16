@@ -591,7 +591,7 @@ static void run_a0_open(struct CPUState *cpu, uint32_t address)
     (void)address;
     if (!run_a0(cpu, 18)) return;
     const uint32_t b = cpu->gpr[18];
-    cpu->gpr[2] = MOA_RUN_LADDER;                         /* rows: ranks 1-16 only */
+    cpu->gpr[2] = MOA_RUN_LADDER;                         /* rows: ranks 1-15 only */
     psx_mod_write_byte(b + 0x5Cu, 0);                     /* the ranked list */
     psx_mod_counter_add("moa.run.a0_open", 1);
 }
@@ -768,8 +768,8 @@ static void run_apply_fix(int kind, uint32_t buf, uint32_t bytes)
     int missing = 0;
     if (kind == KIND_REWARDS) return;                     /* the game's own prize money per rank */
     for (uint32_t i = 0; i < bytes; ++i) out[i] = psx_mod_read_byte(buf + i);
-    /* Entry 15 (rank 16) is the player's place: it takes the stock player
-     * entry (49). Entries 16-49 stay as they are, hidden below the ladder. */
+    /* Entry 14 (rank 15) is the player's place: it takes the stock player
+     * entry (49). Entries 15-49 stay as they are, hidden below the ladder. */
     memcpy(out + (MOA_RUN_LADDER - 1u) * stride, out + (MOA_RUN_SLOTS - 1u) * stride, stride);
     for (uint32_t e = 0; e + 1u < MOA_RUN_LADDER; ++e) {
         uint8_t *rec = out + e * stride;

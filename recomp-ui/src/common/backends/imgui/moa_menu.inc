@@ -1108,7 +1108,7 @@ static void draw_main(LauncherModel* m, const Gfx& g, const Input& in) {
                         "and mods chosen here." };
     if (!m->in_session)
         entries[count++] = { MAIN_RUN, "ROGUE ARENA DEMO",
-            "Demo: 15 opponents, random lineup. A random AC against 15 opponents "
+            "Demo: 14 opponents, random lineup. A random AC against 14 opponents "
             "from every arena, weakest first, and one loss ends it." };
     if (m->netplay_supported && !m->in_session)
         entries[count++] = { MAIN_NETWORK, "MULTIPLAYER",

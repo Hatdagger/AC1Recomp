@@ -15,7 +15,10 @@
 extern "C" {
 #endif
 
-#define MOA_RUN_SLOTS 50
+#define MOA_RUN_SLOTS 50     /* storage (arena 0 holds 50 entries on the disc) */
+/* Rogue Arena Demo: the ladder is the player's place (rank 16) and 15
+ * opponents above it (ranks 15-1); arena 0's entries 16-49 are hidden. */
+#define MOA_RUN_LADDER 16
 
 /* Where an opponent comes from. Each source is one arena block. */
 enum moa_run_band {
@@ -79,7 +82,7 @@ int moa_run_start_ac(const struct moa_parts *p, uint64_t seed, uint8_t rec[13]);
 /* ---- the run file -------------------------------------------------------- */
 
 #define MOA_RUN_MAGIC   0x4E555241u   /* "ARUN" */
-#define MOA_RUN_VERSION 3u
+#define MOA_RUN_VERSION 4u
 
 /* A lineup slot whose arena is MOA_RUN_GHOST is a ghost: `rank` is its
  * index in moa_run_lineup.ghost. */
@@ -106,6 +109,9 @@ struct moa_run_lineup {
     uint8_t  ghosts;               /* ghosts on the ladder now */
     uint8_t  pad[2];
     uint32_t menu_lba;             /* GG/MS/MENU_TIM.T's first sector on the disc */
+    /* Parts that cost 1 credit: every attempt's starting frame and internal
+     * parts (owned-table index, base + row). Never cleared on Retry. */
+    uint8_t  cheap[32];
     struct moa_run_pick slot[MOA_RUN_SLOTS];          /* ranks 50..1 */
     struct moa_run_ghost ghost[MOA_RUN_SLOTS];
 };
@@ -119,6 +125,7 @@ struct moa_run_progress {
     uint8_t  over;                 /* 1 = lost: Retry or New Run only */
     uint8_t  best;                 /* most wins of any attempt */
     uint8_t  pad[2];
+    uint32_t beaten;               /* bit e: arena 0 entry e beaten (booked once) */
     char     pilot[17];            /* ASCII, as typed in the launcher */
     char     ac[17];               /* may be empty */
     /* step 2 adds shop stock and owned parts here. */
@@ -142,6 +149,10 @@ int moa_run_retry(const struct moa_parts *p, struct moa_run_state *s);
 
 /* A new win (the caller checks it beat someone not beaten before). */
 int moa_run_win(struct moa_run_state *s);
+/* Owned-table index of a part (record byte b), -1 if none. */
+int moa_run_part_index(const uint8_t rec[13], int b);
+/* 1 = that record byte is a frame or internal part (1 credit in the demo). */
+int moa_run_part_cheap(const uint8_t rec[13], int b);
 /* A loss: the run is over (kept for Retry). */
 void moa_run_lose(struct moa_run_state *s);
 

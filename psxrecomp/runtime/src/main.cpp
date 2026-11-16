@@ -20532,6 +20532,17 @@ session_reboot:
                 memcard2_enabled = true;
             }
         }
+        /* A session-only card in slot 1 (MoA netplay auto-setup: this
+         * player's chosen unit alone). Unlike slot 2 it holds in netplay too:
+         * the host broadcasts it as the match's slot 1 and a guest bringing
+         * its card uploads it as slot 2. Never written into the settings. */
+        {
+            const char *session_card1 = std::getenv("PSX_MEMCARD1_SESSION");
+            if (session_card1 && session_card1[0]) {
+                mc1 = session_card1;
+                memcard1_enabled = true;
+            }
+        }
         const MemcardSlotConfig slots[2] = {
             { mc1.empty() ? nullptr : mc1.c_str(), memcard1_enabled ? 1 : 0 },
             { mc2.empty() ? nullptr : mc2.c_str(), memcard2_enabled ? 1 : 0 },
@@ -20540,9 +20551,10 @@ session_reboot:
         /* Game plugins that keep files beside the player's memory card (MoA
          * AI Battle cards) find the folder here: slot 1's own folder when a
          * card file was chosen, else the card directory. */
-        const std::string card_home = mc1.empty()
+        /* The player's own slot-1 card, not a session card. */
+        const std::string card_home = memcard1_path.empty()
             ? memcard_dir_str
-            : std::filesystem::path(mc1).parent_path().string();
+            : std::filesystem::path(memcard1_path).parent_path().string();
 #ifdef _WIN32
         _putenv_s("PSX_MEMCARD_HOME", card_home.c_str());
 #else

@@ -948,7 +948,7 @@ static void draw_lobby_page(LauncherModel* m, const LauncherTheme& th,
     int count = 0;
     static char ac_label[64], stage_label[48];
     std::snprintf(ac_label, sizeof ac_label, "MY AC: %s",
-                  np_picked ? upper(g_ai_cards[(size_t)g_np_pick].label).c_str() : "NONE");
+                  np_picked ? upper(g_ai_cards[(size_t)g_np_pick].label.c_str()).c_str() : "NONE");
     std::snprintf(stage_label, sizeof stage_label, "STAGE: %s", kStages[g_np_stage].name);
     if (s.is_host)
         entries[count++] = { LOBBY_START, "START MATCH", false, false };

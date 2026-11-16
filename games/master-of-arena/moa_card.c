@@ -404,6 +404,7 @@ int stbi_write_png_to_func(void (*func)(void *, void *, int), void *context,
 #define SAVE_PAINT    0x250                    /* 48 colour values */
 #define SAVE_EMBLEM   0x480                    /* 64x64, 4 bits per pixel */
 #define SAVE_CLUT     0xC80                    /* 16 x 15-bit colours */
+#define SAVE_CONFIG   0xCCC                    /* game options: 12 u32 pad bits, then sound */
 #define SAVE_PLUS     0xDEC                    /* Human PLUS state; [0] = level */
 #define SAVE_VALID    0xE58                    /* 1 = a save the loader accepts */
 #define SAVE_MONEY    0x1C8                    /* u32 credits (RAM 0x8003EA74) */
@@ -682,6 +683,15 @@ void moa_card_to_save(const struct moa_card *c, uint8_t b[MOA_SAVE_BLOCK])
     for (int i = 0; i < 16; i++) {
         b[SAVE_CLUT + 2 * i] = (uint8_t)(c->palette[i] & 255);
         b[SAVE_CLUT + 2 * i + 1] = (uint8_t)((c->palette[i] >> 8) & 0x7F);
+    }
+    {   /* The game's options travel with the save: zero here means no
+           buttons and no sound once it is loaded. Defaults as the game
+           writes them on a new save. */
+        static const uint8_t cfg[] = {
+            0x10,0,0,0, 0x40,0,0,0, 0x80,0,0,0, 0x20,0,0,0, 0,4,0,0, 0,8,0,0,
+            0,1,0,0, 0,2,0,0, 0,0x20,0,0, 0,0x40,0,0, 0,0x10,0,0, 0,0x80,0,0,
+            0x01,0x3F,0x1F,0x00, 0x01 };
+        memcpy(b + SAVE_CONFIG, cfg, sizeof cfg);
     }
     b[SAVE_PLUS] = c->plus;
     b[SAVE_PLUS + 2] = c->plus ? 1 : 0;        /* the level waives the load limits */

@@ -652,10 +652,16 @@ static void run_payout_entry(struct CPUState *cpu, uint32_t address)
     if (!run_on() || !run_at_hub || psx_mod_read_word(address) != RUN_SIG_PAYOUT) return;
     const uint32_t st = cpu->gpr[4];
     if (st < 0x80000000u || st >= 0x80200000u) return;
-    if (psx_mod_read_byte(st + RUN_STATE_ARENA) != RUN_ARENA) return;
+    if (psx_mod_read_byte(st + RUN_STATE_ARENA) != RUN_ARENA) {
+        run_log("payout: not the run's arena (%u)", psx_mod_read_byte(st + RUN_STATE_ARENA));
+        return;
+    }
     const uint32_t tab = psx_mod_read_word(st + 0xB8u);
     const uint8_t who = psx_mod_read_byte(RUN_FIGHT_OPPONENT);
-    if (tab < 0x80000000u || tab >= 0x80200000u || who >= MOA_RUN_SLOTS) return;
+    if (tab < 0x80000000u || tab >= 0x80200000u || who >= MOA_RUN_SLOTS) {
+        run_log("payout: table %08x, opponent %u: left alone", (unsigned)tab, who);
+        return;
+    }
     const uint32_t was = psx_mod_read_word(tab + 8u * who);
     psx_mod_write_word(tab + 8u * who, run_pay);
     run_log("payout: %u (stock %u), credits %u", (unsigned)run_pay, (unsigned)was,
@@ -763,11 +769,20 @@ static struct { int kind; uint32_t buf, bytes; } run_fix[4];
 
 static void run_queue_fix(int kind, uint8_t arena, struct CPUState *cpu)
 {
-    if (!run_on() || !run_at_hub || !run_state_ok || arena != RUN_ARENA) return;
+    if (!run_on() || !run_at_hub) return;
+    static const char *const k_kind[4] = { "builds", "names", "rewards", "AI" };
+    if (!run_state_ok || arena != RUN_ARENA) {
+        if (arena == RUN_ARENA) run_log("data %s: not queued (run file loaded %d)", k_kind[kind], run_state_ok);
+        return;
+    }
     const uint32_t bytes = cpu->gpr[6], buf = cpu->gpr[7];
     if (bytes < 8u || bytes > 4096u || (bytes & 3u) || buf < 0x80000000u ||
-        buf + bytes > 0x80200000u || run_fixes >= 4)
+        buf + bytes > 0x80200000u || run_fixes >= 4) {
+        run_log("data %s: not queued (bytes %u, buffer %08x, queued %d)", k_kind[kind],
+                (unsigned)bytes, (unsigned)buf, run_fixes);
         return;
+    }
+    run_log("data %s: queued (bytes %u, buffer %08x)", k_kind[kind], (unsigned)bytes, (unsigned)buf);
     run_fix[run_fixes].kind = kind;
     run_fix[run_fixes].buf = buf;
     run_fix[run_fixes].bytes = bytes;
@@ -818,8 +833,11 @@ static void run_apply_fix(int kind, uint32_t buf, uint32_t bytes)
     const uint32_t ix = run_index();
     if (!ix || !run_state.lineup.menu_lba || MOA_RUN_SLOTS * stride + 4u > bytes) {
         psx_mod_counter_add("moa.run.data_skipped", 1);
+        run_log("data kind %d: skipped (index %08x, menu lba %u, bytes %u)", kind,
+                (unsigned)ix, (unsigned)run_state.lineup.menu_lba, (unsigned)bytes);
         return;
     }
+    int missing = 0;
     for (uint32_t i = 0; i < bytes; ++i) out[i] = psx_mod_read_byte(buf + i);
     for (uint32_t e = 0; e + 1u < MOA_RUN_SLOTS; ++e) {   /* entry 49: the player */
         uint8_t *rec = out + e * stride;
@@ -843,7 +861,7 @@ static void run_apply_fix(int kind, uint32_t buf, uint32_t bytes)
                 (void)run_record(ix, g->ai_from, kind, stride, rec);
             continue;
         }
-        if (!run_record(ix, p, kind, stride, rec)) psx_mod_counter_add("moa.run.data_missing", 1);
+        if (!run_record(ix, p, kind, stride, rec)) { psx_mod_counter_add("moa.run.data_missing", 1); missing++; }
     }
     uint32_t sum = 0x12345678u;                           /* the entry's checksum */
     for (uint32_t i = 0; i + 4u < bytes; i += 4u)
@@ -855,6 +873,8 @@ static void run_apply_fix(int kind, uint32_t buf, uint32_t bytes)
         psx_mod_write_word(buf + i, (uint32_t)out[i] | (uint32_t)out[i + 1] << 8 |
                                     (uint32_t)out[i + 2] << 16 | (uint32_t)out[i + 3] << 24);
     psx_mod_counter_add("moa.run.data_applied", 1);
+    run_log("data kind %d: applied (%d records missing, %u ghosts)", kind, missing,
+            (unsigned)run_state.lineup.ghosts);
 }
 
 /* The queued entries, once every read is in. */

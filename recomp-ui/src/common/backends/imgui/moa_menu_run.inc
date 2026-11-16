@@ -85,6 +85,7 @@ static void new_run(LauncherModel* m) {
     const int pp = phantasma_installed(m) ? 1 : 0;
     moa_run_source src[16];
     const int n = moa_run_sources_load(disc.c_str(), pp, src, 16);
+    (void)moa_run_sources_mark(disc.c_str(), &parts, src, n);   /* KARASAWA users: top 25 */
     if (n == 0 || !moa_run_new(&parts, src, n, pp, g_run_seed, &g_run)) {
         g_run_status = "A RUN COULD NOT BE MADE FROM YOUR DISC.";
         return;

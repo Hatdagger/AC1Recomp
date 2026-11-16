@@ -713,14 +713,32 @@ static void run_a0_clear(struct CPUState *cpu, uint32_t address)
 
 /* ---- the run's opponents in arena 0 ---------------------------------------- */
 
+/* MENU_TIM.T's entry table, read from the disc's first sector of the file
+ * (halfword count, then each entry's start sector). The game keeps no copy
+ * we could find in RAM (the old file-table lookup always gave 0), so the
+ * table comes from disc once per menu LBA. */
+static uint8_t run_hdr_sec[2048];
+static uint32_t run_hdr_lba;
+
 static uint32_t run_index(void)
 {
-    for (uint32_t f = 0; f < RUN_FILE_COUNT; ++f) {
-        const uint32_t ix = psx_mod_read_word(RUN_FILE_TABLE + f * 12u);
-        if ((ix >> 24) == 0x80u && psx_mod_read_half(ix) == 1u && psx_mod_read_half(ix + 2u) == 37u)
-            return ix;                                   /* MENU_TIM.T (stock or Phantasma's) */
+    const uint32_t lba = run_state.lineup.menu_lba;
+    if (!lba) return 0;
+    if (run_hdr_lba != lba) {
+        if (!psx_mod_read_disc_sectors(lba, 1u, run_hdr_sec)) return 0;
+        run_hdr_lba = lba;
+        run_log("menu table: %u entries, entry 0 at %u, entry 1 at %u (expect 1, 37)",
+                (unsigned)(run_hdr_sec[0] | run_hdr_sec[1] << 8),
+                (unsigned)(run_hdr_sec[2] | run_hdr_sec[3] << 8), (unsigned)(run_hdr_sec[4] | run_hdr_sec[5] << 8));
     }
-    return 0;
+    return 1u;
+}
+
+/* Start sector of entry k (relative to the file). */
+static uint32_t run_hdr(uint32_t k)
+{
+    if (2u + 2u * k + 1u >= sizeof run_hdr_sec) return 0;
+    return (uint32_t)(run_hdr_sec[2 + 2 * k] | run_hdr_sec[3 + 2 * k] << 8);
 }
 
 /* First entry and count of a source arena; 0 = not available. */
@@ -729,8 +747,8 @@ static int run_source(uint32_t ix, uint8_t arena, uint32_t *first, uint32_t *cou
     if (arena == RUN_PP_ARENA) {
         *first = RUN_PP_FIRST; *count = 50u;
         /* Phantasma's index covers its block only once installed. */
-        return psx_mod_read_half(ix + 2u * (RUN_PP_FIRST + 203u)) >
-               psx_mod_read_half(ix + 2u * RUN_PP_FIRST);
+        return run_hdr((RUN_PP_FIRST + 203u)) >
+               run_hdr(RUN_PP_FIRST);
     }
     if (arena > 8u) return 0;
     *count = psx_mod_read_byte(RUN_ARENA_COUNTS + arena);
@@ -811,7 +829,7 @@ static int run_record(uint32_t ix, struct moa_run_pick p, int kind, uint32_t str
     int c = 0;
     while (c < used && (key[c] != entry || lba[c] != run_state.lineup.menu_lba)) ++c;
     if (c == used) {
-        const uint32_t a = psx_mod_read_half(ix + 2u * entry), b = psx_mod_read_half(ix + 2u * entry + 2u);
+        const uint32_t a = run_hdr(entry), b = run_hdr(entry + 1u);
         if (used == CACHE) used = c = 0;              /* full: start over */
         if (b <= a || (b - a) > 2u ||
             !psx_mod_read_disc_sectors(run_state.lineup.menu_lba + a, b - a, sec[c]))

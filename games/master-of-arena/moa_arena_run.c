@@ -54,6 +54,41 @@ int moa_run_sources_load(const char *disc, int phantasma, struct moa_run_source 
     return n;
 }
 
+#define KARASAWA_TOP 25         /* KARASAWA users only in ranks 25-1 */
+
+int moa_run_sources_mark(const char *disc, const struct moa_parts *p,
+                         struct moa_run_source *src, int nsrc)
+{
+    int kid = -1;
+    for (int i = 0; i < p->count[MOA_CAT_HAND]; ++i)
+        if (strstr(p->part[MOA_CAT_HAND][i].name, "KARASAWA")) kid = p->part[MOA_CAT_HAND][i].id;
+    if (kid < 0) return 0;
+    unsigned int size = 0;
+    uint8_t *head = moa_disc_read_range(disc, "GG/MS/MENU_TIM.T", 0, 2048, &size);
+    if (!head) return 0;
+    const unsigned nent = (unsigned)(head[0] | head[1] << 8);
+    unsigned start = 0;                           /* opponents in earlier arenas */
+    int ok = 1;
+    for (int i = 0; i < nsrc; ++i) {
+        const unsigned cnt = src[i].entries;
+        const unsigned first = src[i].arena == 10 ? 888u : 140u + 4u * start + 4u * src[i].arena;
+        if (src[i].arena != 10) start += cnt;
+        const unsigned k = first + 4u * cnt;      /* the builds entry, 64 B each */
+        src[i].karasawa = 0;
+        if (k + 1 >= nent || 2u + 2u * (k + 1) + 1u >= 2048u) { ok = 0; continue; }
+        const uint32_t a = (uint32_t)(head[2 + 2 * k] | head[3 + 2 * k] << 8);
+        const uint32_t b = (uint32_t)(head[4 + 2 * k] | head[5 + 2 * k] << 8);
+        if (b <= a || (b - a) * 2048u < cnt * 64u) { ok = 0; continue; }
+        uint8_t *rec = moa_disc_read_range(disc, "GG/MS/MENU_TIM.T", a * 2048u, cnt * 64u, NULL);
+        if (!rec) { ok = 0; continue; }
+        for (unsigned r = 0; r < cnt && r < 64; ++r)
+            if (rec[r * 64u + 4u] == (uint8_t)kid) src[i].karasawa |= 1ull << r;
+        free(rec);
+    }
+    free(head);
+    return ok;
+}
+
 /* ---- seed ------------------------------------------------------------------ */
 
 uint64_t moa_run_next(uint64_t *s)
@@ -116,6 +151,13 @@ static int cand_cmp(const void *a, const void *b)
     return x->jitter < y->jitter ? -1 : x->jitter > y->jitter;
 }
 
+static int cand_karasawa(const struct moa_run_source *src, int nsrc, const struct cand *c)
+{
+    for (int i = 0; i < nsrc; ++i)
+        if (src[i].arena == c->p.arena) return c->p.rank < 64 && (src[i].karasawa >> c->p.rank & 1);
+    return 0;
+}
+
 #define SUB_LOWEST 16          /* sub arena picks only in ranks 50-35 */
 
 int moa_run_lineup(const struct moa_run_source *src, int nsrc, int phantasma,
@@ -145,14 +187,46 @@ int moa_run_lineup(const struct moa_run_source *src, int nsrc, int phantasma,
     }
     int need = MOA_RUN_SLOTS - 1 - take_sub;
     if (need > nrest) need = nrest;
-    /* The rest: sorted by score, cut into `need` equal buckets, one random
-     * pick from each, so the ramp holds and the lineup varies. */
+    /* The rest: sorted by score and cut into `need` buckets. Each slot draws
+     * from a window around its bucket: 4 buckets wide at the bottom, down to
+     * 1 at the top, so low ranks vary between runs while the top stays tight.
+     * No candidate is drawn twice; the picks are then re-sorted by score. */
     qsort(rest, (size_t)nrest, sizeof *rest, cand_cmp);
     struct cand chosen[MOA_RUN_SLOTS];
+    uint8_t *taken = calloc((size_t)nrest + 1, 1);
+    if (!taken) goto done;
     for (int b = 0; b < need; ++b) {
-        const int lo = (int)((int64_t)nrest * b / need);
-        const int hi = (int)((int64_t)nrest * (b + 1) / need);
-        chosen[b] = rest[lo + (int)moa_run_below(&rng, (uint32_t)(hi - lo))];
+        const double w = need > 1 ? 4.0 - 3.0 * b / (need - 1) : 1.0;  /* buckets */
+        int lo = (int)((double)nrest * (b + 0.5 - w / 2) / need);
+        int hi = (int)((double)nrest * (b + 0.5 + w / 2) / need + 0.999);
+        if (lo < 0) lo = 0;
+        if (hi > nrest) hi = nrest;
+        int free_n = 0;
+        for (int i = lo; i < hi; ++i) free_n += !taken[i];
+        int pick = -1;
+        if (free_n) {
+            int t = (int)moa_run_below(&rng, (uint32_t)free_n);
+            for (int i = lo; i < hi; ++i) if (!taken[i] && t-- == 0) { pick = i; break; }
+        } else {
+            for (int i = 0; i < nrest; ++i) if (!taken[i]) { pick = i; break; }
+        }
+        taken[pick] = 1;
+        chosen[b] = rest[pick];
+    }
+    free(taken);
+    qsort(chosen, (size_t)need, sizeof *chosen, cand_cmp);
+    /* KARASAWA users stay in the top 25: each one below swaps with the
+     * lowest non-KARASAWA pick inside the top 25 (a near neighbour). */
+    {
+        const int top = need > KARASAWA_TOP ? need - KARASAWA_TOP : 0;   /* chosen[top..] = ranks 25-1 */
+        for (int b = 0; b < top && b < need; ++b) {
+            if (!cand_karasawa(src, nsrc, &chosen[b])) continue;
+            for (int t = top; t < need; ++t)
+                if (!cand_karasawa(src, nsrc, &chosen[t])) {
+                    struct cand x = chosen[b]; chosen[b] = chosen[t]; chosen[t] = x;
+                    break;
+                }
+        }
     }
     /* Sub picks go to random slots among the lowest 16. */
     uint8_t is_sub[MOA_RUN_SLOTS] = {0};

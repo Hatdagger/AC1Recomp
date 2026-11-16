@@ -32,7 +32,13 @@ struct moa_run_source {
     uint8_t band;         /* enum moa_run_band */
     uint8_t order;        /* LATER_EX: 0, 1, 2 ... from easiest */
     uint8_t entries;      /* opponents in that arena */
+    uint64_t karasawa;    /* bit r: rank r's build holds the KARASAWA */
 };
+
+/* Mark each source's opponents that carry the KARASAWA (their builds in
+ * GG/MS/MENU_TIM.T); those are kept to the run's top 25. 1 = read. */
+int moa_run_sources_mark(const char *disc, const struct moa_parts *p,
+                         struct moa_run_source *src, int nsrc);
 
 struct moa_run_pick { uint8_t arena, rank; };   /* rank 0 = that arena's top */
 

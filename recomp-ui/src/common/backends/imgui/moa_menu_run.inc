@@ -44,6 +44,8 @@ static void set_arena_run(bool on, const std::string& path, const std::string& c
     set_env("PSX_MOA_ARENA_RUN", on ? "1" : "0");
     set_env("PSX_MOA_RUN_FILE", on ? path.c_str() : "");
     set_env("PSX_MEMCARD1_SESSION", on ? card.c_str() : "");
+    /* The garage's part models: the run draws its restock pictures from them. */
+    set_env("PSX_MOA_MODELS_DIR", on ? asset("acmodels").c_str() : "");
     if (on) g_run_reread = true;
 }
 

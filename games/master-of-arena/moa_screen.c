@@ -347,3 +347,70 @@ const uint32_t *moa_screen_render(int win_w, int win_h, const char *status,
     *out_h = s_h;
     return s_frame;
 }
+
+/* ---- part tiles (moa_screen_render_tiles) ---------------------------------- */
+const uint32_t *moa_screen_render_tiles(int win_w, int win_h, const char *title,
+                                        const char *line, const struct moa_screen_tile *tile,
+                                        int count, const char *footer, int *out_w, int *out_h)
+{
+    static uint32_t *buf;
+    static int bw;
+    *out_w = *out_h = 0;
+    if (!s_font_ok) return NULL;
+    int W = CONTENT_W;
+    if (win_w > 0 && win_h > 0) W = (int)((int64_t)CANVAS_H * win_w / win_h);
+    if (W < CONTENT_W) W = CONTENT_W;
+    if (W > MAX_W) W = MAX_W;
+    W &= ~1;
+    if (W != bw || !buf) {
+        free(buf);
+        buf = (uint32_t *)malloc((size_t)W * CANVAS_H * 4u);
+        bw = buf ? W : 0;
+        if (!buf) return NULL;
+    }
+    /* fill()/text() draw at s_w x s_h: borrow them, then let the AI Battle
+     * screen rebuild its own picture next time. */
+    const int keep_w = s_w, keep_h = s_h;
+    s_w = W; s_h = CANVAS_H;
+    const int cx = W / 2;
+    for (int y = 0; y < s_h; y++)
+        for (int x = 0; x < W; x++) {
+            const uint32_t c = tile_px(x & 63, y & 63);
+            buf[y * W + x] = rgb((int)((c >> 16) & 255) / 2, (int)((c >> 8) & 255) / 2, (int)(c & 255) / 2);
+        }
+    const uint32_t grey = rgb(150, 156, 168), white = rgb(235, 238, 242);
+    const uint32_t gold = rgb(255, 200, 80), blue = rgb(90, 170, 255);
+    if (title) text(buf, NULL, title, cx, 56, 3, white);
+    fill(buf, cx - 300, 84, cx + 300, 86, rgb(70, 74, 82));
+    if (line) text(buf, NULL, line, cx, 110, 2, grey);
+    if (count > 8) count = 8;
+    const int tw = 210, th = 230, gap = 16;
+    for (int i = 0; i < count; i++) {
+        const int row = i / 4, col = i % 4;
+        const int in_row = count - row * 4 < 4 ? count - row * 4 : 4;
+        const int x0 = cx - (in_row * tw + (in_row - 1) * gap) / 2 + col * (tw + gap);
+        const int y0 = 150 + row * (th + gap);
+        fill(buf, x0, y0, x0 + tw, y0 + th, rgb(0, 0, 0));
+        frame_rect(buf, x0, y0, x0 + tw, y0 + th, 2, blue);
+        const struct moa_screen_tile *t = &tile[i];
+        if (t->category) text(buf, NULL, t->category, x0 + tw / 2, y0 + 18, 1, blue);
+        if (t->thumb) {
+            const int px = x0 + (tw - 128) / 2, py = y0 + 34;
+            for (int y = 0; y < 128; y++)
+                for (int x = 0; x < 128; x++) {
+                    const uint32_t p = t->thumb[y * 128 + x];
+                    if (p >> 24) buf[(py + y) * W + px + x] = 0xFF000000u | p;
+                }
+        } else {
+            fill(buf, x0 + 40, y0 + 60, x0 + tw - 40, y0 + 140, rgb(18, 20, 24));
+            text(buf, NULL, "?", x0 + tw / 2, y0 + 100, 3, rgb(60, 64, 72));
+        }
+        if (t->name) text(buf, NULL, t->name, x0 + tw / 2, y0 + 182, 1, white);
+        if (t->label) text(buf, NULL, t->label, x0 + tw / 2, y0 + 208, 2, gold);
+    }
+    if (footer) text(buf, NULL, footer, cx, CANVAS_H - 40, 2, grey);
+    s_w = keep_w; s_h = keep_h;
+    s_dirty = 1;
+    *out_w = W; *out_h = CANVAS_H;
+    return buf;
+}

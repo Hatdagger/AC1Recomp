@@ -44,6 +44,21 @@ const uint32_t *moa_screen_render(int win_w, int win_h, const char *status,
                                   int step, int permille, int limit_secs, float fade,
                                   uint64_t now_ms, int *out_w, int *out_h);
 
+/* A screen of part tiles (shop restock, prize picks): a title, a line
+ * under it, up to 8 tiles in rows of 4 and a footer. A tile shows its
+ * thumbnail (128x128 0xAARRGGBB, NULL = the category in large text), the
+ * part's name and its label (price). Same canvas and font as above;
+ * returns NULL until the font is loaded. */
+struct moa_screen_tile {
+    const char *category;     /* "HEAD", "BACK WEAPON" ... */
+    const char *name;
+    const char *label;        /* e.g. "3 P" */
+    const uint32_t *thumb;    /* 128 x 128, or NULL */
+};
+const uint32_t *moa_screen_render_tiles(int win_w, int win_h, const char *title,
+                                        const char *line, const struct moa_screen_tile *tile,
+                                        int count, const char *footer, int *out_w, int *out_h);
+
 #ifdef __cplusplus
 }
 #endif

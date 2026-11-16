@@ -33,6 +33,8 @@
 #include <string.h>
 
 #include "moa_arena_run.h"
+#include "moa_ac_view.h"
+#include "moa_screen.h"
 
 /* Shared with AI Battle (see moa_ai_battle.c for how each was found). */
 #define RUN_MENU_ENTRY       0x800A69C8u  /* menu module entry */
@@ -417,17 +419,19 @@ static void run_menu_input_entry(struct CPUState *cpu, uint32_t address)
 #define RUN_OPTION_COUNT     12u
 #define RUN_RESTOCK_PARTS    8
 
-static const struct { uint32_t addr, stride, end; uint16_t base; uint8_t back; } k_run_tables[] = {
-    { 0x800CE690u, 60, 0x800CEAC8u,   0, 0 },   /* head */
-    { 0x800CEAC8u, 56, 0x800CED30u,  18, 0 },   /* core */
-    { 0x800CED30u, 72, 0x800CF870u,  53, 0 },   /* legs */
-    { 0x800CF870u, 52, 0x800CFD50u,  29, 0 },   /* arms */
-    { 0x800CFD50u, 44, 0x800D01C8u, 217, 0 },   /* hand weapon */
-    { 0x800D01C8u, 52, 0x800D0DF8u, 157, 1 },   /* back (stock 2: stays on sale) */
-    { 0x800D0DF8u, 52, 0x800D0F30u, 243, 0 },   /* blade */
-    { 0x800D0F30u, 48, 0x800D11D0u, 143, 0 },   /* booster */
-    { 0x800D11D0u, 96, 0x800D17D0u, 108, 0 },   /* FCS */
-    { 0x800D17D0u, 48, 0x800D1AA0u,  93, 0 },   /* generator */
+/* folder: the part models' folder (models/menu/<folder>/<row>); label: shown
+ * on the restock screen. */
+static const struct { uint32_t addr, stride, end; uint16_t base; uint8_t back; const char *folder, *label; } k_run_tables[] = {
+    { 0x800CE690u, 60, 0x800CEAC8u,   0, 0, "head",      "HEAD" },
+    { 0x800CEAC8u, 56, 0x800CED30u,  18, 0, "core",      "CORE" },
+    { 0x800CED30u, 72, 0x800CF870u,  53, 0, "legs",      "LEGS" },
+    { 0x800CF870u, 52, 0x800CFD50u,  29, 0, "arms",      "ARMS" },
+    { 0x800CFD50u, 44, 0x800D01C8u, 217, 0, "hand",      "ARM WEAPON" },
+    { 0x800D01C8u, 52, 0x800D0DF8u, 157, 1, "back",      "BACK WEAPON" },   /* stock 2: stays on sale */
+    { 0x800D0DF8u, 52, 0x800D0F30u, 243, 0, "blade",     "BLADE" },
+    { 0x800D0F30u, 48, 0x800D11D0u, 143, 0, "booster",   "BOOSTER" },
+    { 0x800D11D0u, 96, 0x800D17D0u, 108, 0, "fcs",       "FCS" },
+    { 0x800D17D0u, 48, 0x800D1AA0u,  93, 0, "generator", "GENERATOR" },
 };
 
 /* Credits to P, by where the price sits among all 174 parts (USA disc):
@@ -468,6 +472,128 @@ static void run_apply_prices(void)
     if (n) { psx_mod_counter_add("moa.run.prices", n); run_log("shop: %u prices set in P", n); }
 }
 
+/* ---- the restock screen ----------------------------------------------------
+ *
+ * After a restock, once the hub is back: one picture of the 8 new parts (2x4),
+ * each drawn from the player's own disc models with the garage's renderer
+ * (PSX_MOA_MODELS_DIR, set by the launcher; no models: name and price only),
+ * shown as the loading screen until a button is pressed. The game's pad is
+ * held released meanwhile so the press does not reach the hub menu. */
+#define RUN_SHOW_MAX   RUN_RESTOCK_PARTS
+#define RUN_THUMB      128
+struct run_show_part { uint8_t tab, row; char name[19]; char price[8]; };
+static struct run_show_part run_show[RUN_SHOW_MAX];
+static unsigned run_show_n;
+static uint8_t run_show_rank;          /* rank of the restock waiting to be shown; 0 = none */
+static int run_show_on;                /* the picture is up */
+static uint32_t run_show_frames;
+static int run_show_armed;             /* every button seen released since it went up */
+
+static void run_show_add(unsigned t, unsigned row, uint32_t at)
+{
+    if (run_show_n >= RUN_SHOW_MAX) return;
+    struct run_show_part *e = &run_show[run_show_n++];
+    e->tab = (uint8_t)t;
+    e->row = (uint8_t)row;
+    int n = 0;
+    for (; n < 18; n++) {
+        const uint8_t c = psx_mod_read_byte(at + (uint32_t)n);
+        if (c < 32u || c > 126u) break;
+        e->name[n] = (char)c;
+    }
+    while (n && e->name[n - 1] == ' ') n--;
+    e->name[n] = 0;
+    uint32_t c = psx_mod_read_word(at + RUN_PRICE_AT);
+    if (c > 7u) c = run_tier(c);
+    snprintf(e->price, sizeof e->price, "%u P", (unsigned)c);
+}
+
+static int run_show_font(void)
+{
+    if (moa_screen_ready()) return 1;
+    static int tried;
+    if (tried) return 0;
+    tried = 1;
+    uint32_t size = 0;
+    if (!psx_mod_read_disc_file("GG/MS/MENU_TIM.T", NULL, 0, &size) || size < 4096u) return 0;
+    uint8_t *b = (uint8_t *)malloc(size);
+    uint32_t got = 0;
+    int ok = b && psx_mod_read_disc_file("GG/MS/MENU_TIM.T", b, size, &got) &&
+             moa_screen_load_font(b, got);
+    free(b);
+    if (!ok) run_log("restock screen: menu font not found");
+    return ok;
+}
+
+/* One part drawn into 128x128 0xAARRGGBB, background transparent. */
+static int run_show_thumb(const char *dir, unsigned i, uint32_t *argb)
+{
+    uint8_t paint[48];
+    moa_run_paint(run_state.lineup.seed, run_state.run.attempt, paint);
+    moa_acv *v = moa_acv_load_part(dir, k_run_tables[run_show[i].tab].folder, run_show[i].row, paint);
+    if (!v) return 0;
+    static uint8_t rgba[RUN_THUMB * RUN_THUMB * 4];
+    memset(rgba, 0, sizeof rgba);
+    moa_acv_render(v, -0.6f, 0.35f, 0.0f, RUN_THUMB, RUN_THUMB, rgba);
+    moa_acv_free(v);
+    for (int p = 0; p < RUN_THUMB * RUN_THUMB; p++) {
+        const uint8_t *q = rgba + 4 * p;
+        argb[p] = (uint32_t)q[3] << 24 | (uint32_t)q[0] << 16 | (uint32_t)q[1] << 8 | q[2];
+    }
+    return 1;
+}
+
+static void run_show_open(void)
+{
+    const unsigned rank = run_show_rank;
+    run_show_rank = 0;
+    if (!run_show_n || !run_show_font()) return;
+    const char *dir = getenv("PSX_MOA_MODELS_DIR");
+    const int models = dir && dir[0] && moa_acv_has_part_models(dir);
+    static uint32_t thumb[RUN_SHOW_MAX][RUN_THUMB * RUN_THUMB];
+    struct moa_screen_tile tile[RUN_SHOW_MAX];
+    unsigned drawn = 0;
+    for (unsigned i = 0; i < run_show_n; i++) {
+        tile[i].category = k_run_tables[run_show[i].tab].label;
+        tile[i].name = run_show[i].name;
+        tile[i].label = run_show[i].price;
+        tile[i].thumb = models && run_show_thumb(dir, i, thumb[i]) ? (drawn++, thumb[i]) : NULL;
+    }
+    char title[40], line[48];
+    snprintf(title, sizeof title, "SHOP RESTOCK  RANK %u", rank);
+    snprintf(line, sizeof line, "%u NEW PARTS FOR SALE   YOU HAVE %u P", run_show_n, (unsigned)run_state.run.points);
+    int ww = 0, wh = 0, w = 0, h = 0;
+    psx_mod_window_size(&ww, &wh);
+    const uint32_t *px = moa_screen_render_tiles(ww, wh, title, line, tile, (int)run_show_n,
+                                                 "PRESS ANY BUTTON", &w, &h);
+    if (!px) return;
+    psx_mod_set_loading_screen("ARENA RUN  Shop restock", -1);
+    psx_mod_set_loading_image(px, w, h);
+    run_show_on = 1;
+    run_show_frames = 0;
+    run_show_armed = 0;
+    run_log("restock screen: rank %u, %u parts, %u pictures%s", rank, run_show_n, drawn,
+            models ? "" : " (no model install)");
+}
+
+/* Per frame while the hub is up. */
+static void run_show_frame(void)
+{
+    if (!run_show_on) {
+        if (run_show_rank && run_at_hub && !psx_mod_read_byte(RUN_FIGHT_DONE)) run_show_open();
+        return;
+    }
+    psx_mod_write_half(RUN_PAD_BUFFER + 2u, 0xFFFFu);       /* the hub sees nothing pressed */
+    psx_mod_set_loading_screen("ARENA RUN  Shop restock", -1);
+    const uint16_t b = psx_mod_host_pad_buttons(0);          /* active low */
+    run_show_frames++;
+    if (b == 0xFFFFu) { run_show_armed = 1; return; }
+    if (!run_show_armed || run_show_frames < 30u) return;
+    run_show_on = 0;
+    psx_mod_set_loading_screen(NULL, 0);
+    run_log("restock screen: closed");
+}
+
 /* Restocks on reaching ranks 45, 40 ... 5 and 1: 8 random parts the player
  * neither owns nor already sees in the shop. Seeded by the run and the rank,
  * so a seed always restocks the same way. */
@@ -480,7 +606,8 @@ static void run_restock(void)
         return;
     }
     uint16_t pool[256];
-    uint8_t back[256];
+    uint8_t back[256], tab[256];
+    uint32_t rowat[256];
     unsigned np = 0;
     for (size_t t = 0; t < sizeof k_run_tables / sizeof k_run_tables[0]; t++) {
         uint32_t row = 0;
@@ -489,9 +616,12 @@ static void run_restock(void)
             if (ix > 255u || !run_row_real(r) || !psx_mod_read_word(r + RUN_PRICE_AT)) continue;
             if (psx_mod_read_byte(RUN_OWNED + ix) || psx_mod_read_byte(RUN_STOCK + ix)) continue;
             back[np] = k_run_tables[t].back;
+            tab[np] = (uint8_t)t;
+            rowat[np] = r;
             pool[np++] = (uint16_t)ix;
         }
     }
+    run_show_n = 0;
     uint64_t rng = run_state.lineup.seed ^ (0x5E570C4Bull * (w + 1u));
     unsigned added = 0;
     char list[8 * 5 + 1];
@@ -500,10 +630,14 @@ static void run_restock(void)
         const uint32_t k = moa_run_below(&rng, np);
         psx_mod_write_byte(RUN_STOCK + pool[k], back[k] ? 2u : 1u);
         snprintf(list + strlen(list), sizeof list - strlen(list), " %u", pool[k]);
+        run_show_add(tab[k], pool[k] - k_run_tables[tab[k]].base, rowat[k]);
         pool[k] = pool[--np];
         back[k] = back[np];
+        tab[k] = tab[np];
+        rowat[k] = rowat[np];
         added++;
     }
+    if (added) run_show_rank = (uint8_t)(MOA_RUN_SLOTS - w);
     psx_mod_counter_add("moa.run.restock", 1);
     run_log("restock: rank %u, %u parts added:%s", MOA_RUN_SLOTS - w, added, list);
 }
@@ -984,6 +1118,7 @@ static void run_frame_hook(void)
         psx_mod_write_byte(RUN_ARENA_LOCK, 0);
         psx_mod_counter_add("moa.run.arena_unlocked", 1);
     }
+    run_show_frame();
     if (run_loss_wait) run_loss_wait--;      /* the return itself is made in a guest hook */
     if (run_autopilot && run_stage == STAGE_BACK) {
         if (++run_frames - run_back_start >= RUN_BACK_FRAMES) run_finish_handover();

@@ -89,7 +89,7 @@ static int np_on(void)
 
 /* ---- the script ---------------------------------------------------------- */
 
-enum { K_WAIT, K_PRESS, K_ROW, K_END };
+enum { K_WAIT, K_PRESS, K_ROW, K_LOAD, K_END };
 enum { PH_INIT, PH_SYNC, PH_HOST, PH_GUEST, PH_COUNT, PH_DONE };
 struct np_step { uint8_t kind, port, phase; uint16_t buttons, hold, wait; };
 
@@ -113,11 +113,12 @@ static void np_script_load(unsigned player)
     TAP(ph, 1, PAD_X, 40);
     for (int i = 0; i < 4; i++) TAP(ph, port, PAD_DOWN, 10);   /* SYSTEM */
     TAP(ph, port, PAD_X, 40);                                    /* DATA LOAD */
-    TAP(ph, port, PAD_X, 60);                                   /* SLOT 1 / SLOT 2 */
-    if (player) TAP(ph, port, PAD_DOWN, 14);                     /* SLOT 2 */
-    TAP(ph, port, PAD_X, 480);                                   /* search the card */
-    TAP(ph, port, PAD_X, 40);                                    /* save 1: "Load?" */
-    TAP(ph, port, PAD_X, 720);                                   /* yes */
+    TAP(ph, port, PAD_X, 70);                                    /* SLOT 1 / SLOT 2 */
+    if (player) TAP(ph, port, PAD_DOWN, 12);                     /* SLOT 2 */
+    /* X every 16 frames: the slot, save 1, "Load?" Yes -- each as soon as the
+     * menu takes it -- until the save has been read (its checksum runs). */
+    np_add(K_LOAD, ph, port, PAD_X, 4, 16);
+    np_add(K_WAIT, ph, 0, 0, 0, 100);                            /* "Load completed." closes */
     TAP(ph, port, PAD_O, 30);                                    /* out of SYSTEM */
     TAP(ph, port, PAD_O, 90);                                   /* out of AC SETUP */
 }
@@ -143,6 +144,7 @@ static void np_script_build(void)
 struct np_state {
     uint8_t autopilot, reached_versus, lock, ticked, row_answered;
     uint8_t matches;
+    uint8_t loads, loads_mark;               /* save reads seen (checksum calls) */
     uint16_t inject[2];                      /* active high */
     uint32_t autopilot_ticks;
     int32_t pos;
@@ -195,6 +197,17 @@ static void np_script_step(void)
     case K_PRESS:
         if (t < st->hold) S.inject[st->port - 1] = st->buttons;
         if (t + 1 >= (uint32_t)st->hold + st->wait) { S.pos++; S.step_time = 0; }
+        return;
+    case K_LOAD:
+        if (t == 0) S.loads_mark = S.loads;
+        if (S.loads != S.loads_mark) { S.pos++; S.step_time = 0; return; }
+        if (t > 3000) {                       /* never read: hand over */
+            psx_mod_counter_add("moa.np.setup_load_timeout", 1);
+            S.lock = 0;
+            S.pos = np_script_len;
+            return;
+        }
+        if (t % st->wait < st->hold) S.inject[st->port - 1] = st->buttons;
         return;
     case K_ROW: {
         const int row = psx_mod_read_byte(NP_VS_ROW);
@@ -288,6 +301,17 @@ static void np_menu_input(struct CPUState *cpu, uint32_t address)
     psx_mod_write_byte(NP_PAD2, 0);
     psx_mod_write_byte(NP_PAD2 + 1u, 0x41);
     psx_mod_write_half(NP_PAD2 + 2u, (uint16_t)~S.inject[1]);
+}
+
+/* The loader's checksum call: a save has just been read. */
+#define NP_SAVE_SUM      0x80070F1Cu
+#define NP_SIG_SAVE_SUM  0x00002821u
+static void np_save_sum(struct CPUState *cpu, uint32_t address)
+{
+    (void)cpu;
+    if (!np_on() || psx_mod_read_word(address) != NP_SIG_SAVE_SUM) return;
+    np_enter_tick();
+    S.loads++;
 }
 
 static void np_mode_confirm(struct CPUState *cpu, uint32_t address)
@@ -460,6 +484,7 @@ PSX_MOD_CONSTRUCTOR(moa_np_setup_register)
     (void)psx_game_register_netplay_function_entry(NP_MENU_INPUT_A, np_menu_input);
     (void)psx_game_register_netplay_function_entry(NP_MENU_INPUT_B, np_menu_input);
     (void)psx_game_register_netplay_function_entry(NP_MODE_CONFIRM, np_mode_confirm);
+    (void)psx_game_register_netplay_function_entry(NP_SAVE_SUM, np_save_sum);
     (void)psx_game_register_netplay_function_entry(NP_TITLE_OPEN, np_title_open);
     (void)psx_game_register_netplay_function_filter(NP_MOVIE_PLAY, np_movie);
     mod_register_frame_hook(np_frame_hook);

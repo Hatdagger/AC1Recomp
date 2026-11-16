@@ -227,6 +227,11 @@ typedef struct PsxLobbyMatchCaps {
      * Peers launch from this, never from their own view of the seat table,
      * so a toggle racing the start cannot split the room. */
     int  guest_memcard_active;
+    /* Settled at start by the host: the title's own match options (e.g. a
+     * scripted setup and its stage), "" for none. Every peer exports it as
+     * PSX_NET_GAME_OPTS before the match, so all simulate from the same
+     * value. Characters outside [A-Za-z0-9=;,_.:-] are dropped. */
+    char game_opts[96];
     char language[PSX_LOBBY_LANG_LEN];
     /* Settled match BIOS: "openbios" | "scph1001" | "" (unset / legacy).
      * "scph1001" means "the retail image named by session_bios_crc". */
@@ -242,6 +247,8 @@ typedef struct PsxLobbyMatchCaps {
 
 /* The same portable plan is used by WebSocket and LAN lobbies. No media paths
  * or bytes are serialized. A failed/truncated message must never mean vanilla. */
+/* Keep only [A-Za-z0-9=;,_.:-] of `in` (the game_opts wire charset). */
+void psx_lobby_clean_game_opts(char *out, size_t cap, const char *in);
 int psx_lobby_encode_match_caps(char *out, size_t cap, const PsxLobbyMatchCaps *caps);
 int psx_lobby_decode_match_caps(const char *json, PsxLobbyMatchCaps *out);
 void psx_lobby_set_local_match_caps(const PsxLobbyMatchCaps *caps);

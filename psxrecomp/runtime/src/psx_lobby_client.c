@@ -2016,6 +2016,12 @@ static void parse_match_caps_object(const char *obj, PsxLobbyMatchCaps *out)
     /* Absent (older host) = allowed; the seat-1 offer still gates it. */
     out->guest_memcard = json_get_bool(obj, "guest_memcard", 1);
     out->guest_memcard_active = json_get_bool(obj, "guest_memcard_active", 0);
+    {
+        char raw[sizeof out->game_opts];
+        raw[0] = '\0';
+        json_get_str(obj, "game_opts", raw, sizeof(raw));
+        psx_lobby_clean_game_opts(out->game_opts, sizeof(out->game_opts), raw);
+    }
     json_get_str(obj, "language", out->language, sizeof(out->language));
     json_get_str(obj, "session_bios", out->session_bios, sizeof(out->session_bios));
     json_get_str(obj, "mod_plan_fp", out->mod_plan_fp, sizeof(out->mod_plan_fp));
@@ -2050,7 +2056,7 @@ static int append_match_caps_json(char *dst, size_t dst_cap, const PsxLobbyMatch
 {
     char lang[PSX_LOBBY_LANG_LEN];
     char mods_json[4096];
-    char plan_json[4096 + 96];
+    char plan_json[4096 + 96 + 128];
     size_t i, o = 0;
     int n;
     if (!dst || dst_cap < 8 || !caps || !caps->valid) return 0;
@@ -2079,6 +2085,15 @@ static int append_match_caps_json(char *dst, size_t dst_cap, const PsxLobbyMatch
         if (fp[0] || caps->mod_count > 0)
             snprintf(plan_json, sizeof(plan_json),
                      ",\"mod_plan_fp\":\"%s\",\"mods\":%s", fp, mods_json);
+        /* Only when set: a title without match options keeps the old wire. */
+        if (caps->game_opts[0]) {
+            char go[sizeof caps->game_opts];
+            const size_t pl = strlen(plan_json);
+            psx_lobby_clean_game_opts(go, sizeof(go), caps->game_opts);
+            if (go[0])
+                snprintf(plan_json + pl, sizeof(plan_json) - pl,
+                         ",\"game_opts\":\"%s\"", go);
+        }
         n = snprintf(dst, dst_cap,
                      ",\"match_caps\":{\"v\":1,\"aspect_num\":%d,\"aspect_den\":%d,"
                      "\"turbo_loads\":%s,\"bios_hle\":%s,\"fast_boot\":%s,"
@@ -2111,6 +2126,20 @@ static int append_match_caps_json(char *dst, size_t dst_cap, const PsxLobbyMatch
         return n;
     }
 }
+void psx_lobby_clean_game_opts(char *out, size_t cap, const char *in)
+{
+    size_t n = 0;
+    if (!out || !cap) return;
+    for (; in && *in && n + 1 < cap; in++) {
+        const char ch = *in;
+        if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+            (ch >= '0' && ch <= '9') || ch == '=' || ch == ';' || ch == ',' ||
+            ch == '_' || ch == '.' || ch == ':' || ch == '-')
+            out[n++] = ch;
+    }
+    out[n] = '\0';
+}
+
 int psx_lobby_encode_match_caps(char *out, size_t cap, const PsxLobbyMatchCaps *caps)
 {
     int n;

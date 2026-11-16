@@ -13900,6 +13900,24 @@ namespace {
         return 1;
     }
 
+    /* Title match options (PSX_NET_GAME_OPTS): the host's value is settled
+     * into the START caps, and every peer exports the settled value before
+     * the match so the title's netplay hooks all read the same text. */
+    static void ae_np_host_game_opts(char* out, size_t cap) {
+        const char* e = std::getenv("PSX_NET_GAME_OPTS");
+        psx_lobby_clean_game_opts(out, cap, e ? e : "");
+    }
+    static void ae_np_export_game_opts(const char* settled) {
+        char v[96];
+        psx_lobby_clean_game_opts(v, sizeof(v), settled ? settled : "");
+#ifdef _WIN32
+        _putenv_s("PSX_NET_GAME_OPTS", v);
+#else
+        setenv("PSX_NET_GAME_OPTS", v, 1);
+#endif
+        std::fprintf(stdout, "psxrecomp: match game options = \"%s\"\n", v);
+    }
+
     PsxLobbyMatchCaps ae_netplay_caps_from_settings(const RecompLauncherCSettings* s) {
         PsxLobbyMatchCaps caps{};
         caps.valid = 1;
@@ -15237,7 +15255,7 @@ namespace {
                 (g_lnch_remote_lan || !g_netplay_content_negotiation)) {
                 g_lnch_remote_lan_state.started = true;
                 /* MOTK1 START\n<session>\n[<delay>\n<prediction>\n<rollback>\n
-                 * [<session_bios>\n[<guest_memcard>\n[<session_bios_crc>\n]]]]
+                 * [<session_bios>\n[<guest_memcard>\n[<session_bios_crc>\n[<game_opts>\n]]]]]
                  * Trailing caps are host-authoritative (incl. settled BIOS). */
                 char* p = buf + 12;
                 char* nl = std::strchr(p, '\n');
@@ -15252,10 +15270,11 @@ namespace {
                 /* Default off: a legacy host never uploads a guest card, and
                  * a guest that waited for one would stall the match. */
                 g_lnch_lan_guest_memcard_active = 0;
+                ae_np_export_game_opts("");   /* an older host sends none */
                 if (nl) {
                     p = nl + 1;
-                    char* lines[6] = {};
-                    for (int i = 0; i < 6; ++i) {
+                    char* lines[7] = {};
+                    for (int i = 0; i < 7; ++i) {
                         if (!p || !*p) break;
                         lines[i] = p;
                         char* n2 = std::strchr(p, '\n');
@@ -15266,6 +15285,9 @@ namespace {
                             p = nullptr;
                         }
                     }
+                    /* Line 7: the title's match options (absent from an
+                     * older host: none). */
+                    if (lines[6]) ae_np_export_game_opts(lines[6]);
                     if (lines[4] && lines[4][0])
                         g_lnch_lan_guest_memcard_active =
                             (std::atoi(lines[4]) != 0) ? 1 : 0;
@@ -15296,9 +15318,12 @@ namespace {
                 if (g_lnch_lan_start_plan_session == g_lnch_remote_lan_state.session_id &&
                     !g_lnch_remote_lan_state.mod_caps_json.empty()) {
                     PsxLobbyMatchCaps caps{};
-                    if (psx_lobby_decode_match_caps(g_lnch_remote_lan_state.mod_caps_json.c_str(), &caps) &&
-                        caps.session_bios[0])
-                        ae_np_set_session_bios_token(caps.session_bios, caps.session_bios_crc);
+                    if (psx_lobby_decode_match_caps(g_lnch_remote_lan_state.mod_caps_json.c_str(), &caps)) {
+                        /* MOTK6: the options travel in the plan's caps. */
+                        ae_np_export_game_opts(caps.game_opts);
+                        if (caps.session_bios[0])
+                            ae_np_set_session_bios_token(caps.session_bios, caps.session_bios_crc);
+                    }
                 }
                 continue;
             }
@@ -16198,6 +16223,7 @@ namespace {
                                        size_t why_cap) {
         *caps = ae_netplay_caps_from_settings(settings);
         caps->guest_memcard_active = ae_np_ws_guest_memcard_effective();
+        ae_np_host_game_opts(caps->game_opts, sizeof(caps->game_opts));
         std::fprintf(stdout, "psxrecomp: lobby guest memcard (P2 card as slot 2) = %s\n",
                      caps->guest_memcard_active ? "on" : "off");
         return psx_lobby_settle_session_bios(caps->session_bios, sizeof(caps->session_bios),
@@ -16331,6 +16357,7 @@ namespace {
                               "%s", g_lnch_session_bios);
                 caps.session_bios_crc = session_crc;
                 caps.guest_memcard_active = g_lnch_lan_guest_memcard_active;
+                ae_np_host_game_opts(caps.game_opts, sizeof(caps.game_opts));
                 char caps_wire[8192];
                 if (!g_lnch_mod_plan_error.empty() ||
                     !psx_lobby_encode_match_caps(caps_wire, sizeof(caps_wire), &caps)) return -1;
@@ -16355,6 +16382,9 @@ namespace {
             char session_crc_text[16];
             netplay_bios_format_crc(g_lnch_session_bios_crc, session_crc_text,
                                     sizeof(session_crc_text));
+            char lan_game_opts[96];
+            ae_np_host_game_opts(lan_game_opts, sizeof(lan_game_opts));
+            ae_np_export_game_opts(lan_game_opts);
             if (g_netplay_content_negotiation)
                 std::snprintf(start_msg, sizeof(start_msg),
                               "MOTK6 START\n%u\n%d\n%d\n%d\n%s\n%d\n%s",
@@ -16366,13 +16396,13 @@ namespace {
                               state.mod_caps_json.c_str());
             else
                 std::snprintf(start_msg, sizeof(start_msg),
-                              "MOTK1 START\n%u\n%d\n%d\n%d\n%s\n%d\n%s\n",
+                              "MOTK1 START\n%u\n%d\n%d\n%d\n%s\n%d\n%s\n%s\n",
                               (unsigned)state.session_id, delay, pred,
                               g_lnch_rollback ? 1 : 0,
                               g_lnch_session_bios[0] ? g_lnch_session_bios
                                                     : "openbios",
                               g_lnch_lan_guest_memcard_active ? 1 : 0,
-                              session_crc_text);
+                              session_crc_text, lan_game_opts);
             for (int i = 0; i < kAeLanMaxSlots; ++i) {
                 if (g_lnch_lan_peer_ok[i])
                     ae_np_lan_udp_sendto(g_lnch_lan_peers[i], start_msg);
@@ -16754,6 +16784,7 @@ namespace {
         /* From the START caps, not this peer's seat table: the host settled
          * it once, so a toggle racing the start cannot split the room. */
         out->guest_memcard = caps->guest_memcard_active ? 1 : 0;
+        ae_np_export_game_opts(caps->game_opts);
         if (caps->session_bios[0])
             ae_np_set_session_bios_token(caps->session_bios,
                                          caps->session_bios_crc);

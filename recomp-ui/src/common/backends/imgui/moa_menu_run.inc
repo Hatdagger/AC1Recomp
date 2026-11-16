@@ -35,10 +35,16 @@ static std::string run_card(const LauncherModel* m) {
 }
 
 /* The run plays from its own card in slot 1 (PSX_MEMCARD1_SESSION). */
+/* A run game was started: when the launcher shows the page again, it reads
+ * the run file first (a loss there means RETRY). The launcher isn't drawn
+ * during a game, so this can't wait to see the session end. */
+static bool g_run_reread = false;
+
 static void set_arena_run(bool on, const std::string& path, const std::string& card = std::string()) {
     set_env("PSX_MOA_ARENA_RUN", on ? "1" : "0");
     set_env("PSX_MOA_RUN_FILE", on ? path.c_str() : "");
     set_env("PSX_MEMCARD1_SESSION", on ? card.c_str() : "");
+    if (on) g_run_reread = true;
 }
 
 static void open_run_page(LauncherModel* m) {
@@ -141,6 +147,11 @@ static void continue_run(LauncherModel* m) {
 }
 
 static void draw_run_page(LauncherModel* m, const Gfx& g, const Input& in) {
+    if (g_run_reread) {
+        g_run_reread = false;
+        open_run_page(m);
+        g_state.cursor[PAGE_RUN] = R_CONTINUE;
+    }
     if (!g_name_edit) move_cursor(PAGE_RUN, R_ROWS, in, R_ROWS);
     int& cur = g_state.cursor[PAGE_RUN];
     header(g, "ARENA RUN", "50 OPPONENTS  ONE LIFE");

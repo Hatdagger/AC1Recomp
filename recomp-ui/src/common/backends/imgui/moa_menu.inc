@@ -1069,6 +1069,10 @@ static int enabled_mod_count(const LauncherModel* m, int* total_out) {
 }
 
 static void start_game(LauncherModel* m) {
+    /* Each start gets a new number: game plugins clear what an earlier
+     * session in this process left behind (moa_arena_run_boot.c). */
+    static unsigned s_session = 0;
+    set_env("PSX_MOA_RUN_SESSION", std::to_string(++s_session).c_str());
     /* The stock PLAY button's decisions, in the same order. */
     if (launcher_model_bios_blocks_play(m)) {
         launcher_model_bios_play_prompt(m);
@@ -1656,14 +1660,6 @@ static void draw(LauncherModel* m, const LauncherTheme& th) {
         case LNG_VIEW_NETPLAY:      draw_net_rooms(m, g, in); break;
         case LNG_VIEW_LOBBY:        draw_lobby_page(m, th, g, in); break;
         default: {
-            /* Back from a game: the run may have been lost or moved on, so
-             * the Arena Run page reads its file again (RETRY after a loss). */
-            static bool s_was_in_session = false;
-            if (s_was_in_session && !m->in_session && g_state.run_page) {
-                open_run_page(m);
-                g_state.cursor[PAGE_RUN] = R_CONTINUE;
-            }
-            s_was_in_session = m->in_session;
             if (g_state.ai_page && !m->in_session) draw_ai_page(m, g, in);
             else if (g_state.garage_page && !m->in_session) draw_garage_page(m, g, in);
             else if (g_state.extras_page && !m->in_session) draw_extras_page(m, g, in);

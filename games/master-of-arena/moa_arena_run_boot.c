@@ -28,6 +28,7 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -75,6 +76,10 @@
  * first: the hook books it once, on the first sight. */
 #define RUN_RESULT           0x800BBEA8u
 #define RUN_SIG_RESULT       0x27BDFFE0u  /* addiu sp,sp,-32 */
+/* The prize payout, run after the result (the result routine sets state+0x78
+ * to it): credits += word[state+0xB8 + 8*opponent]; 0 skips the prize screen. */
+#define RUN_PAYOUT           0x800BC420u
+#define RUN_SIG_PAYOUT       0x27BDFFD0u  /* addiu sp,sp,-48 */
 #define RUN_FIGHT_DONE       0x8003EA7Cu  /* byte: a fight just finished */
 #define RUN_FIGHT_WON        0x8003EAB0u  /* half: non-zero on a win */
 #define RUN_FIGHT_OPPONENT   0x8003EAD5u  /* byte: the opponent's index */
@@ -212,8 +217,7 @@ static uint32_t run_back_start;
 static int run_stage;
 static uint32_t run_newgame_seen;          /* run_frames when that menu last ran */
 static int run_result_seen;                /* this fight's result is booked */
-static int run_credit_hold;                /* a booked win: credits to restore once applied */
-static uint32_t run_credit_value;
+static uint32_t run_pay;                   /* what the next payout pays: 1 on a new win, else 0 */
 static int run_save_pending;               /* a win waits for the autosave */
 
 /* A plain log beside the run file (<run file>.log), for test reports: the
@@ -234,6 +238,36 @@ static void run_log(const char *fmt, ...)
     fclose(f);
 }
 static uint32_t run_loss_wait;             /* frames until the launcher reopens */
+static int run_sent, run_told;
+static int run_fixes;
+static uint8_t run_arena_at_builds = 0xFF, run_arena_at_ai = 0xFF;
+
+/* Sessions run in one process, so nothing may carry over from the last one
+ * (a stale "at the hub" kept a Retry from booting). The launcher numbers each
+ * start in PSX_MOA_RUN_SESSION; a new number clears everything. */
+static void run_check_session(void)
+{
+    static char last[32] = "-";
+    const char *e = getenv("PSX_MOA_RUN_SESSION");
+    if (!e) e = "";
+    if (strncmp(last, e, sizeof last - 1) == 0) return;
+    snprintf(last, sizeof last, "%s", e);
+    run_enabled = -1;
+    run_autopilot = run_at_hub = 0;
+    run_ticks = run_frames = run_fade = 0;
+    memset(&run_state, 0, sizeof run_state);
+    run_state_ok = 0;
+    run_back_start = 0;
+    run_stage = 0;
+    run_newgame_seen = 0;
+    run_result_seen = 0;
+    run_pay = 0;
+    run_save_pending = 0;
+    run_loss_wait = 0;
+    run_sent = run_told = 0;
+    run_fixes = 0;
+    run_arena_at_builds = run_arena_at_ai = 0xFF;
+}
 static const char *run_file_path(void) { return getenv("PSX_MOA_RUN_FILE"); }
 
 static int run_on(void)
@@ -289,6 +323,7 @@ static void run_reach_hub(const char *why)
 static void run_menu_entry(struct CPUState *cpu, uint32_t address)
 {
     (void)cpu;
+    run_check_session();
     run_enabled = -1;
     if (!run_on() || psx_mod_read_word(address) != RUN_SIG_MENU_ENTRY) return;
     if (run_at_hub) return;                   /* already handed over */
@@ -543,9 +578,8 @@ static void run_book_loss(const char *where)
 static void run_maybe_return(void)
 {
     if (!run_state.run.over || run_loss_wait) return;
-    static int sent;
-    if (sent) return;
-    sent = 1;
+    if (run_sent) return;
+    run_sent = 1;
     psx_mod_counter_add("moa.run.over", 1);
     run_log("loss: back to the launcher");
     psx_mod_request_return_to_launcher();
@@ -558,24 +592,13 @@ static void run_result_entry(struct CPUState *cpu, uint32_t address)
     if (!run_on() || psx_mod_read_word(address) != RUN_SIG_RESULT) return;
     run_maybe_return();
     if (!run_at_hub || !run_state_ok) {
-        static int told;
-        if (psx_mod_read_byte(RUN_FIGHT_DONE) && !told) {
-            told = 1;
+        if (psx_mod_read_byte(RUN_FIGHT_DONE) && !run_told) {
+            run_told = 1;
             run_log("result: not booked (at hub %d, run file loaded %d)", run_at_hub, run_state_ok);
         }
         return;
     }
     if (!psx_mod_read_byte(RUN_FIGHT_DONE)) {
-        if (run_credit_hold) {                 /* the arena's own reward is not paid */
-            run_credit_hold = 0;
-            const uint32_t now = psx_mod_read_word(RUN_CREDITS);
-            if (now != run_credit_value) {
-                run_log("win: arena reward off by %d, credits %u -> %u",
-                        (int)(now - run_credit_value), (unsigned)now, (unsigned)run_credit_value);
-                psx_mod_write_word(RUN_CREDITS, run_credit_value);
-                psx_mod_counter_add("moa.run.reward_undone", 1);
-            }
-        }
         run_result_seen = 0;
         run_autosave(cpu);                     /* the result is applied now */
         return;
@@ -600,8 +623,7 @@ static void run_result_entry(struct CPUState *cpu, uint32_t address)
     const uint8_t who = psx_mod_read_byte(RUN_FIGHT_OPPONENT);
     if (flags < 0x80000000u || flags >= 0x80200000u || who >= MOA_RUN_SLOTS ||
         psx_mod_read_byte(flags + who) == 1u) {
-        run_credit_value = psx_mod_read_word(RUN_CREDITS);
-        run_credit_hold = 1;
+        run_pay = 0;
         psx_mod_counter_add("moa.run.refight", 1);
         run_log("win: refight, nothing paid");
         return;
@@ -613,14 +635,32 @@ static void run_result_entry(struct CPUState *cpu, uint32_t address)
     const uint32_t credits = psx_mod_read_word(RUN_CREDITS);
     if (credits != had) psx_mod_counter_add("moa.run.credits_mismatch", 1);
     psx_mod_write_word(RUN_CREDITS, run_state.run.points - 1u);   /* the game pays the 1 */
-    run_credit_value = run_state.run.points;
-    run_credit_hold = 1;
+    run_pay = 1;
     run_log("win: P %u -> %u (credits were %u)", (unsigned)had,
             (unsigned)run_state.run.points, (unsigned)credits);
     (void)moa_run_save(path, &run_state);
     psx_mod_counter_add("moa.run.win", 1);
     run_restock();
     run_save_pending = 1;
+}
+
+/* The payout after a run fight: the game's prize screen shows and pays
+ * run_pay (1 P on a new win, nothing on a refight), not arena 0's stock
+ * money (which paid 20000). */
+static void run_payout_entry(struct CPUState *cpu, uint32_t address)
+{
+    if (!run_on() || !run_at_hub || psx_mod_read_word(address) != RUN_SIG_PAYOUT) return;
+    const uint32_t st = cpu->gpr[4];
+    if (st < 0x80000000u || st >= 0x80200000u) return;
+    if (psx_mod_read_byte(st + RUN_STATE_ARENA) != RUN_ARENA) return;
+    const uint32_t tab = psx_mod_read_word(st + 0xB8u);
+    const uint8_t who = psx_mod_read_byte(RUN_FIGHT_OPPONENT);
+    if (tab < 0x80000000u || tab >= 0x80200000u || who >= MOA_RUN_SLOTS) return;
+    const uint32_t was = psx_mod_read_word(tab + 8u * who);
+    psx_mod_write_word(tab + 8u * who, run_pay);
+    run_log("payout: %u (stock %u), credits %u", (unsigned)run_pay, (unsigned)was,
+            (unsigned)psx_mod_read_word(RUN_CREDITS));
+    run_pay = 0;
 }
 
 /* Arena 0 sites: s2 (open) or s0 (the rest) = state + 0x80. */
@@ -720,8 +760,6 @@ static void run_load_file_entry(struct CPUState *cpu, uint32_t address)
 }
 
 static struct { int kind; uint32_t buf, bytes; } run_fix[4];
-static int run_fixes;
-static uint8_t run_arena_at_builds = 0xFF, run_arena_at_ai = 0xFF;
 
 static void run_queue_fix(int kind, uint8_t arena, struct CPUState *cpu)
 {
@@ -893,6 +931,7 @@ static void run_sampler_entry(struct CPUState *cpu, uint32_t address)
 
 static void run_frame_hook(void)
 {
+    run_check_session();
     if (!run_on()) return;
     run_apply_fixes();
     if (run_at_hub && psx_mod_read_byte(RUN_ARENA_LOCK)) {
@@ -931,6 +970,7 @@ PSX_MOD_CONSTRUCTOR(moa_arena_run_boot_register)
     (void)psx_game_register_offline_function_entry(RUN_HUB_RESUME, run_hub_entry);
     (void)psx_game_register_offline_function_entry(RUN_NEWGAME_FRAME, run_newgame_entry);
     (void)psx_game_register_offline_function_entry(RUN_RESULT, run_result_entry);
+    (void)psx_game_register_offline_function_entry(RUN_PAYOUT, run_payout_entry);
     (void)psx_game_register_offline_function_filter(RUN_HUB_PICK, run_hub_pick_filter);
     (void)psx_game_register_offline_function_entry(RUN_FIGHT_SAMPLER, run_sampler_entry);
     (void)psx_game_register_offline_instruction(RUN_A0_OPEN, RUN_A0_OPEN_I, run_a0_open);

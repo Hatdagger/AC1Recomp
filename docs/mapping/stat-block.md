@@ -17,6 +17,11 @@ earlier against live blocks by Armored-CoreR (`gen1-movement.md`). Status: **eve
 routine writes is identified**. What's left is naming a few copied values by watching them in a
 fight, and the bytes the routine never writes (filled during the fight).
 
+2026-11-17 (second pass): the bytes the compile routine doesn't write are now traced too. Most
+come from the **options record** (`0x800B6A80`, see "Options and button masks"); the VS
+engine's **match-start routine `0x8008342C`** adjusts a few values and moves some into the AC
+object (see "Match start"). The arena engine has an identical copy at `0x800850DC` (FDAT 210).
+
 Part records named below are the menu tables in `parts-tables.md`. "Garage" = loadout bytes:
 0 core, 1 booster, 2 head, 3 arms, 4 blade, 5 hand, 6 back L, 7 back R, 8 generator,
 9 FCS, 11 legs.
@@ -25,10 +30,11 @@ Part records named below are the menu tables in `parts-tables.md`. "Garage" = lo
 
 | Off | Size | Meaning | Source |
 |---|---|---|---|
-| +0x00 | u16 | 120 or 300 or 0, picked by byte `0x8004B59C` (0 → 120, 1 → 300, else 0) | mode setting; **name by test** (a timer?) |
-| +0x02 | u8 | Flags: bit 0 cleared, bits 1 and 2 set, **bit 3 = legs can fit a booster** (legs +0x42) | |
+| +0x00 | u16 | 120 or 300 or 0, picked by options record +0x34 (`0x8004B59C`: 0 → 120, 1 → 300, else 0). The VS engine takes the **larger of the two players' values** (`0x80055C48`), so most likely the **match time limit in seconds** (0 = none) | options; **confirm by test** |
+| +0x02 | u8 | Flags: bit 0 cleared, bits 1 and 2 set, **bit 3 = legs can fit a booster** (legs +0x42). **Bit 0** is a fight-time flag (set `0x8007CC70`; cleared `0x8007CA88`, `0x80082920`, `0x8008FB68`). **Bit 5** comes from options record +0x35 (default 1; `0x800B6AE4`), meaning unknown. Bit 1 read at `0x80087760`, bit 4 at `0x80087EB8` | |
 | +0x03 | u8 | **Human PLUS level** (`0x8003EAC8`) | |
-| +0x04, +0x05 | | not written | |
+| +0x04 | | no access found in the menus, VS or arena engines: padding | |
+| +0x05 | u8 | **Stage number (very likely)**. Set by the menus in both players' blocks (same value, e.g. `0x800C097C` from a table indexed by `0x8003EA78`; `0x8007E0DC` writes 29). At VS load `0x80055930` copies player 1's or player 2's (picked by bit 0 of `0x8003EA94`) to the global `0x80097EA0` | menus |
 | +0x06, +0x08 | u8 | Thrust: booster power (9,800 for caterpillars) × 4096 ÷ carried weight ÷ 224, 1–64 | known |
 | +0x07, +0x09 | u8 | Thrust × 0.8, 1–50 | known |
 | +0x0A, +0x0B | u8 | Thrust × 1.2, 1–64; fixed for legs 21 (26), 22 (23), 23 (19), 24 (26), 26 (24), 27 (6), 28 (7), 30 (13), 31 (11), 32 (13) | known |
@@ -36,7 +42,7 @@ Part records named below are the menu tables in `parts-tables.md`. "Garage" = lo
 | +0x0D | u8 | Turn speed (legs +0x3A ÷ weight), 0–64 | known |
 | +0x0E | u8 | Friction: weight × 8 ÷ 1000, 32–96 | known |
 | +0x0F, +0x10 | u8 | **Core bytes +0x34, +0x35**, copied as is | **name by test** |
-| +0x11 | | not written | |
+| +0x11 | | no access found anywhere: padding | |
 
 Carried weight = every part except the generator, capped at legs weight + carry limit.
 
@@ -58,9 +64,12 @@ Carried weight = every part except the generator, capped at legs weight + carry 
 | +0x25 | u8 | **Radar flags**: head +0x3A or back radar +0x30; bit 0 set by SP-MAW (missile indicator); 1 with Human PLUS and no radar | |
 | +0x26 | u8 | Head byte +0x33 | **name by test** |
 | +0x27 | u8 | **Radar type**: head +0x3B or back radar +0x31; 3 with Human PLUS and no radar | |
-| +0x28 | u8 | **Body frame**: 0 two-legged, 1 caterpillar, 2 four-legged (from the body table) | |
+| +0x28 | u8 | **Body frame**: 0 two-legged, 1 caterpillar, 2 four-legged (from the body table). Match start turns 0 into **3** when Human PLUS level ≥ 4; frames 0/3 then run init `0x80085688`, frames 1/2 run `0x800875C8` | |
 | +0x29 | u8 | **Body combination** (0–39): core shape × arms shape × legs shape | |
 | +0x2A | u8 | Head byte +0x32 | **name by test** |
+
+**Human PLUS level 6 and up** (match start, `0x80083560`): rise drain +0x14 is halved, both
+refill rates (+0x16, +0x1A) are doubled, then each refill is capped at the new rise drain.
 
 Back radars (40–51) switch the head's radar off first (+0x1E, +0x25, +0x27 = 0), then take over.
 
@@ -77,8 +86,39 @@ Back radars (40–51) switch the head's radar off first (+0x1E, +0x25, +0x27 = 0
 | +0x31 | u8 | Back L ID (rewritten when a P77-ST is fitted) |
 | +0x32 | u8 | Back R ID (same) |
 | +0x33 | u8 | Blade ID |
-| +0x34 | u16 | Flags, starts at 3: bit 0 cleared if head byte +0x34 = 1; bit 1 cleared if head byte +0x35 = 1; **bit 3 = SP-JAM (missile jammer)** |
-| +0x36 – +0x3C | 4×u16 | From the body table (650, 40, 100, 2 on almost every body; caterpillar + regular arms has 0 instead of 40) — **name by test** |
+| +0x34 | u16 | Flags, starts at 3: bit 0 cleared if head byte +0x34 = 1; bit 1 cleared if head byte +0x35 = 1; **bit 3 = SP-JAM (missile jammer)**. Match start copies the flags minus bits 0–1 to AC object +0x38, then **clears bit 3 here** (the jammer lives in the AC object from then on) |
+| +0x36 – +0x3C | 4×u16 | From the body table (650, 40, 100, 2 on almost every body; caterpillar + regular arms has 0 instead of 40). Match start (`0x8007DC24`) passes all four, +0x3A squared, layout bytes 4–5 (+0x5A, +0x5B) and the layout list (+0x6E) to `0x800876C4`, so likely **body collision sizes** (+0x3A = 100 looks like a radius) — **name by test** |
+
+## Options and button masks (+0x3E – +0x55)
+
+Not stats: the **button layout** from the options record at `0x8004B568` (48 bytes of
+masks, then 6 option bytes). `0x800B6A80` copies it into player 1's block; `0x800B6430` swaps
+the masks and the header word (+0x00–0x03) between the two players' blocks. `0x800B69F8`
+resets the record from the defaults at `0x800D5860`.
+
+Masks use the raw pad word at **player block +0x04** (held; +0x06 = previous frame): Up 0x10,
+Right 0x20, Down 0x40, Left 0x80, L2 0x100, R2 0x200, L1 0x400, R1 0x800, △ 0x1000, ○ 0x2000,
+✕ 0x4000, □ 0x8000. Uses below are from the code where marked, otherwise from the default
+button.
+
+| Off | Options record | Default | Use |
+|---|---|---|---|
+| +0x3E | +0x00 | Up | Forward (with back, L1, R1, ✕ = "moving" check `0x800822EC`) |
+| +0x40 | +0x04 | Down | Back |
+| +0x42 | +0x08 | Left | **Turn left** (adds to turn speed, `0x8007DC80`) |
+| +0x44 | +0x0C | Right | **Turn right** (subtracts) |
+| +0x46 | +0x28 | △ | **Next weapon** (new press, needs usable weapons; bumps player block +0x11, `0x80082F88`) |
+| +0x48 | +0x24 | ✕ | Boost, probably (read in most movement code) |
+| +0x4A | +0x2C | □ | **Fire** (held, `0x80081054`) |
+| +0x4C | +0x20 | ○ | **Blade** (new press, needs blade attack +0x68 ≠ 0, `0x80083230`) |
+| +0x4E | +0x10 | L1 | Strafe left, probably (read with forward/back by the leg code) |
+| +0x50 | +0x18 | L2 | Look up/down, probably; L2 + R2 together reset a timer at player block +0x21C (`0x8007D628`) |
+| +0x52 | +0x14 | R1 | Strafe right, probably |
+| +0x54 | +0x1C | R2 | Look up/down, probably (pair with L2) |
+
+The other option bytes: +0x30 → `0x8003EA93` (default 1), +0x31 / +0x32 → sound volumes
+(defaults 63 / 31), +0x33 (0), **+0x34 → stat +0x00** (time limit), **+0x35 bit 0 → stat
++0x02 bit 5** (default 1).
 
 ## Body layout (+0x56 – +0x87)
 
@@ -111,11 +151,11 @@ the hand weapon (weapon arms empty the hands), then the usable back weapons. The
 | +0 | u8 | Kind (0 gun, 1 missile, 2 cannon) | detail +0 |
 | +1 | u8 | Model ID (shot-speed table) | detail +1 |
 | +2 – +6 | u8 | Muzzle joints for this slot | layout bytes 18–33 |
-| +7, +8 | u8 | 64 | constant |
-| +9 | u8 | Detail +2 (adjusted for some kinds) | detail |
+| +7, +8 | u8 | 64. For the **selected** weapon, `0x80082834` (match start and every weapon change) sets player block +0x210 = +7 × 5 ÷ 32 + 1 and +0x212 = +8 × 15 ÷ 32 + 1 | constant |
+| +9 | u8 | Detail +2 (adjusted for some kinds). Bits 0–1 = fire mode in the fire routine `0x80080DF4` (1 → 2, 2 → 4, 3 → checks bits 4–5); the whole byte also sets player block +0x214 = +9 × 75 ÷ 32 + 1 for the selected weapon | detail |
 | +10, +11, +12 | u8 | Detail +3, +4, +5 (+12 can get bit 0x80) | detail |
 | +14 | u16 | Ammo (max) | detail +8 |
-| +16 | u16 | Ammo (current, starts full) | detail +8 |
+| +16 | u16 | Ammo (current, starts full; match start copies +14 into it again for every usable slot) | detail +8 |
 | +18 | u16 | Energy per shot / ammo price (depends on kind) | detail +0xA / +0xC |
 | +20 | u16 | FCS range for the weapon's lock class | FCS |
 | +22 | u16 | Weapon range | detail +0xE |
@@ -126,20 +166,45 @@ the hand weapon (weapon arms empty the hands), then the usable back weapons. The
 | +36 | u8 | Damage flags (0x10 solid, 0x20 energy) | detail +0x12 |
 | +38 | u16 | **Attack** | detail +0x14 |
 | +40 | u16 | Impact | detail +0x16 |
-| +42 – +61 | | not written at VS START (in-fight state?) | |
+| +42 – +61 | | no access found: the fire routine reads only +1–5, +9–12, +16 (and writes it), +22, +35, and no player-block-relative access exists in the VS or arena engine. Likely padding; confirm with a watch | |
 
 The slot code also applies SP-M/AUTO, SP-SAP, SP-E+ and SP-DEtq; the exact maths per option is
 the next thing to write down (routine `0x800A8904`–`0x800AA75C`).
 
-## Not written by the compile routine
+## Match start (VS engine `0x8008342C`, arena copy `0x800850DC`)
 
-+0x04–0x05, +0x11, +0x3E–0x55, and slot bytes +42–61 (plus the gaps in the slots). Either the
-battle engine fills them at match start (VS engine `0x8008342C` writes player block +0x200 on,
-which overlaps this block's start) or they're in-fight state. **Next step**: watch them in a
-plain VS fight with the write trace and log which routine writes each.
+Runs once per player with the AC object in a0; player block pointer from `0x8003EAA0`.
+Order:
+
+1. Clears player block +0x10, +0x11; `0x80082834` sets the selected-weapon values (slot +7/+8/+9
+   above); `0x8007DC24` sets up the body collision from +0x36–0x3C.
+2. Derives battle values from the block into player block +0x200–0x216, +0x16, +0x44, +0x1FC
+   (handed to the battle chat in `README.md`).
+3. Human PLUS ≥ 6: energy adjustment (see "Energy").
+4. Refills current ammo (+16) from max (+14) for each usable slot (count +0x87).
+5. AC object: +0x168 / +0x16A = stat +0x20 (AP × 4, current and max), +0x16C = stability
+   (+0x24) × 25 ÷ 4, +0x16E = stealth (+0x86), +0x38 = flags +0x34 minus bits 0–1; then stat
+   +0x34 bit 3 cleared. Also AC +0x43 = 5, +0x36 = 1, +0x70 = 2, +0x118 = 0.
+6. Body frame: two-legged + Human PLUS ≥ 4 → +0x28 = 3; leg init `0x80085688` (frames 0, 3)
+   or `0x800875C8` (1, 2); then model setup `0x80059624`.
+
+Writes into the block during the fight (outside match start), found by a code scan:
++0x02 bit 0 (see header); radar range +0x1E is set to 5,000 for one draw call and then to 0 at
+`0x800571BC` when player 1's block +0x08 bit 0 is set (purpose unknown, looks like a display
+mode).
 
 ## To name by a test in VS
 
 Poke one, watch the effect, log the result here:
-+0x00 (120/300), +0x0F/+0x10 (core bytes), +0x26, +0x2A (head bytes), +0x34 bits 0–1,
-+0x36–0x3C, slot +9 to +12.
++0x00 (time limit?), +0x02 bit 5 (options +0x35), +0x05 (stage?), +0x0F/+0x10 (core bytes),
++0x26, +0x2A (head bytes), +0x34 bits 0–1, +0x36–0x3C (collision?), body frame 3 (Human
+PLUS ≥ 4), slot +7/+8/+9 → player block +0x210–0x214, slot +10 to +12. Watch slot +42–61 and
++0x04/+0x11 for any write to confirm they're padding.
+
+## Next steps
+
+1. Option maths in the weapon slot code (`0x800A8904`–`0x800AA75C`): SP-M/AUTO, SP-SAP,
+   SP-E+, SP-DEtq, SP-EH, SP-AXL.
+2. Reverse-joint legs (14–20): which body combination they get (missing from `0x800D4A64`).
+3. Read `0x800876C4` (collision setup) to name +0x36–0x3C without a test.
+4. The tests above (needs the user's PC).

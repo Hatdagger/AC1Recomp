@@ -32,7 +32,7 @@ must not contradict it without a measurement.
 | Player block, 928 bytes × 2 | 0x80045198 / +928 | repo (moa_ai_battle.c) |
 | Pointer to the slot's AC object | player block +920 | repo |
 | AC object, 376 bytes each, back to back | arena: player AP at 0x801D8D70, opponent at 0x801D8EE8 | codes + repo size |
-| Weapon stats in play (ammo, range, lock speed, lock box, missile locks) | player block +0x2E6 … +0x376 | codes |
+| Weapon stats in play (ammo, range, lock speed, lock box, missile locks) | inside the compiled stat block, player block +0x250 … +0x393 | codes — **data chat's lane** (`stat-block.md`) |
 | Booster / energy reserve | player block +0x016 | codes |
 | Opponent AI per frame / init / setup | 0x8008D4AC / 0x8008DC98 / 0x80055768 | repo |
 | Camera routine and state | 0x80088988, set 0x80053280 | repo (netplay) |
@@ -88,16 +88,12 @@ with the same layout shifted (+0x64 save data, +0x60 battle data).
 |---|---|---|---|
 | +0x004 / +0x006 | u16 | Button word / previous (read by the AC code) | repo |
 | +0x016 | u16 | Booster / energy reserve | code (infinite booster) |
-| +0x2E6 / +0x2E8 | u16 | Hand weapon ammo | code |
-| +0x2EC / +0x2EE | u16 | Hand weapon range | code |
-| +0x2F0 | u16 | Hand weapon lock speed | code |
-| +0x2F4 / +0x2F6 | u16 | Hand weapon lock box | code |
-| +0x2FA | u16 | Missile locks / autofire | code |
-| +0x324 … +0x338 | | Back weapon A (stride 0x3E) | code |
-| +0x362 … +0x376 | | Back weapon B | code |
+| +0x250 … +0x393 | 324 bytes | Compiled stat block (weapon slots, ammo, range, lock values…) — **data chat's lane, see `stat-block.md`**; writes found here get handed over in README.md | — |
 | +0x398 | u32 | Pointer to AC object | repo |
 
 ## Open questions
+
+- Blade damage mismatch (683 expected vs 492 seen in Armored-CoreR): data chat says blade record +0x30 is attack and +0x2C charge drain (swapped in the old notes). Re-measure a blade hit in VS.
 
 - Base address of the AC object array in the arena engine, and AP's offset in it.
 - Is the player block a copy made at match start, or live? (Test: poke range mid-fight.)

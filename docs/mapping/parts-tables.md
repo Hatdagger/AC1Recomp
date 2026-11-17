@@ -149,7 +149,7 @@ or one read of the code that uses it.
 
 ## Missile interceptor (core +0x34 / +0x35)
 
-VS `0x800829E4` (arena `0x800846A0`), every frame for each AC:
+VS `0x800829E4` (arena `0x80084694`), every frame for each AC:
 
 1. If `(rand & 127) <` reaction (stat +0x0F), or a burst is running (AC +0x118, odd frames):
    look for a missile.

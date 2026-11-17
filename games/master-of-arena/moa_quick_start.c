@@ -53,6 +53,8 @@
 #define QS_SLOT_DEFAULTS   0x80083130u
 #define QS_EMPTY_SLOTS     0x80067244u  /* (1) */
 #define QS_AC_TEXTURES     0x800822B0u  /* queue the garage AC's part textures */
+#define QS_DISC_BUSY       0x800589DCu  /* non-zero (low 16 bits) = disc queue still loading */
+#define QS_DISC_WAIT_MAX   20000000u    /* safety cap: each check runs a little game time */
 #define QS_HUB_OPEN        0x800552C0u
 #define QS_NEWGAME_STATE   0x800AC820u  /* NEW GAME: windows, then 0x800ACA0C name entry */
 #define QS_NULL_DRAW       0x80057C24u
@@ -84,6 +86,7 @@ static const struct { uint32_t at, word; } k_code[] = {
     { QS_HUB_OPEN,       0x27BDFFB8u }, { QS_NEW_TASK,      0x00804021u },
     { QS_TIM_QUEUE,      0x27BDFFD8u }, { QS_NEWGAME_STATE, 0x27BDFFD0u },
     { 0x800ACA0Cu,       0x27BDFFE8u }, { QS_LOAD_N,        0x2402004Eu },
+    { QS_DISC_BUSY,      0x27BDFFE8u },
     { QS_LOAD_COPY,      0x244C6FB0u },
 };
 
@@ -215,14 +218,22 @@ static int qs_load(struct CPUState *cpu)
     for (size_t i = 0; i < sizeof k_after_load / sizeof k_after_load[0]; i++)
         call(cpu, k_after_load[i], 0, 0, 0);
     psx_mod_write_byte(QS_MAIL_SHOWN, 1);
-    /* The card screen's finish (0x8005CE68, opened from the title). Its wait
-     * for the disc queue is left to the hub, whose first states wait too. */
+    /* The card screen's finish (0x8005CE68, opened from the title). */
     for (uint32_t i = 0; i < 256u; i++)
         psx_mod_write_byte(QS_OWNED_COPY + i, psx_mod_read_byte(QS_OWNED + i));
     call(cpu, QS_PART_LISTS, 0, 0, 0);
     call(cpu, QS_SLOT_DEFAULTS, 0, 0, 0);
     call(cpu, QS_EMPTY_SLOTS, 1, 0, 0);
     call(cpu, QS_AC_TEXTURES, 0, 0, 0);
+    /* Then it waits for the disc queue (0x8005D0C4: loop on 0x800589DC), so
+     * the AC's textures are in VRAM before the block below is moved and
+     * before the hub opens (the hub's first state does not wait on the disc;
+     * its open moves that block back at once). The menu entry's back-from-
+     * arena road waits the same way. Rogue Arena's direct boot stalled
+     * without it. */
+    uint32_t spins = 0;
+    while ((call(cpu, QS_DISC_BUSY, 0, 0, 0) & 0xFFFFu) != 0u)
+        if (++spins >= QS_DISC_WAIT_MAX) { qs_log("moa.start.load_disc_wait_cap"); break; }
     const uint8_t bl = psx_mod_read_byte(QS_GARAGE + 6u), br = psx_mod_read_byte(QS_GARAGE + 7u);
     if ((bl != 0xFFu && bl >= 52u) || (br != 0xFFu && br >= 52u)) {
         call(cpu, QS_MOVE_IMAGE, QS_WEAPON_RECT, 768, 448);

@@ -76,6 +76,10 @@ int moa_run_lineup(const struct moa_run_source *src, int nsrc, int phantasma,
  * a 13-byte card record, options empty. 1 = ok. */
 int moa_run_start_ac(const struct moa_parts *p, uint64_t seed, uint8_t rec[13]);
 
+/* "No hand weapon" as the game writes it (255): weapon arms, or the table's
+ * NO WEAPON row (id 0), which the game would fit as a 0-ammo weapon. */
+void moa_run_game_hand(uint8_t rec[13]);
+
 /* ---- the run file -------------------------------------------------------- */
 
 #define MOA_RUN_MAGIC   0x4E555241u   /* "ARUN" */

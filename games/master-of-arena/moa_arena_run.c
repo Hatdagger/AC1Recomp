@@ -249,6 +249,18 @@ done:
 
 /* ---- starting AC ------------------------------------------------------------------ */
 
+/* "No hand weapon" the game's way: 255. The garage writes 255 when it empties
+ * the hands (menu 0x80082A1C, 0x8008336C, 0x800880C8) and every arena opponent
+ * with weapon arms has 255 there. Hand id 0 is the table's "NO WEAPON" row,
+ * and the stat compile (0x800A8EB0) fits anything but 255 as a weapon: a
+ * NO WEAPON slot with 0 ammo, the "0/0" arm weapon of a Retry test. Run
+ * files made before this kept 0; the run converts at its edges (new ACs,
+ * the run's save, ghosts), so those are fixed too (moa_card_game_hand). */
+void moa_run_game_hand(uint8_t rec[13])
+{
+    rec[4] = moa_card_game_hand(rec);
+}
+
 int moa_run_start_ac(const struct moa_parts *p, uint64_t seed, uint8_t rec[13])
 {
     uint64_t rng = seed ^ 0x53544152ull;          /* own stream: "STAR" */
@@ -266,6 +278,7 @@ int moa_run_start_ac(const struct moa_parts *p, uint64_t seed, uint8_t rec[13])
             rec[b] = p->part[cat][moa_run_below(&rng, (uint32_t)n)].id;
         }
         moa_build_normalise(rec);
+        moa_run_game_hand(rec);                       /* never the NO WEAPON row */
         const int armed = rec[4] != 255 || rec[5] != 255 || rec[6] != 255 ||
                           rec[7] != 255 || (rec[2] >= 12 && rec[2] != 255);
         struct moa_build_check t;
@@ -470,6 +483,7 @@ void moa_run_ghost_record(const struct moa_run_ghost *g, uint64_t seed, uint8_t 
     memset(&c, 0, sizeof c);
     c.format = 4;
     memcpy(c.rec, g->rec, 13);
+    moa_run_game_hand(c.rec);
     snprintf(c.pilot, sizeof c.pilot, "%s", g->pilot);
     snprintf(c.ac, sizeof c.ac, "%s", run_ac_name(g->ac));
     moa_run_paint(seed, g->attempt, c.paint);
@@ -481,7 +495,10 @@ void moa_run_make_save(const struct moa_run_state *s, uint8_t b[8192])
     static struct moa_card c;
     memset(&c, 0, sizeof c);
     c.format = 4;
-    memcpy(c.rec, s->run.start_ac, 13);
+    uint8_t ac[13];
+    memcpy(ac, s->run.start_ac, 13);
+    moa_run_game_hand(ac);
+    memcpy(c.rec, ac, 13);
     snprintf(c.pilot, sizeof c.pilot, "%s", s->run.pilot);
     snprintf(c.ac, sizeof c.ac, "%s", run_ac_name(s->run.ac));
     moa_run_paint(s->lineup.seed, s->run.attempt, c.paint);
@@ -498,10 +515,10 @@ void moa_run_make_save(const struct moa_run_state *s, uint8_t b[8192])
     memset(b + RS_OWNED, 0, 256);
     for (int r = 0; r < 13; r++) {
         const int base = owned_base(moa_record_cat(r));
-        if (base < 0 || s->run.start_ac[r] == 255) continue;
-        b[RS_OWNED + base + s->run.start_ac[r]]++;
+        if (base < 0 || ac[r] == 255) continue;
+        b[RS_OWNED + base + ac[r]]++;
         if (moa_record_cat(r) != MOA_CAT_BACK)       /* back weapons stay on sale */
-            b[RS_SHOP + base + s->run.start_ac[r]] = 0;
+            b[RS_SHOP + base + ac[r]] = 0;
     }
     /* The shop opens empty: restocks at ranks 45, 40 ... 5 and 1 fill it. */
     memset(b + RS_SHOP, 0, 256);

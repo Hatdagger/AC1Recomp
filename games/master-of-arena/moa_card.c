@@ -279,9 +279,15 @@ done:
     return ok;
 }
 
+uint8_t moa_card_game_hand(const uint8_t rec[13])
+{
+    return (rec[4] == 0 || (rec[2] >= 12 && rec[2] != 0xFF)) ? 0xFF : rec[4];
+}
+
 void moa_card_record(const struct moa_card *card, uint8_t record[64])
 {
     memcpy(record, card->rec, 13);
+    record[4] = moa_card_game_hand(card->rec);
     record[13] = card->flag;
     record[14] = 0;                            /* custom paint */
     record[15] = card->variant;
@@ -670,7 +676,7 @@ void moa_card_to_save(const struct moa_card *c, uint8_t b[MOA_SAVE_BLOCK])
     for (int i = 0; i < 128; i++) b[0x80 + i] = 0x11;                              /* plain icon */
     const uint8_t *r = c->rec;
     const uint8_t booster = (r[3] >= 27 && r[3] != 0xFF) ? 0xFF : r[12];
-    const uint8_t parts[12] = { r[0], booster, r[1], r[2], r[5], r[4],
+    const uint8_t parts[12] = { r[0], booster, r[1], r[2], r[5], moa_card_game_hand(r),
                                 r[6], r[7], r[9], r[8], 0xFF, r[3] };
     memcpy(b + SAVE_PARTS, parts, 12);
     b[SAVE_PATTERN] = 0;
@@ -690,7 +696,7 @@ void moa_card_to_save(const struct moa_card *c, uint8_t b[MOA_SAVE_BLOCK])
            (as PUT INTO STORY SAVE), so the AC can be entered and changed. */
         uint8_t q[13];
         memcpy(q, r, 13);
-        if (q[2] >= 12 && q[2] != 0xFF) { q[4] = 0; q[5] = 0xFF; }
+        if (q[2] >= 12 && q[2] != 0xFF) { q[4] = 0xFF; q[5] = 0xFF; }
         if (q[3] >= 27 && q[3] != 0xFF) q[12] = 0xFF;
         for (int byte = 0; byte < 13; byte++) {
             if (byte == 10 || byte == 11 || (byte == 4 && q[byte] == 0)) continue;
@@ -1002,7 +1008,7 @@ int moa_memcard_fit_story(const char *path, int slot, const struct moa_card *car
     memcpy(r, card->rec, 13);
     /* the builder's rules (moa_build_normalise): weapon arms have no hand
        weapon or blade, caterpillars no booster, 12 option bits */
-    if (r[2] >= 12 && r[2] != 0xFF) { r[4] = 0; r[5] = 0xFF; }
+    if (r[2] >= 12 && r[2] != 0xFF) { r[4] = 0xFF; r[5] = 0xFF; }
     if (r[3] >= 27 && r[3] != 0xFF) r[12] = 0xFF;
     r[11] &= 0x0F;
     /* Owned parts: everything fitted, then every optional part fitted. */
@@ -1021,7 +1027,7 @@ int moa_memcard_fit_story(const char *path, int slot, const struct moa_card *car
     }
     /* The AC itself, in the save's garage order (as moa_card_to_save). */
     const uint8_t booster = (r[3] >= 27 && r[3] != 0xFF) ? 0xFF : r[12];
-    const uint8_t parts[12] = { r[0], booster, r[1], r[2], r[5], r[4],
+    const uint8_t parts[12] = { r[0], booster, r[1], r[2], r[5], moa_card_game_hand(r),
                                 r[6], r[7], r[9], r[8], 0xFF, r[3] };
     memcpy(b + SAVE_PARTS, parts, 12);
     b[SAVE_OPTIONS] = r[10];

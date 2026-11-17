@@ -17,11 +17,10 @@
  * AC, names, P and parts itself, and in-game saves go to that card. The
  * player's own card is not in the machine.
  *
- * Since 2026-11-17 the default is the direct boot instead (see "Direct boot"
- * below): no title, no LOAD GAME, no card screens. The run's save goes
- * straight into RAM through the game's own unpack, the hub opens on Arena
- * and opens it, and the player is handed the Arena list. The menu presses
- * above stay as the fallback (and with PSX_MOA_RUN_DIRECT=0).
+ * A direct boot (see "Direct boot" below: no title, no LOAD GAME, no card
+ * screens; the save goes straight into RAM through the game's own unpack) is
+ * the default boot (launcher FAST BOOT). PSX_MOA_RUN_DIRECT=0 (FAST BOOT
+ * OFF) makes the menu presses above the boot, the fallback.
  *
  * If the hub does not come up in time the overlay is dropped and the
  * player is given the menus, so a wrong step can never leave a black screen.
@@ -42,6 +41,7 @@
 #include "moa_ac_view.h"
 #include "moa_screen.h"
 #include "moa_run_record.h"
+#include "moa_boot_trace.h"
 #include "moa_card.h"
 
 #include <time.h>
@@ -227,7 +227,7 @@ enum { KIND_BUILDS = 0, KIND_NAMES, KIND_REWARDS, KIND_AI };
 #define RUN_HUB_TIMEOUT      (60u * 90u)  /* frames; fast forward makes this short */
 #define RUN_FADE_FRAMES      24u
 
-/* ---- Direct boot (default; PSX_MOA_RUN_DIRECT=0 brings back the menu presses)
+/* ---- Direct boot (on; PSX_MOA_RUN_DIRECT=0 turns it off, see run_direct_wanted)
  *
  * Instead of the title, LOAD GAME and the card screens, the title-open hook
  * does what those screens end up doing, with the game's own routines
@@ -248,6 +248,16 @@ enum { KIND_BUILDS = 0, KIND_NAMES, KIND_REWARDS, KIND_AI };
  * screen stays up until the Arena list opens. Any check failing falls back
  * to the menu presses. */
 #define RUN_D_SCORE          0x8003EA94u  /* byte: 255 on SCENARIO */
+/* The title flags: 0x8003EA7A "go to the title" (1 in the exe's data) and
+ * 0x8003EA7F "no logos". The menu entry already clears 0x8003EA7A right after
+ * its title call (0x800A6EA4), even when this filter takes that call, so the
+ * direct boot clearing it is harmless but not what fixed the after-fight hang
+ * of the first test (boot chat, boot-loads.md section 2). Only the link-return
+ * check 0x800A6BB0 sets it to 1 again; if it is 1 after a fight, the trace's
+ * RAM snapshots show it. 0x800544A0 is the title's intro movie (logos road
+ * only), so the direct boot doesn't replay it. */
+#define RUN_D_TITLE_FLAG     0x8003EA7Au
+#define RUN_D_NO_LOGOS       0x8003EA7Fu
 #define RUN_D_MODE           0x8003EA2Au  /* engine mode byte: 0 */
 #define RUN_D_PLUS           0x8003EAC8u  /* 8 bytes cleared on SCENARIO */
 #define RUN_D_MAIL_SHOWN     0x8003EA82u  /* "You have new mail." already shown */
@@ -287,6 +297,34 @@ static const struct { uint32_t dst; uint16_t from, bytes; } k_run_d_unpack[] = {
 #define RUN_D_CLUT_RECT      0x800CC078u
 static const uint32_t k_run_d_after_load[] = {
     0x800B6A80u, 0x80099098u, 0x800941F4u, 0x80093BC4u, 0x800A2318u, 0x800A2020u };
+/* What the card screen does after LOAD returns (state 0x8005CE68, the
+ * title case: parent task's open routine == 0x800AAE94), mapped 2026-11-17
+ * (mode-launch.md, "After LOAD: the card screen's finish"). Skipping it left
+ * the AC's part textures out of video memory: no AC in the hub or the first
+ * fight, until the arena's return path (0x800A70C0) queued them. */
+#define RUN_D_OWNED          0x80036FECu  /* owned parts, 256 bytes ... */
+#define RUN_D_OWNED_COPY     0x8003EB20u  /* ... copied here (garage/shop lists) */
+static const uint32_t k_run_d_card_finish[] = {
+    0x80090FD8u,                          /* part lists from the copy */
+    0x80083130u };                        /* empty core/booster/head/arms/legs -> defaults */
+#define RUN_D_EMPTY_SLOTS    0x80067244u  /* (1): fallback files for empty slots */
+#define RUN_D_SIG_EMPTY_SLOTS 0x27BDFFE0u
+#define RUN_D_AC_TEXTURES    0x800822B0u  /* queue the garage AC's part textures */
+#define RUN_D_SIG_AC_TEXTURES 0x27BDFFE0u
+#define RUN_D_MOVE_IMAGE     0x8002C81Cu  /* boot exe MoveImage(rect, x, y) */
+#define RUN_D_WEAPON_RECT    0x800CB8B8u  /* (384,256,64,64) -> (768,448) */
+#define RUN_D_WEAPON_CLUT    0x800CB8C0u  /* (320,482,256,1) -> (0,493), (0,494) */
+/* The disc queue (boot exe 0x800160C4): a ring of 16 entries of 48 bytes;
+ * write pointer +888, read pointer +892 from 0x80043C70. Empty when equal.
+ * The card screen waits for it (0x800589DC) before the hub opens; the hub's
+ * first state waits for its backdrop task (0x80056DBC), whose two MENU_TIM
+ * loads queue behind the AC's seven part textures (0x800822B0). Opening the
+ * hub in the same frame as those seven left the hub stalled in two of three
+ * tests (trace 2026-11-17: no hub state after the backdrop loads, 90 s
+ * timeout). So the hub opens on a later menu frame, once the queue is empty. */
+#define RUN_D_CDQ_WRITE      0x80043FE8u
+#define RUN_D_CDQ_READ       0x80043FECu
+#define RUN_D_HUB_WAIT_MAX   600u         /* frames: open anyway after this */
 #define RUN_D_HUB_OPEN       0x800552C0u
 #define RUN_D_SIG_HUB_OPEN   0x27BDFFB8u  /* addiu sp,sp,-72 */
 #define RUN_D_HUB_INPUT      0x80055848u
@@ -302,6 +340,8 @@ static int run_state_ok;
 enum { STAGE_TITLE = 0, STAGE_LOADGAME, STAGE_LOADING, STAGE_BACK, STAGE_DIRECT };
 static int run_direct;                     /* this session booted directly */
 static int run_direct_press;               /* X still to press at the hub */
+static int run_direct_hub_due;             /* the hub still to open (queue draining) */
+static uint32_t run_direct_hub_wait;
 static uint32_t run_direct_buf;            /* guest buffer for the save */
 /* At the hub: one O press (one menu back), at normal speed so the hub's
  * music starts as it would, then hand over behind the loading screen. */
@@ -315,6 +355,7 @@ static int run_stage;
 static uint32_t run_newgame_seen;          /* run_frames when that menu last ran */
 static int run_result_seen;                /* this fight's result is booked */
 static uint32_t run_pay;                   /* what the next payout pays: 1 on a new win, else 0 */
+static int run_prize_paid;                 /* a new win was just paid: its prize may open now */
 static int run_save_pending;               /* a win waits for the autosave */
 static unsigned run_win_screen;            /* booked wins waiting for the arena screen (P, restock) */
 
@@ -328,6 +369,8 @@ static void run_log(const char *fmt, ...)
     snprintf(name, sizeof name, "%s.log", path);
     FILE *f = fopen(name, "a");
     if (!f) return;
+    extern uint64_t s_frame_count;
+    fprintf(f, "[%llu] ", (unsigned long long)s_frame_count);   /* host frame: shows delays */
     va_list ap;
     va_start(ap, fmt);
     vfprintf(f, fmt, ap);
@@ -373,6 +416,9 @@ static void run_check_session(void)
     run_fixes = 0;
     run_arena_at_builds = run_arena_at_ai = 0xFF;
     run_direct = run_direct_press = 0;
+    run_direct_hub_due = 0;
+    run_direct_hub_wait = 0;
+    run_prize_paid = 0;
     run_prize_reset();
     moa_rec_reset();
     run_ghost_beaten_n = 0;
@@ -445,6 +491,9 @@ static void run_menu_entry(struct CPUState *cpu, uint32_t address)
     run_log("boot: menu reached, autopilot on");
 }
 
+/* On by default (launcher FAST BOOT); PSX_MOA_RUN_DIRECT=0 falls back to the
+ * menu presses. (It was off while the first builds missed the card screen's
+ * finish and opened the hub before the disc queue was empty.) */
 static int run_direct_wanted(void)
 {
     const char *e = getenv("PSX_MOA_RUN_DIRECT");
@@ -471,6 +520,8 @@ static int run_direct_code_ok(void)
            psx_mod_read_word(RUN_D_LOAD_N) == RUN_D_SIG_LOAD_N &&
            psx_mod_read_word(RUN_D_LOAD_COPY) == RUN_D_SIG_LOAD_COPY &&
            psx_mod_read_word(RUN_D_HUB_OPEN) == RUN_D_SIG_HUB_OPEN &&
+           psx_mod_read_word(RUN_D_EMPTY_SLOTS) == RUN_D_SIG_EMPTY_SLOTS &&
+           psx_mod_read_word(RUN_D_AC_TEXTURES) == RUN_D_SIG_AC_TEXTURES &&
            psx_mod_read_word(RUN_D_HUB_INPUT) == RUN_D_SIG_HUB_INPUT;
 }
 
@@ -499,6 +550,9 @@ static int run_direct_boot(struct CPUState *cpu)
         psx_mod_write_word(run_direct_buf + i, (uint32_t)save[i] | (uint32_t)save[i + 1] << 8 |
                                                (uint32_t)save[i + 2] << 16 | (uint32_t)save[i + 3] << 24);
     const uint32_t ra = cpu->gpr[31], buf = run_direct_buf;
+    /* 0. What the title itself would have done (see RUN_D_TITLE_FLAG). */
+    psx_mod_write_byte(RUN_D_TITLE_FLAG, 0);
+    psx_mod_write_byte(RUN_D_NO_LOGOS, 0);
     /* 1. SCENARIO MODE */
     psx_mod_write_byte(RUN_D_SCORE, 255);
     psx_mod_write_byte(RUN_D_MODE, 0);
@@ -518,6 +572,25 @@ static int run_direct_boot(struct CPUState *cpu)
     (void)psx_mod_call_guest(cpu, RUN_D_DRAW_SYNC, ra, 0, 0, 0, 0);
     for (size_t i = 0; i < sizeof k_run_d_after_load / sizeof k_run_d_after_load[0]; i++)
         (void)psx_mod_call_guest(cpu, k_run_d_after_load[i], ra, 0, 0, 0, 0);
+    /* 2b. The card screen's finish after a good LOAD (0x8005CFB0..0x8005D14C,
+     * title case). The game then waits for the disc queue (0x800589DC); here
+     * the menu loop drains it behind the loading screen. */
+    for (uint32_t i = 0; i < 256u; i++)
+        psx_mod_write_byte(RUN_D_OWNED_COPY + i, psx_mod_read_byte(RUN_D_OWNED + i));
+    for (size_t i = 0; i < sizeof k_run_d_card_finish / sizeof k_run_d_card_finish[0]; i++)
+        (void)psx_mod_call_guest(cpu, k_run_d_card_finish[i], ra, 0, 0, 0, 0);
+    (void)psx_mod_call_guest(cpu, RUN_D_EMPTY_SLOTS, ra, 1, 0, 0, 0);
+    (void)psx_mod_call_guest(cpu, RUN_D_AC_TEXTURES, ra, 0, 0, 0, 0);
+    {   /* back weapon ids 52 and up keep a texture block aside; the hub open
+         * (0x800554A8) moves it back */
+        const uint8_t bl = psx_mod_read_byte(0x80036FB6u), br = psx_mod_read_byte(0x80036FB7u);
+        if ((bl != 0xFFu && bl >= 52u) || (br != 0xFFu && br >= 52u)) {
+            (void)psx_mod_call_guest(cpu, RUN_D_MOVE_IMAGE, ra, RUN_D_WEAPON_RECT, 768, 448, 0);
+            (void)psx_mod_call_guest(cpu, RUN_D_MOVE_IMAGE, ra, RUN_D_WEAPON_CLUT, 0, 493, 0);
+            (void)psx_mod_call_guest(cpu, RUN_D_MOVE_IMAGE, ra, RUN_D_WEAPON_CLUT, 0, 494, 0);
+            (void)psx_mod_call_guest(cpu, RUN_D_DRAW_SYNC, ra, 0, 0, 0, 0);
+        }
+    }
     /* The run is in RAM: hand the data over now (the arena hooks wait for
      * it), keep the loading screen until the Arena list is up. */
     run_at_hub = 1;
@@ -526,15 +599,34 @@ static int run_direct_boot(struct CPUState *cpu)
     run_restock_catch_up("load");
     psx_mod_write_byte(RUN_ARENA_LOCK, 0);
     psx_mod_write_byte(RUN_D_MAIL_SHOWN, 1);     /* no mail box in the way */
-    /* 3. The hub, on Arena */
-    const uint32_t hub = psx_mod_call_guest(cpu, RUN_D_HUB_OPEN, ra, 0, 0, 0, 0);
-    if (hub >= 0x80000000u && hub < 0x80200000u) psx_mod_write_byte(hub + RUN_HUB_ENTRY, RUN_HUB_ARENA);
+    /* 3. The hub, on Arena: on a later menu frame, once the disc queue has
+     * taken the AC's textures (run_direct_hub_frame, RUN_D_CDQ_WRITE). */
     run_direct = 1;
-    run_direct_press = 1;
+    run_direct_hub_due = 1;
+    run_direct_hub_wait = 0;
     run_stage = STAGE_DIRECT;
     psx_mod_counter_add("moa.run.direct_boot", 1);
-    run_log("direct: save loaded, hub opened on Arena (frame %u)", (unsigned)run_frames);
+    run_log("direct: title flags cleared, save loaded, card screen finish replayed "
+            "(frame %u); the hub opens once the disc queue is empty", (unsigned)run_frames);
     return 1;
+}
+
+/* From the menu's controller sampling, every menu frame of the boot. */
+static void run_direct_hub_frame(struct CPUState *cpu)
+{
+    if (!run_direct_hub_due) return;
+    const int empty = psx_mod_read_word(RUN_D_CDQ_WRITE) == psx_mod_read_word(RUN_D_CDQ_READ);
+    if (!empty && ++run_direct_hub_wait < RUN_D_HUB_WAIT_MAX) return;
+    run_direct_hub_due = 0;
+    if (psx_mod_read_word(RUN_D_HUB_OPEN) != RUN_D_SIG_HUB_OPEN) {
+        run_log("direct: hub open code not in memory, the menus take over");
+        return;
+    }
+    const uint32_t hub = psx_mod_call_guest(cpu, RUN_D_HUB_OPEN, cpu->gpr[31], 0, 0, 0, 0);
+    if (hub >= 0x80000000u && hub < 0x80200000u) psx_mod_write_byte(hub + RUN_HUB_ENTRY, RUN_HUB_ARENA);
+    run_direct_press = 1;
+    run_log("direct: hub opened on Arena (frame %u, waited %u frames for the disc queue%s)",
+            (unsigned)run_frames, (unsigned)run_direct_hub_wait, empty ? "" : ", gave up");
 }
 
 static int run_title_open_filter(struct CPUState *cpu, uint32_t address)
@@ -542,6 +634,7 @@ static int run_title_open_filter(struct CPUState *cpu, uint32_t address)
     if (!run_on() || psx_mod_read_word(address) != RUN_SIG_TITLE_OPEN) return 0;
     if (run_at_hub && !run_autopilot) {       /* the player quit to the title */
         psx_mod_counter_add("moa.run.return_from_title", 1);
+        run_log("title: opened while at the hub (quit to the title), back to the launcher");
         psx_mod_request_return_to_launcher();
         return 0;
     }
@@ -595,9 +688,10 @@ static void run_newgame_entry(struct CPUState *cpu, uint32_t address)
     run_newgame_seen = run_frames;
 }
 
+static void run_direct_hub_frame(struct CPUState *cpu);
+
 static void run_menu_input_entry(struct CPUState *cpu, uint32_t address)
 {
-    (void)cpu;
     if (!run_autopilot || !run_on()) return;
     const uint32_t w = psx_mod_read_word(address);
     if (w != RUN_SIG_INPUT_A && w != RUN_SIG_INPUT_B) return;
@@ -612,6 +706,7 @@ static void run_menu_input_entry(struct CPUState *cpu, uint32_t address)
     const uint32_t t = run_ticks++;
     if (run_direct) {                            /* nothing pressed; the hub hook presses X */
         psx_mod_write_half(RUN_PAD_BUFFER + 2u, 0xFFFFu);
+        run_direct_hub_frame(cpu);
         return;
     }
     if (run_stage == STAGE_BACK) {               /* one O press, once */
@@ -1219,10 +1314,23 @@ static void run_prize_take(void)
 static void run_prize_frame(void)
 {
     if (!run_prize_stage) {
-        if (!run_at_hub || run_autopilot || run_fade || !run_state_ok || run_state.run.over ||
-            run_show_on || run_show_rank || !run_prize_where || psx_mod_read_byte(RUN_FIGHT_DONE) ||
-            psx_mod_read_word(k_run_tables[0].addr) != 0x302D4448u)
+        /* While a prize is due, log what it waits for (once per change), so
+         * a late prize screen shows which condition held it back. */
+        static const char *waits;
+        const char *why =
+            !run_state_ok || run_state.run.over ? NULL :
+            !run_at_hub ? "not at the hub" : run_autopilot ? "boot autopilot" :
+            run_fade ? "loading screen fade" : run_show_on || run_show_rank ? "restock screen" :
+            !run_prize_where && !run_prize_paid ? "not at the arena screen or hub" :
+            psx_mod_read_byte(RUN_FIGHT_DONE) && !run_prize_paid ? "fight result not applied" :
+            psx_mod_read_word(k_run_tables[0].addr) != 0x302D4448u ? "part tables not in memory" : "";
+        if (!why || (why[0] && run_prize_due() < 0)) { waits = NULL; return; }
+        if (why[0]) {
+            if (why != waits) run_log("prize: due, waiting (%s)", why);
+            waits = why;
             return;
+        }
+        waits = NULL;
         const int m = run_prize_due();
         if (m >= 0) run_prize_open(m);
         return;
@@ -1451,6 +1559,10 @@ static void run_payout_entry(struct CPUState *cpu, uint32_t address)
         return;
     }
     const uint32_t was = psx_mod_read_word(tab + 8u * who);
+    /* A new win is paid: its prize may open now, over the game's own result
+     * windows (they wait while the prize screen holds the pad), instead of
+     * ~9 s later when the game clears its fight-finished byte. */
+    if (run_pay) run_prize_paid = 1;
     psx_mod_write_word(tab + 8u * who, run_pay);
     run_pay_due = 0;
     run_log("payout: %u (stock %u), credits %u", (unsigned)run_pay, (unsigned)was,
@@ -1817,11 +1929,41 @@ static int run_hub_pick_filter(struct CPUState *cpu, uint32_t address)
     return 1;
 }
 
+/* At each fight's start: both ACs as the fight engine has them (the compiled
+ * stat blocks, stat-block.md): parts, then every weapon slot's kind, ammo and
+ * HUD name. A slot with 0 ammo is a weapon the AC can't use (the "0/0" seen in
+ * a Retry test); the ghost crashes also came at a fight's start. */
+static void run_log_fighters(void)
+{
+    for (uint32_t pl = 0; pl < 2u; pl++) {
+        const uint32_t blk = 0x800453E8u + 928u * pl;
+        const unsigned n = psx_mod_read_byte(blk + 0x87u);
+        run_log("fight: %s core %u legs %u head %u arms %u hand %u back L %u back R %u blade %u, %u weapon(s)",
+                pl ? "opponent" : "player",
+                psx_mod_read_byte(blk + 0x2Bu), psx_mod_read_byte(blk + 0x2Cu),
+                psx_mod_read_byte(blk + 0x2Du), psx_mod_read_byte(blk + 0x2Eu),
+                psx_mod_read_byte(blk + 0x30u), psx_mod_read_byte(blk + 0x31u),
+                psx_mod_read_byte(blk + 0x32u), psx_mod_read_byte(blk + 0x33u), n);
+        for (uint32_t w = 0; w < n && w < 3u; w++) {
+            const uint32_t sl = blk + 0x88u + 62u * w;
+            char name[17];
+            for (uint32_t i = 0; i < 16u; i++) {
+                const uint8_t c = psx_mod_read_byte(sl + 42u + i);
+                name[i] = (c >= 0x20 && c < 0x7F) ? (char)c : '.';
+            }
+            name[16] = 0;
+            run_log("fight:   slot %u kind %u ammo %u/%u '%s'", (unsigned)w,
+                    psx_mod_read_byte(sl), psx_mod_read_half(sl + 16u), psx_mod_read_half(sl + 14u), name);
+        }
+    }
+}
+
 static void run_sampler_entry(struct CPUState *cpu, uint32_t address)
 {
     (void)cpu;
     if (!run_on() || !run_at_hub || psx_mod_read_word(address) != RUN_SIG_SAMPLER) return;
     run_prize_where = 0;                          /* in a fight: no prize screen */
+    run_prize_paid = 0;
     run_maybe_return();
     /* The fight's own result, before the retry/exit choice (a retry never
      * reaches the arena screen's result routine). Logged on each change so a
@@ -1835,6 +1977,7 @@ static void run_sampler_entry(struct CPUState *cpu, uint32_t address)
         if (now != last) {
             last = now;
             run_log("fight: done %u, won %u, lost %u", done, won, lost);
+            if (done && !won && !lost) run_log_fighters();
         }
         if (!won && !lost) run_result_seen = 0;   /* a new fight: its result is not booked yet */
         if (done && !won && lost) run_book_loss("in fight");
@@ -2007,6 +2150,7 @@ static void run_frame_hook(void)
 
 PSX_MOD_CONSTRUCTOR(moa_arena_run_boot_register)
 {
+    moa_btrace_register();                   /* first: see moa_boot_trace.h */
     (void)psx_game_register_offline_function_entry(RUN_MENU_ENTRY, run_menu_entry);
     (void)psx_game_register_offline_function_entry(RUN_MENU_INPUT_A, run_menu_input_entry);
     (void)psx_game_register_offline_function_entry(RUN_MENU_INPUT_B, run_menu_input_entry);

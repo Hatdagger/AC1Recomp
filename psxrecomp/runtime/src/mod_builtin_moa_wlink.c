@@ -11,8 +11,14 @@
  *
  * Menu module (FDAT 206):
  *   - Option ID 13 is one of six "DUMMY" records (0x800D1CDC, 44 bytes) the
- *     menus already loop over (IDs 0-18). It becomes OP-WLINK, and bit 13 of
- *     the owned-options word 0x8004B558 is set, so it is owned from the start.
+ *     menus already loop over (IDs 0-18). The menu module's memory is never
+ *     written: the ten places that load the table's address (lui 0x800D /
+ *     addiu 0x1AA0) get our copy of the table instead, with ID 13 as
+ *     OP-WLINK. (The first test build wrote the record into the loaded menu
+ *     module from a VBlank callback and the game hung on its first loading
+ *     screen; writes there are watched as code changes.)
+ *   - Owned from the start: bit 13 of the owned-options word 0x8004B558 is
+ *     set just before the option list reads it (0x80091A1C).
  *   - The description table 0x800CDE8C has only 13 entries: the read at
  *     0x80092004 is pointed at our own entry for ID 13.
  *   - After compile(player) 0x800A7BB4 builds the stat block, each weapon slot
@@ -135,13 +141,16 @@ enum { PLACE_ARM, PLACE_HAND, PLACE_BACK_L, PLACE_BACK_R };
 #define MEM_DESC_PTR      0x030u       /* pointer to it (stands in for table[13]) */
 #define MEM_LAST          0x034u       /* last active weapon per player (2 bytes) */
 #define MEM_HUD           0x040u       /* 2 players x 3 slots x 32 bytes */
+#define MEM_READY         0x036u       /* 1 once the table copy is built */
 #define MEM_SHADOW        0x100u       /* 2 players x 3 slots x SHADOW_BYTES */
 #define SH_BURST          0u
 #define SH_COOLDOWN       1u
 #define SH_LOCK_A         4u
 #define SH_LOCK_B         (SH_LOCK_A + PB_LOCK_A_BYTES)
 #define SHADOW_BYTES      416u
-#define MEM_BYTES         (MEM_SHADOW + 2u * WL_SLOTS * SHADOW_BYTES)
+#define MEM_TABLE         (MEM_SHADOW + 2u * WL_SLOTS * SHADOW_BYTES)
+#define WL_OPTION_COUNT   19u
+#define MEM_BYTES         (MEM_TABLE + WL_OPTION_COUNT * WL_OPTION_BYTES)
 
 static const char kDescription[] = "Fires same-type weapons together.";
 static const char kName[] = "OP-WLINK";
@@ -159,10 +168,7 @@ static uint32_t wl_memory(void) {
             psx_mod_counter_add("moa.wlink.no_memory", 1);
             return 0;
         }
-        for (uint32_t i = 0; i < MEM_BYTES; ++i) psx_mod_write_byte(s_wl_memory + i, 0);
-        for (uint32_t i = 0; i < sizeof kDescription; ++i)
-            psx_mod_write_byte(s_wl_memory + MEM_DESC + i, (uint8_t)kDescription[i]);
-        psx_mod_write_word(s_wl_memory + MEM_DESC_PTR, s_wl_memory + MEM_DESC);
+        /* The allocator zeroes it; the text is filled in on first use. */
         psx_mod_write_byte(s_wl_memory + MEM_LAST, WL_LAST_NONE);
         psx_mod_write_byte(s_wl_memory + MEM_LAST + 1u, WL_LAST_NONE);
     }
@@ -186,34 +192,82 @@ static void wl_write_text(uint32_t address, const char *text, uint32_t field) {
 /* ===================== Menu: the option itself ============================ */
 
 /* The menu module is resident when option 12 is SP-ABS_Re and option 13 is
- * either the stock DUMMY or already ours. */
+ * the stock DUMMY. Read only. */
 static int wl_menu_resident(void) {
-    return wl_text_is(WL_RECORD_PREV, "SP-ABS_Re") &&
-           (wl_text_is(WL_RECORD, "DUMMY") || wl_text_is(WL_RECORD, kName));
+    return wl_text_is(WL_RECORD_PREV, "SP-ABS_Re") && wl_text_is(WL_RECORD, "DUMMY");
 }
 
-static void wl_vblank(void) {
-    if (!psx_mod_game_started() || !wl_menu_resident()) return;
-    if (wl_text_is(WL_RECORD, "DUMMY")) {
-        wl_write_text(WL_RECORD, kName, 18u);
-        wl_write_text(WL_RECORD + 18u, kType, 18u);
-        psx_mod_write_word(WL_RECORD + 36u, WL_PRICE);
-        psx_mod_write_half(WL_RECORD + 40u, WL_SLOT_COST);
-        psx_mod_write_half(WL_RECORD + 42u, 0);
-        psx_mod_counter_add("moa.wlink.record_installed", 1);
+/* Our copy of the option table (IDs 0-18) with ID 13 as OP-WLINK, and the
+ * description entry. Built once from the loaded menu module. */
+static uint32_t wl_table(void) {
+    const uint32_t memory = wl_memory();
+    if (!memory) return 0;
+    if (psx_mod_read_byte(memory + MEM_READY)) return memory + MEM_TABLE;
+    if (!wl_menu_resident()) return 0;
+    const uint32_t table = memory + MEM_TABLE;
+    for (uint32_t i = 0; i < WL_OPTION_COUNT * WL_OPTION_BYTES; ++i)
+        psx_mod_write_byte(table + i, psx_mod_read_byte(WL_OPTIONS + i));
+    const uint32_t record = table + WL_OPTION_ID * WL_OPTION_BYTES;
+    wl_write_text(record, kName, 18u);
+    wl_write_text(record + 18u, kType, 18u);
+    psx_mod_write_word(record + 36u, WL_PRICE);
+    psx_mod_write_half(record + 40u, WL_SLOT_COST);
+    psx_mod_write_half(record + 42u, 0);
+    for (uint32_t i = 0; i < sizeof kDescription; ++i)
+        psx_mod_write_byte(memory + MEM_DESC + i, (uint8_t)kDescription[i]);
+    psx_mod_write_word(memory + MEM_DESC_PTR, memory + MEM_DESC);
+    psx_mod_write_byte(memory + MEM_READY, 1u);
+    psx_mod_counter_add("moa.wlink.table_built", 1);
+    return table;
+}
+
+/* The instruction after each "addiu X,R,0x1AA0": X holds the table address
+ * the game just made; give it our copy instead. */
+typedef struct { uint32_t pc, insn; uint8_t reg; } WlTableSite;
+static const WlTableSite kTableSites[] = {
+    { 0x80087A50u, 0x3C03800Du,  8 },   /* t0  (lui v1,0x800D)   */
+    { 0x80091ADCu, 0x00A82821u,  8 },   /* t0  (addu a1,a1,t0)   */
+    { 0x80091DF4u, 0x3C03800Du,  6 },   /* a2  (lui v1,0x800D)   */
+    { 0x80091E70u, 0x324200FFu, 17 },   /* s1  (andi v0,s2,0xFF) */
+    { 0x80092420u, 0x3C03800Du,  8 },   /* t0  (lui v1,0x800D)   */
+    { 0x800924A0u, 0x312300FFu,  4 },   /* a0  (andi v1,t1,0xFF) */
+    { 0x80092C30u, 0x3C028004u,  7 },   /* a3  (lui v0,0x8004)   */
+    { 0x8009B3E4u, 0x03E00008u,  3 },   /* v1  (jr ra)           */
+    { 0x8009B574u, 0x30A300FFu,  4 },   /* a0  (andi v1,a1,0xFF) */
+    { 0x8009FAB8u, 0x00151400u, 18 },   /* s2  (sll v0,s5,16)    */
+};
+
+static void wl_table_hook(struct CPUState *cpu, uint32_t address) {
+    for (unsigned i = 0; i < sizeof kTableSites / sizeof kTableSites[0]; ++i) {
+        if ((kTableSites[i].pc ^ address) & 0x1FFFFFFFu) continue;
+        const uint8_t reg = kTableSites[i].reg;
+        if (cpu->gpr[reg] != WL_OPTIONS) return;
+        const uint32_t table = wl_table();
+        if (table) cpu->gpr[reg] = table;
+        return;
     }
+}
+
+/* Owned from the start: set bit 13 just before the option list reads the
+ * owned word (0x80091A1C: lw s2,-19112(v0), v0 = 0x80050000). */
+#define WL_OWNED_PC       0x80091A1Cu
+#define WL_OWNED_INSN     0x8C52B558u
+static void wl_owned_hook(struct CPUState *cpu, uint32_t address) {
+    (void)address;
+    if (cpu->gpr[REG_V0] != 0x80050000u || !wl_menu_resident()) return;
     const uint32_t owned = psx_mod_read_word(WL_OWNED_MASK);
-    if (!(owned & (1u << WL_OPTION_ID)))
+    if (!(owned & (1u << WL_OPTION_ID))) {
         psx_mod_write_word(WL_OWNED_MASK, owned | (1u << WL_OPTION_ID));
+        psx_mod_counter_add("moa.wlink.owned_set", 1);
+    }
 }
 
 /* Description lookup: table[13] would read past the 13-entry table. */
 static void wl_desc_hook(struct CPUState *cpu, uint32_t address) {
     (void)address;
     if (cpu->gpr[REG_V0] != WL_DESC_TABLE + WL_OPTION_ID * 4u) return;
-    if (!wl_text_is(WL_RECORD, kName)) return;
-    const uint32_t memory = wl_memory();
-    if (memory) cpu->gpr[REG_V0] = memory + MEM_DESC_PTR;
+    if (!wl_table()) return;
+    cpu->gpr[REG_V0] = wl_memory() + MEM_DESC_PTR;
 }
 
 /* ===================== Menu: link data at compile ========================= */
@@ -628,7 +682,10 @@ static void wl_activate(void) {
 PSX_MOD_CONSTRUCTOR(psx_register_moa_wlink_plugin) {
     static const char id[] = "moa.op-wlink";
     (void)psx_mod_register_activation_plugin(id, wl_activate);
-    (void)psx_mod_register_vblank_plugin(id, wl_vblank);
+    for (unsigned i = 0; i < sizeof kTableSites / sizeof kTableSites[0]; ++i)
+        (void)psx_mod_register_instruction_plugin(id, kTableSites[i].pc,
+                                                  kTableSites[i].insn, wl_table_hook);
+    (void)psx_mod_register_instruction_plugin(id, WL_OWNED_PC, WL_OWNED_INSN, wl_owned_hook);
     (void)psx_mod_register_instruction_plugin(id, WL_DESC_PC, WL_DESC_INSN, wl_desc_hook);
     (void)psx_mod_register_function_filter_plugin(id, WL_COMPILE_FN, wl_compile_filter);
     (void)psx_mod_register_function_filter_plugin(id, WL_FIRE_GUN, wl_fire_filter);

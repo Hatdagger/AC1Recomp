@@ -97,6 +97,10 @@ mod_instruction_sites = [
     "0x800BBB3C", "0x800BBCFC", "0x800C0250", "0x800C04FC", "0x800C01FC", "0x800C04A8",
     # OP-WLINK: option description (menu); weapon switch, HUD name lines (VS)
     "0x80092004", "0x80083030", "0x80056DC8", "0x80056EC4",
+    # OP-WLINK: option table reads pointed at the plugin's copy, owned bit (menu)
+    "0x80087A50", "0x80091ADC", "0x80091DF4", "0x80091E70", "0x80092420",
+    "0x800924A0", "0x80092C30", "0x8009B3E4", "0x8009B574", "0x8009FAB8",
+    "0x80091A1C",
 ]
 
 [runtime]

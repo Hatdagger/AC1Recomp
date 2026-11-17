@@ -143,6 +143,8 @@ if(TARGET psx-master-of-arena)
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_link_netplay.c"
         # AI Battle: the arena opponent AI flies both ACs (offline only).
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_ai_battle.c"
+        # VS AI: our own AI presses the buttons in split-screen VS (PSX_MOA_VS_AI).
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_vs_ai.c"
         # Versus without the menu (boot, units, graphics): AI Battle, netplay.
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_vs_direct.c"
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_screen.c"

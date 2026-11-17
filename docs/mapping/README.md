@@ -15,7 +15,7 @@ Several chats map Master of Arena at the same time. To avoid double work:
 | Battle system | `battle-system.md` | battle chat | Everything else that runs during a fight: player block (outside the stat block), AC object, damage, weapons in flight, movement, AI per frame, match start/end | in progress |
 | Compiled stat block | `stat-block.md` | data chat | **The 324-byte block the menu builds at VS START (player block +0x250 … +0x393)**: every field, the compile routine `0x800A7BB4` that fills it, and how the engines read it | compile routine, match start and slot option maths read 2026-11-17 |
 | Part tables | `parts-tables.md` | data chat | Part tables, weapon details, options on the disc | ~90%, paused |
-| Mode launch | `mode-launch.md` | launch chat | Boot → menu → engine loop, the mode byte, resume flags, how Scenario (hub) and VS (menu → VS START → fight) start; goal: starting modes straight from the launcher | claimed 2026-11-17 |
+| Mode launch | `mode-launch.md` | launch chat | Boot → menu → engine loop, the mode byte, resume flags, how Scenario (hub) and VS (menu → VS START → fight) start; goal: starting modes straight from the launcher | static read done 2026-11-17; repo gaps filled; runtime test next |
 | GameShark RAM list | `ram-map-gameshark.md` | shared, append-only | Raw code-derived addresses | reference |
 
 Not claimed yet (claim before starting): arena opponent rosters, missions data (FDAT 207), save/memory card format,
@@ -55,3 +55,14 @@ Data chat → battle chat:
 - AC object at match start: +0x168 / +0x16A = AP × 4 (stat +0x20), +0x16C = stability × 25 ÷ 4,
   +0x16E = stealth, +0x38 = stat flags +0x34 minus bits 0–1 (SP-JAM bit 3 moves here),
   +0x43 = 5, +0x36 = 1, +0x70 = 2, +0x118 = 0. Fire routine is `0x80080DF4(ac, slot)`.
+
+Launch chat → battle chat:
+- FDAT **211 is a fifth engine, the VS replay** (entry 0x80051FA4). When replay is picked the
+  VS engine sets 0x8003EA92 = 1 and returns 2 (`0x80052290`); the exe then loads 211, keeping
+  RAM above 0x801F8000 (the replay buffer). Engine table: 207 missions, 208 link, 209 VS,
+  210 arena, 211 VS replay. Details in `mode-launch.md`.
+
+Launch chat → data chat:
+- Stage (compiled +0x05 = player block +0x255) at VS START = byte `0x800D5800[map − 1]`,
+  map = 0x8003EA81 (1–10), written by `0x800B348C`. VS START compiles P1 then P2 in
+  `0x800B2F9C` after loading each player's parts / extras / options into the garage.

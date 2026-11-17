@@ -578,5 +578,6 @@ So chapter-timed (kind 0) mails depend on mission wins **and** arena ranks.
 - Objectives, win/lose checks, timer, results and rewards; enemy list; script reader
   `0x80091FFC` (stepped at `0x80092E4C`; writes AC +0x6D/+0x7C/+0x7E/+0x84).
 - Event points: the other point types (0–2, 4, 5) and the block 8 per-type records.
+- Reconcile: the spawn rule reads point +0x22 … +0x27 as box limits, item points use the same bytes as event 1 (per type?).
 - Mail: mission mode T+4 = 0 (what it is; it hands out every mail of kinds 0–3 at once); what
   the second delivery call (`0x800AC2D4`) belongs to; Phantasma's own mail table.

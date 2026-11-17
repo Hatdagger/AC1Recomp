@@ -19,9 +19,18 @@ Several chats map Master of Arena at the same time. To avoid double work:
 | GameShark RAM list | `ram-map-gameshark.md` | shared, append-only | Raw code-derived addresses | reference |
 | Missions: weapon detail +0x04 | `parts-tables.md` | data chat | Narrow check only: does the missions engine (FDAT 207) read weapon detail +0x04? Not the rest of the missions lane | done 2026-11-17: yes, and so do VS, arena and replay (the earlier "no reader" was wrong); see `parts-tables.md` |
 | Menus: scenario hub | `menus-hub.md` | hub chat | The hub ring (FDAT 206 from `0x800552C0`): its 8 entries, tables, input, models and labels, and how to add / remove / replace entries. Not the screens behind the entries (garage, shop, …) | static read done 2026-11-17, icon and caption pictures found |
+| Missions | `missions.md` | missions chat | Scenario missions apart from the shared fight code: picking and launching a mission (mission screen table `0x8019F7A8`, list builder `0x800942BC`, which routine sets the mission id), the missions engine FDAT 207, **per-mission code and maps = FDAT 0–99** (5 entries per mission, not MIS.T), MIS.T (mission screen data, briefings, mail), objectives, win/lose checks, timer, results and rewards, non-AC enemies and the enemy list, scripted sequences, mail triggers. The AC object, damage and weapons in flight stay with the battle chat | claimed 2026-11-17 |
 
-Not claimed yet (claim before starting): missions data (FDAT 207, apart from the +0x04 check above), save/memory card format,
-menus and UI flow (other than mode launch and the hub ring), sound/music, stage data.
+Not claimed yet (claim before starting): the save → RAM unpack (the copy table of the 'N' inline unpack in LOAD,
+see "Hub chat → launch chat"), menus and UI flow (other than mode launch and the hub ring), sound/music, stage data
+(FDAT 100–199 look like per-stage code + maps for another engine: code based near `0x80099xxx`).
+
+Already covered in code, not a mapping lane: **save / memory card file format.** The 8,192-byte scenario save block
+(checksum = sum of inverted bytes over +432 for 3,240 bytes, stored at +384, checked in LOAD by `0x80070F1C`), its garage,
+credits, names, owned parts, shop stock, arena flags and ranks, and the .mcd card image are read and written by
+`games/master-of-arena/moa_card.c` (cards ↔ saves, story saves, the launcher's MEMORY CARD manager) and `moa_arena_run.c`
+(`moa_run_make_save`). The field list is in the project doc `arena-run-design.md` ("Scenario save block"). Read those
+before mapping anything save-related. Not covered: how LOAD copies a save into RAM (the open item above).
 
 Already covered in code, not a mapping lane: **arena opponent rosters.** Arena numbers, opponent
 counts (`0x800D5A08`), starts (`0x800D5A14`), names (`0x800D5A20`), the per-arena entries in

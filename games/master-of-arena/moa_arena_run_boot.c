@@ -17,11 +17,11 @@
  * AC, names, P and parts itself, and in-game saves go to that card. The
  * player's own card is not in the machine.
  *
- * Since 2026-11-17 the default is the direct boot instead (see "Direct boot"
- * below): no title, no LOAD GAME, no card screens. The run's save goes
- * straight into RAM through the game's own unpack, the hub opens on Arena
- * and opens it, and the player is handed the Arena list. The menu presses
- * above stay as the fallback (and with PSX_MOA_RUN_DIRECT=0).
+ * A direct boot (see "Direct boot" below: no title, no LOAD GAME, no card
+ * screens; the save goes straight into RAM through the game's own unpack) is
+ * written but off: its first real run broke stage and AC drawing and hung on
+ * the way back to the hub. PSX_MOA_RUN_DIRECT=1 tries it; the menu presses
+ * above are the boot.
  *
  * If the hub does not come up in time the overlay is dropped and the
  * player is given the menus, so a wrong step can never leave a black screen.
@@ -227,7 +227,7 @@ enum { KIND_BUILDS = 0, KIND_NAMES, KIND_REWARDS, KIND_AI };
 #define RUN_HUB_TIMEOUT      (60u * 90u)  /* frames; fast forward makes this short */
 #define RUN_FADE_FRAMES      24u
 
-/* ---- Direct boot (default; PSX_MOA_RUN_DIRECT=0 brings back the menu presses)
+/* ---- Direct boot (off; PSX_MOA_RUN_DIRECT=1 tries it, see run_direct_wanted)
  *
  * Instead of the title, LOAD GAME and the card screens, the title-open hook
  * does what those screens end up doing, with the game's own routines
@@ -445,10 +445,16 @@ static void run_menu_entry(struct CPUState *cpu, uint32_t address)
     run_log("boot: menu reached, autopilot on");
 }
 
+/* Off by default: the first build where it actually ran (once the 'N' save
+ * check matched) left the game without stage backgrounds and AC models, 13
+ * lineup records unreadable (arena tables not set up yet) and a hang on the
+ * way back to the hub. Title / LOAD GAME set up more than the routines it
+ * replays; until that is traced, the menu presses are the boot.
+ * PSX_MOA_RUN_DIRECT=1 tries it. */
 static int run_direct_wanted(void)
 {
     const char *e = getenv("PSX_MOA_RUN_DIRECT");
-    return !(e && e[0] == '0');
+    return e && e[0] == '1';
 }
 
 /* The run's save as LOAD would read it: the session card's block 1, first

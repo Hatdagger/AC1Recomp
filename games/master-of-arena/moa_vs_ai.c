@@ -156,6 +156,7 @@ struct vs_ai_side {
     int      home_x, home_z;            /* middle of the two start points */
     uint8_t  area_full;                 /* area bits at the start (inside everything) */
     uint8_t  returning;                 /* steps left heading back to the middle */
+    uint8_t  lunge;                     /* steps left of a boost in to blade reach */
     uint32_t seen_missiles[8];          /* pool records already judged (bitset) */
 };
 static struct vs_ai_side vs_side[2];
@@ -452,6 +453,24 @@ static uint16_t vs_ai_think(unsigned side, uint32_t me, uint32_t foe)
             psx_mod_counter_add(side ? "moa.vsai.p2.jump" : "moa.vsai.p1.jump", 1);
         }
     }
+    /* Blade lunge: pilots who like the blade boost in from close by and
+     * swing once in reach (the swing itself is below). */
+    if (!s->lunge && has_blade && !busy && !airborne && p->blade >= 30u &&
+        dist < (uint32_t)AI_BLADE_REACH + 900u && dist > (uint32_t)AI_BLADE_REACH - 100u &&
+        aerr < 300 && energy > floor_e && vs_per_min(s, p->blade * 4u)) {
+        s->lunge = 30;
+        psx_mod_counter_add(side ? "moa.vsai.p2.lunge" : "moa.vsai.p1.lunge", 1);
+    }
+    if (s->lunge) {
+        s->lunge--;
+        if (dist < (uint32_t)AI_BLADE_REACH - 100u || aerr > 500 || busy) s->lunge = 0;
+        else {
+            move = m_fwd;
+            boost = !boost_locked && energy > red;
+            s->jump = 0;
+        }
+    }
+
     /* Heading home overrides the habits: move whichever way points home. */
     if (s->returning) {
         s->returning--;
@@ -516,7 +535,8 @@ static uint16_t vs_ai_think(unsigned side, uint32_t me, uint32_t foe)
     /* Blade: new press, facing, in reach, not already swinging. */
     if (has_blade && !busy && dist < AI_BLADE_REACH && aerr < 300 && energy > red &&
         !(s->last_word & m_blade) &&
-        (blade_only || vs_per_min(s, p->blade))) {
+        (blade_only || s->lunge || vs_per_min(s, p->blade))) {
+        s->lunge = 0;
         w |= m_blade;
         psx_mod_counter_add(side ? "moa.vsai.p2.blade" : "moa.vsai.p1.blade", 1);
     }
@@ -530,6 +550,7 @@ static uint16_t vs_ai_think(unsigned side, uint32_t me, uint32_t foe)
         psx_mod_write_byte(me + PB_DBG_FLAGS, (uint8_t)(s->area_full | (s->evade ? 8 : 0) |
             (s->jump ? 16 : 0) | (s->strafe_on ? 32 : 0) | (s->boosting ? 64 : 0) |
             (s->firing || s->burst ? 128 : 0)));
+        psx_mod_write_byte(me + PB_DBG_RETURN, (uint8_t)(s->returning | (s->lunge ? 0x80 : 0)));
     }
     s->last_word = w;
     return w;

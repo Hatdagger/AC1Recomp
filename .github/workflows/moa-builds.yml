@@ -298,11 +298,11 @@ jobs:
             --notes-file docs/moa-release-notes.md \
             --prerelease
 
-  # mapping-debug branch only: the debug-tools AppImage as a DRAFT release
+  # vs-ai-debug branch only: the debug-tools AppImage as a DRAFT release
   # (drafts are invisible to the launcher's update check and to the public).
   debug-draft:
     name: Debug build (draft)
-    if: github.ref == 'refs/heads/mapping-debug'
+    if: github.ref == 'refs/heads/vs-ai-debug'
     needs: [appimage]
     runs-on: ubuntu-latest
     permissions:
@@ -318,8 +318,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release delete mapping-debug-tools --repo "${GITHUB_REPOSITORY}" --yes 2>/dev/null || true
-          gh release create mapping-debug-tools out/*.AppImage \
+          gh release delete vs-ai-debug-tools --repo "${GITHUB_REPOSITORY}" --yes 2>/dev/null || true
+          gh release create vs-ai-debug-tools out/*.AppImage \
             --repo "${GITHUB_REPOSITORY}" --target "${GITHUB_SHA}" \
-            --title "Mapping debug build (not for players)" \
-            --notes "Debug-server Linux build from the mapping-debug branch." --draft
+            --title "VS AI debug build (not for players)" \
+            --notes "Debug-server Linux build from the vs-ai-debug branch (VS AI tests)." --draft

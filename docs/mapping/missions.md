@@ -332,10 +332,25 @@ work (2–6, 8, 10, 12, 13, 15–17):
 | #7 | none (see data below) |
 | #11 (wrong view) | `0x8002CC20`, `0x8004D078`, `0x80054F8C`, `0x80083ED0`, `0x8008475C` |
 
-So the converter (`moa_phantasma.c` fn map) is most likely missing or mis-mapping these. Mission
-#1 calls two of them straight away: its start hook (+0x04, `0x8009CFE8`) calls `0x80076880` to
-put placement record → object slot 1, and its every-frame hook calls `0x800886F8` on frames 0–20.
-A bad mapping there breaks the mission on its first frame (matches "black / hang").
+**Checked against the converter (2026-11-17):** the routine mapping is fine: every routine
+above is mapped to the MoA match listed below. The bugs are elsewhere (found by rebuilding the
+exact pack from the recipe, sha256 matches, and comparing it with Phantasma's code):
+
+1. **Missions 1, 9, 14 (start-up hang):** the start hook spawns placement record 4 into object
+   slot 1 with `addiu a1, s0, -11456` (record pointer = object pointer − 0x2CC0). The base
+   (object pool) was moved, the offset was not, so MoA reads a "record" at `0x801E4700`, gets a
+   junk type and jumps through a junk handler (the spin at `0x80098DA0`). Should be −0xB48.
+2. **16 of 17 missions:** a shared routine that walks objects 1–15 and calls their +0x5C with
+   message 8 (area hit `?`) still steps **368 bytes** (Phantasma's object size) instead of 376,
+   so from the second object it calls through the wrong field.
+3. **More moved-base offsets:** type table ↔ placement records (PP gap 0x580, MoA 0x160), object
+   pool ↔ type table (PP 0x3180, MoA 0xC60), and trigger zones read at Phantasma's address
+   `0x801D92B8` (MoA `0x801E4A40`) in #7, #12, #15.
+4. **#4:** three calls left at Phantasma addresses (`0x800875F8`, `0x80087870`, `0x80087A34`);
+   `0x80087A34` = MoA `0x80090658` (24/24); the other two have no clear MoA match yet.
+
+Fixes: branch `phantasma-mission-fixes`, 78 new `k_ppm_fixes` entries (one immediate or call
+target per word). Re-scanning the fixed pack finds none of these left. Not yet tested in game.
 
 MoA counterparts, found by matching instruction patterns (24 of 24 = same code, different
 addresses):

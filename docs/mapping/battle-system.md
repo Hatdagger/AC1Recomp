@@ -450,6 +450,18 @@ title screen: Start, Start, Down, Cross, Cross. Cross confirms; Square fires; **
 swings the blade; Cross boosts** (user-confirmed; earlier notes had Circle as boost);
 Triangle changes weapon; L1/R1 strafe; L2/R2 look; Left/Right turn.
 
+## Rogue Arena fight recorder (arena engine)
+
+`games/master-of-arena/moa_run_record.c` logs every Rogue Arena fight to
+`<run file>.rec.csv` (beside the memory card): per fight a header with both AC object
+pointers (player block +0x398), a layout check (max AP non-zero, AP ≤ max), raw dumps of
+both player blocks and AC objects, then a row every 3rd call of the arena controller
+sampler `0x8007F69C` (buttons; per AC: x, y, z, facing, state +0x45, movement +0x46, AP,
+energy, locked, refire +0x48) and a summary line (air %, boosting %, locked %, blade
+swings, shots, range, hits). Its first test log answers "AC object base in the arena
+engine" (expected 0x801D8C08 for P1 from the AP code). Later use: shaping a ghost's AI
+record from how the player fought.
+
 ## Open questions
 
 - Blade double hit: solved (no per-swing hit guard; 2 hits from ≤ 650 units, 1 at 700).

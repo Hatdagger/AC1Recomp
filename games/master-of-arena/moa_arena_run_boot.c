@@ -41,6 +41,7 @@
 #include "moa_arena_run.h"
 #include "moa_ac_view.h"
 #include "moa_screen.h"
+#include "moa_run_record.h"
 
 /* Shared with AI Battle (see moa_ai_battle.c for how each was found). */
 #define RUN_MENU_ENTRY       0x800A69C8u  /* menu module entry */
@@ -363,6 +364,7 @@ static void run_check_session(void)
     run_arena_at_builds = run_arena_at_ai = 0xFF;
     run_direct = run_direct_press = 0;
     run_prize_reset();
+    moa_rec_reset();
 }
 static const char *run_file_path(void) { return getenv("PSX_MOA_RUN_FILE"); }
 
@@ -1820,6 +1822,15 @@ static void run_sampler_entry(struct CPUState *cpu, uint32_t address)
         if (!won && !lost) run_result_seen = 0;   /* a new fight: its result is not booked yet */
         if (done && !won && lost) run_book_loss("in fight");
         if (done && won && !lost) (void)run_book_win(psx_mod_read_byte(RUN_FIGHT_OPPONENT), "in fight");
+        /* The fight recorder (moa_run_record.c): samples while it runs, the
+         * summary once the result is in. */
+        if (run_state_ok && !won && !lost)
+            moa_rec_sample(run_file_path(), run_state.run.attempt, run_state.run.wins,
+                           psx_mod_read_byte(RUN_FIGHT_OPPONENT));
+        else if (won || lost) {
+            const char *sum = moa_rec_end(won != 0);
+            if (sum) run_log("record: %s", sum);
+        }
     }
     const uint16_t b = psx_mod_read_half(RUN_PAD_BUFFER + 2u);
     if (!(b & RUN_PAD_SELECT)) {                  /* held (active low) */

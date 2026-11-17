@@ -16,6 +16,7 @@ Several chats map Master of Arena at the same time. To avoid double work:
 | Compiled stat block | `stat-block.md` | data chat | **The 324-byte block the menu builds at VS START (player block +0x250 … +0x393)**: every field, the compile routine `0x800A7BB4` that fills it, and how the engines read it | every byte named 2026-11-17 (compile, match start, options, camera, lock-on; test list settled from code) |
 | Part tables | `parts-tables.md` | data chat | Part tables, weapon details, options on the disc | complete 2026-11-17: weapon detail +0x04 = post-shot hold (read in every engine); only its base length needs a live check |
 | Mode launch | `mode-launch.md` | launch chat | Boot → menu → engine loop, the mode byte, resume flags, how Scenario (hub) and VS (menu → VS START → fight) start; goal: starting modes straight from the launcher | static read done 2026-11-17; repo gaps filled; runtime test next |
+| Boot and loads | `boot-loads.md` | boot chat | What is read from the disc, what goes into VRAM and what state is set at each step: power-on, every menu start, title, Scenario (Load Save / New Game) → hub, VS setup, VS START, arena launch, the fight engines' loads; what a direct start must replay | static read done 2026-11-17 (disc 1); open items in its §10 |
 | GameShark RAM list | `ram-map-gameshark.md` | shared, append-only | Raw code-derived addresses | reference |
 | Missions: weapon detail +0x04 | `parts-tables.md` | data chat | Narrow check only: does the missions engine (FDAT 207) read weapon detail +0x04? Not the rest of the missions lane | done 2026-11-17: yes, and so do VS, arena and replay (the earlier "no reader" was wrong); see `parts-tables.md` |
 | Menus: scenario hub | `menus-hub.md` | hub chat | The hub ring (FDAT 206 from `0x800552C0`): its 8 entries, tables, input, models and labels, and how to add / remove / replace entries. Not the screens behind the entries (garage, shop, …) | static read done 2026-11-17, icon and caption pictures found |
@@ -157,6 +158,26 @@ Hub chat → launch chat:
   Effect: the Rogue Arena direct boot (branch `rogue-direct`) used the import checksum/unpack, so
   on a real run card it always falls back to the old menu presses (safe, no speed-up). Fix =
   replay the 'N' inline copies in C (needs that unpack's copy table; save-format lane).
+
+Boot chat → launch chat (details in `boot-loads.md`):
+- **0x80044121 = `0x80058B04()`**, run at every menu start: which disc is in the drive (reads
+  `\GG\COM\CD.DAT`, magic 0xBA; 0 = disc 1, 1 = disc 2, 250+ = drive errors). Disc 1 →
+  NEW/LOAD menu. We only use disc 1.
+- `mode-launch.md` §4: LOAD's callback `0x800AC93C` with result byte +0xA0 = 78 does not "go back";
+  it shows two boxes and continues to the NEW GAME setup `0x800ACA0C`. Otherwise `0x800AC9E8`
+  opens the hub and deletes the card-screen task.
+- LOAD only unpacks. The card screen's state `0x8005CE68` does the rest after a good LOAD: owned
+  parts → 0x8003EB20, `0x80090FD8`, `0x80083130`, `0x80067244(1)`, **`0x800822B0` (queue the AC's
+  part textures)**, wait for the disc, back-weapon VRAM moves. Any direct Load Save needs it.
+- Fight engines never read `*_T` texture archives: the AC textures must already be in VRAM
+  from the menu (`boot-loads.md` rule 2).
+
+Boot chat → Rogue Arena work:
+- **Why the direct boot shows no AC (and missing graphics) until the second arena fight:** the
+  direct boot replays LOAD but skips the card screen's finish (above), so `0x800822B0` never
+  queues the AC's textures. The arena's return path (`0x800A70C0`) queues them after fight 1.
+  A fix that replays the finish is on branch **`rogue-direct-hub-gfx`** (`moa_arena_run_boot.c`,
+  one commit, not built or merged). Still to check: whether the hub background has the same cause.
 
 Launch chat → data chat:
 - Stage (compiled +0x05 = player block +0x255) at VS START = byte `0x800D5800[map − 1]`,

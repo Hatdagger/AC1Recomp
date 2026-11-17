@@ -15,10 +15,11 @@ Several chats map Master of Arena at the same time. To avoid double work:
 | Battle system | `battle-system.md` | battle chat | Everything else that runs during a fight: player block (outside the stat block), AC object, damage, weapons in flight, movement, AI per frame, match start/end | in progress |
 | Compiled stat block | `stat-block.md` | data chat | **The 324-byte block the menu builds at VS START (player block +0x250 … +0x393)**: every field, the compile routine `0x800A7BB4` that fills it, and how the engines read it | compile routine, match start and slot option maths read 2026-11-17 |
 | Part tables | `parts-tables.md` | data chat | Part tables, weapon details, options on the disc | ~90%, paused |
+| Mode launch | `mode-launch.md` | launch chat | Boot → menu → engine loop, the mode byte, resume flags, how Scenario (hub) and VS (menu → VS START → fight) start; goal: starting modes straight from the launcher | claimed 2026-11-17 |
 | GameShark RAM list | `ram-map-gameshark.md` | shared, append-only | Raw code-derived addresses | reference |
 
 Not claimed yet (claim before starting): arena opponent rosters, missions data (FDAT 207), save/memory card format,
-menus and UI flow, sound/music, stage data.
+menus and UI flow (other than mode launch), sound/music, stage data.
 
 ## Handed over
 

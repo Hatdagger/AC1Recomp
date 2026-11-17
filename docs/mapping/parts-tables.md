@@ -9,9 +9,10 @@ Disc: USA disc 1 (SLUS-01030) **v1.0**. Everything here is static data in the **
 (FDAT entry 206, loaded at `0x80050DD8`), except the shot-speed tables (VS engine, FDAT 209).
 File offset in entry 206 = address − `0x80050DD8`.
 
-Status: ~99%. Every table is located, and every byte has been checked against the real disc
+Status: complete. Every table is located, and every byte has been checked against the real disc
 (2026-11-17, USA disc 1, MD5 `4d5774c4…`). Every field is now named from the code that reads
-it; one byte (weapon detail +0x04) has no reader in fights or menus (see "Still unknown").
+it. The last one, weapon detail +0x04, turned out to be the post-shot hold (2026-11-17). Only one
+number is still open: how long the base hold is (needs a live check).
 
 Re-run the check yourself: `python3 tools/moa_parts_dump.py "Disc 1.bin" [legs back …]`, or
 `… weapons` for the weapon detail records.
@@ -111,7 +112,7 @@ Hand `0x800D1F64` (by hand ID), back `0x800D21D4` (by back ID), weapon arms `0x8
 | +0x01 | u8 | Model ID (picks shot-speed / missile table entry) |
 | +0x02 | u8 | Kind-dependent, lands in slot +9. **Guns**: firing pattern, bits 0–1 = shots per trigger (0 → 1, 1 → 2, 2 → 4, 3 → one at a time, alternating sides when bits 4–5 are set), bit 2 = always take the fixed-direction path in the fire routine, ignoring the lock (set only on the dispensers WM-X5-AA / WM-X10), bit 3 = weapon-arm aiming (set on every weapon arm). **Cannons**: base recoil, scaled by stability and weight. **Missiles**: ignored (slot +9 comes from the lock time). The whole byte also sets player block +0x214 for the selected weapon |
 | +0x03 | u8 | **Firing animation ID** (slot +10): written to AC +0x84 when the weapon fires (guns `0x80080FE4`, missiles `0x800818D0`, cannons `0x80081BC4`); the cannon code compares it with the playing animation's ID. Right back slot gets +1. 0 hand guns, 1/2 missiles, 3/4 cannons, 5/6 rockets, 7 dual weapon arms; 255 = none |
-| +0x04 | u8 | Copied to slot +11 (right back slot +1 unless 255); **no reader found** in VS, arena, replay, menus or the main executable. 2/3 on radars and two-slot units, 1/2 on WC-GN230 and WC-IR24, 255 elsewhere; looks like an unused second animation ID |
+| +0x04 | u8 | **Post-shot hold** (slot +11; right back slot +1 unless 255). After a **gun** or **cannon** shot, the fire routine copies it to **AC +0x6D** and zeroes the AC's animation frame counter +0x7C (VS gun `0x80081518`, cannon `0x800822A8`). While AC +0x6D ≠ 255, no gun or cannon can fire (`0x80081020`, `0x80081D30`) and the cannon cooldown AC +0x48 stops counting down (`0x800823EC`). Each frame the AC update (`0x800830E4` → `0x80080DB8` → `0x80054DE4`) checks it and sets it back to 255 once +0x7C reaches a base value from the AC's animation data plus this byte (the base can't be read statically `?`). **255 = no hold.** The missile fire routine never copies it, and radars never fire, so it only matters for WG-RF35 and WG-PB26 (0), WC-GN230 and WC-IR24 (1, 2 on the right) and WX-ED2 and WX-C/4 (2, 3 on the right). Same code in all four engines: missions `0x80082DC0` / `0x80083AEC`, also in arena (210) and VS replay (211). Values: see "Weapon detail +0x04 on the disc" |
 | +0x05 | u8 | **Sight flags** (slot +12), read by the HUD sight routine `0x800576E0`: 0 = no sight at all; bit 0 = draw the lock box; bit 1 = draw an aiming guide along the shot's path; bit 2 = fire straight ahead with no aiming (fire `0x80080F8C`, HUD `0x80066BEC`). 1 most weapons (box), 3 energy cannons (box + guide), 6 rockets (guide, straight), 0 dispensers / radars. SP-M/AUTO adds bit 0x80 on missiles |
 | +0x06 | u8 | Lock class (FCS group; 4 = no lock) |
 | +0x07 | u8 | Type name index |
@@ -137,14 +138,30 @@ Shot speeds (VS engine): guns by model ID range — `0x80091198` (<0x14, 28 B, s
 `0x800928E4` (0x5A+, 22 B), speed at +0 in the last four. Missiles `0x80093114` (40 B: +0xC
 homing push, +0xE top speed). Cannons `0x80091310` (6 B, read from code, not traced).
 
+## Weapon detail +0x04 on the disc
+
+Read from the disc 2026-11-17 (`moa_parts_dump.py … weapons`). An earlier note said "255
+elsewhere" and missed the three zeros.
+
+| Value | Weapons | Used? |
+|---|---|---|
+| 0 | WG-RF35, WG-PB26 | Yes (guns): a hold after every shot |
+| 0 | NO WEAPON | No: zero ammo |
+| 1 | WC-GN230, WC-IR24 (2 in the right back slot) | Yes (cannons) |
+| 2 | WX-ED2, WX-C/4 (3 on the right) | Yes (guns) |
+| 2 | WX-S800/2, WX-S800-GF, XCS-9900 (missiles) | No: the missile routine never copies it |
+| 2 | Radars RXA-01WE … RZ-Fw2, P77-ST | No: zero ammo, so they never fire |
+| 255 | Every other weapon, every weapon arm | No hold |
+
+So the starting rifle (WG-RF35) has a short hold after each shot that the other rifles don't.
+Its real fire rate is set by whichever ends later: the hold or the refire cooldown (AC +0x48, from
+detail +0x11). How long the hold is needs a live check: watch AC +0x6D and +0x7C after one
+RF35 shot.
+
 ## Still unknown
 
-Only one byte is left without a reader (checked 2026-11-17: VS, arena, VS replay, menus and the
-main executable):
-
-| Table | Bytes | What the disc shows | Notes |
-|---|---|---|---|
-| Weapon detail | +0x04 | 2 radars and two-slot units, 1 WC-GN230 / WC-IR24, 255 elsewhere | Compiled into slot +11 with the same left/right +1 as the firing animation ID (+0x03), so probably a second animation ID that the fight code never uses |
+Every byte of every table now has a reader or is confirmed padding (2026-11-17: VS, arena, VS
+replay, missions, menus and the main executable).
 
 Small leftovers inside named fields: blade +0x2E bits 0x07 and radar type bit 0x10 have no
 reader either. Everything is kept in `raw` by acr-import.

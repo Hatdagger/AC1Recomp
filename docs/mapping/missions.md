@@ -126,10 +126,12 @@ distinct engine routines per mission; most used: `0x8007C290`, `0x80015138`, `0x
 | +0x14 | `0x80055AF4` | after the map blocks are loaded (map setup) |
 | +0x18, +0x1C | not found yet | often the same stub (`jr ra`) |
 | +0x20 | — | 0 |
-| +0x24 … | `0x8007ED44`: `*(module + 0x20 + 4 × obj+0x0E)` | **handler per object type** (types 1, 2, …), list ends with 0 |
+| +0x24 … +0x5C | `0x8007ED44`: `*(module + 0x20 + 4 × obj+0x0E)` | **handler per object type**, types 1 … 15 (unused = 0) |
+| +0x60 … | `0x80077C94`: `*(module + 0x60 + 4 × section+0x3D)` | **handler per map-section type** (doors, breakable buildings…), see "Map sections" below |
 
-Mission 0 has 3 object-type handlers, mission 1 (FDAT 5) 6, mission 19 (FDAT 95) 1.
-These are likely the mission's own objects (MTs, tanks, targets…): next thing to read.
+(Corrected 2026-11-17: the type list is a fixed 15 slots, and a second table starts at +0x60.)
+Mission 0 has 3 object-type handlers and 2 section handlers; mission 1 (FDAT 5) 6 and 4;
+mission 19 (FDAT 95) 1 and 2.
 
 ## How a mission ends
 
@@ -152,23 +154,79 @@ engine (garage test? `?`).
 
 ## Map file (FDAT slot × 5 + 4)
 
-Header (84 bytes): `80, 19`, then 19 × `4`. Then 19 blocks, each `u32 size` + data. The engine
-loads them in order (`0x8005589C` …):
+**Corrected 2026-11-17.** The file is just a run of `u32 size` + data blocks, and the first one is
+the 80-byte "header" (`19`, then 19 × `4`): the loader (`0x8005589C` …) treats it as a block too.
+The old table mixed the two numberings. Below, "file block" counts the blocks *after* the header
+(so file block 0 = the 171,868-byte one in mission 0):
 
-| Block | Handled by | What (mission 0 size) |
+| File block | Handled by | What (mission 0 size) |
 |---|---|---|
-| 0–3 | `0x8005999C(72 / 260 / 128 / 160, data)` | graphics uploads `?` (171,868 / 170,944 / 12 / 26,372) |
-| 4 | `0x8005D9EC` | ? (592) |
-| 5 | `0x800529F0` | ? (52,988) |
-| 6 | copied to `0x801CFAB0` | **map sections** (64 bytes each + link lists) (46,540) |
-| 7 | `0x80073694` | ? (46,848) |
-| 8 | `0x80077A00` | ? (52; trigger zones? `?`) |
-| 9 | `0x80078F58` | ? (16,384, same size in every mission) |
-| 10 | `0x80078DE8` | ? (14,336, same in every mission) |
-| 11 | `0x8005CB58` | ? (1,712) |
-| **12** | `0x800795A8` | **object types**: u16 count, then per type `u32 size` + 36 bytes of parameters (→ type entry +4) + model data (appended to a heap) |
-| **13** | `0x80079774` | **placement records**: 64 × 40 bytes (→ record +4 … +0x2B) |
-| 14–18 | loop from `0x80055A08` | more of the same pairs (big + 3,616 bytes): later stages of the mission `?` |
+| header | `0x8005999C(72, data)` | 80 bytes: 19, 19 × 4 `?` |
+| 0 / 1 / 2 | `0x8005999C(260 / 128 / 160, data)` | graphics uploads `?` (171,868 / 170,944 / 12) |
+| 3 | `0x8005D9EC` | ? (26,372) |
+| 4 | pointer kept at `0x801F8E90` | ? (592) |
+| 5 | `0x800529F0` (result → M+0x08) | ? (52,988) |
+| 6 | copied to `0x801BFAB0`, then `0x80073694` | 1,024 offset pairs turned into pointers, then their data (46,540): a 32 × 32 grid of lists (collision? `?`) |
+| **7** | `0x80077A00(data, size)` | **map sections**: 512 × 52-byte records, then a data heap (46,848) — see below |
+| 8 | `0x80078F58` | ? (52; trigger zones? `?`) |
+| 9 | `0x80078DE8` | ? (16,384, same size in every mission) |
+| 10 | `0x8005CB58` | ? (14,336, same in every mission) |
+| **11** | `0x800795A8` | **object types**: u16 count (3 in mission 0), then per type `u32 size` + 36 bytes of parameters (→ type entry +4) + model data (appended to a heap) |
+| **12** | `0x80079774` | **placement records**: 64 × 40 bytes read (→ record +4 … +0x2B); block is 10,240 bytes |
+| 13–18 | loop from `0x80055A08` | **three sound banks**: VAB header (3,616 bytes, starts `pBAV`) + sample data, × 3 |
+
+## Map sections (file block 7, 2026-11-17)
+
+`0x80077A00` copies the 512 records (52 bytes each) to **`0x801CFAB0` with a 64-byte stride**
+(section n = `0x801CFAB0 + 64n`) and the data after them to a heap at `0x801D7AB0`. A section whose
++0x06 or +0x1E is −1 is unused (mission 0 uses 0–319). While loading it fills in:
+
+| Offset | Meaning |
+|---|---|
+| +0x00 … +0x27 | from the file (bounding box at about +0x18 … +0x24; neighbour counts +0x0E / +0x26) |
+| +0x28 | pointer to the section's link list (in the heap) |
+| +0x2C | **controller** (0 at load; set by the section handler) |
+| +0x30, +0x34 | flags / value from the file (+0x30 bit 0x100 = solid? `?` doors clear it while open) |
+| +0x38 | pointer to the section's **parameter list** (file byte +0x30 = number of u16s) |
+| +0x3C | byte from the file |
+| +0x3D | **section handler number** (file byte +0x31; 255 = none) |
+
+After loading, for every used section with a handler, the engine calls the mission module's
+**section handler** (module +0x60 + 4 × handler) with the section pointer. The handler allocates a
+**controller** with `0x80077D28(extra bytes)` and stores it at section +0x2C:
+
+| Controller offset | Meaning |
+|---|---|
+| +0x00 | per-frame update (section) |
+| +0x04 | **message handler** (section, message, …) |
+| +0x08 … +0x0C | movement per frame, applied by `0x80077D8C` (moves the section's box) |
+| +0x10 | state (doors: 0 closed, 1 opening, …) |
+| +0x11, +0x12 | step counter / number of steps |
+
+### Messages (2026-11-17)
+
+`0x80090C24(target, message, …)` sends a message: if the target is in the object pool it calls the
+object's **+0x5C**, if it is a map section it calls the section controller's **+0x04**. Codes seen:
+
+| Message | Sent by | Meaning |
+|---|---|---|
+| 0 | `0x8007F5E8` every frame to the player AC; AC setup | "think" / per-frame control (player AC: reads the pad) |
+| 5, 7 | `0x8007D128`, `0x8007A7FC` / `0x8007AAEC` | ? |
+| **0x8000** | `0x80089774` (weapon hit on map geometry) | **section was shot** (hit info passed along) |
+| **0x8100** | `0x80090EDC` | **player touches / uses** the thing in front of it |
+| **0x8200 + n** | event dispatcher `0x80090B90`, script reader `0x8009276C`, mission code | **command n** to a section (mission doors: 0 = open, 1 = open + unlock, 2 = special close state) |
+
+### Mission 0's two section types
+
+- **Handler 0 (`0x800A2600`) = sliding door** (16 sections). Parameters: byte +6 = "locked"
+  message number (0 = unlocked), +8 / +9 = open / close sounds, +0x0A = stays open, **+0x0B = 1:
+  automatic** (opens when the player AC is close, `0x800A2130` box test against `0x801E7250`),
+  otherwise it opens on message 0x8100. Opening clears section flag 0x100.
+- **Handler 1 (`0x800A2A14`) = breakable structure** (section 285). Message 0x8000 subtracts the
+  hit's damage from parameter u16 +0 (HP, 3,000 here); at 0 it explodes and `0x800A2708` either
+  swaps in a wrecked version (parameter +0x10) or removes the section (`0x80072F18`, which leaves
+  +0x06 = −1). Parameter +0x12 is added to one of two counters at `0x801F8E70` +0x24 / +0x28
+  (score / damage tally `?`).
 
 ## Mission objects (2026-11-17, static)
 
@@ -179,10 +237,10 @@ data…). `0x8007EA24` finds a free slot (+0 = 0); if the placement has flag 0x8
 over a slot whose placement doesn't. `0x8007EACC(rec)` finds the object spawned from a record.
 
 **Type table:** 44-byte entries at `0x801E65E8 + 44 × type` (type 1 = `0x801E6614`), filled
-from map block 12. Entry +0 / +2 / +4 → object +0x72 & +0x28 / +0x74 & +0x2A / +0x1E; entry
+from file block 11. Entry +0 / +2 / +4 → object +0x72 & +0x28 / +0x74 & +0x2A / +0x1E; entry
 +0x28 = animation data pointer → object +0x88.
 
-**Placement records:** 64 × 44 bytes at `0x801E6748`, filled from map block 13. Records 4–63
+**Placement records:** 64 × 44 bytes at `0x801E6748`, filled from file block 12. Records 4–63
 are checked for spawning, 4 per frame (`0x8007F20C` → `0x8007EEE0`).
 
 | Offset | Meaning |
@@ -201,7 +259,7 @@ are checked for spawning, 4 per frame (`0x8007F20C` → `0x8007EEE0`).
 
 **Active sections** (corrected 2026-11-17: not event flags). Each frame `0x8007F20C` clears the
 512-bit set at `0x801EA9E8` (`0x8007448C`) and sets (`0x800744A8`) the bit of the map section the
-player is in plus its linked sections. Sections = 64-byte records from map block 6, copied to
+player is in plus its linked sections. Sections = 64-byte records from file block 7 (see "Map sections"), at
 `0x801CFAB0` (section number = (ptr − `0x801CFAB0`) ÷ 64; +0x26 = link count, +0x28 = link list).
 A second section (pointer `0x801BB58C`) is added when `0x801EAA30` bit 0 is set (camera? `?`).
 The same set is also read at `0x800798D4`, `0x80079C2C` and `0x8007D7CC` (drawing / culling `?`).
@@ -215,17 +273,107 @@ record's map section is active (player in it or next to it), **or** (bit 0) if t
 So a mission = its object types (models + parameters), up to 60 placements that appear when the
 player gets near their map section or walks into a box, and its own code for each type.
 
-**Type handlers set the object's callbacks** at +0x58, +0x5C, +0x60, +0x64 (+0x64 = hit
-callback, per `battle-system.md`), plus +0x36 and +0x16C. Mission 0: type 1 (`0x800A1680`) sets
-+0x60 / +0x64 only (hittable, no own movement `?`); type 2 (`0x800A1EA8`) sets all four (the
-enemy `?`); type 3 (`0x800A1F50`) sets none (scenery `?`).
+**Type handlers set the object's callbacks** at +0x58, +0x5C, +0x60, +0x64, plus +0x36 and
++0x16C. Mission 0: type 1 (`0x800A1680`) sets +0x60 / +0x64 only (hittable, no own movement `?`);
+type 2 (`0x800A1EA8`) sets all four (the enemy `?`); type 3 (`0x800A1F50`) sets none (scenery `?`).
+
+**Object callbacks** (2026-11-17). The per-object update `0x8007E6A8(obj)` (from `0x8007F678`)
+stores the current object at `0x801EA9CC` and runs, in order:
+
+| Slot | Called | Meaning |
+|---|---|---|
+| +0x54 | first, no arguments | **movement**; afterwards the object's map section (+0x16) is recomputed from its position (`0x8007438C`) |
+| +0x60 | next, (obj) | **per-frame logic** |
+| +0x5C | (obj, message, …) via `0x80090C24` | **message handler** (see "Messages") |
+| +0x64 | (obj, hit info, `0x8003EA48`, obj+8, damage) | **hit / damage** (as `battle-system.md` says) |
+| +0x58 | (obj, state) from AC setup (state = +0x4A) and the script reader (state 0) | **set state / animation** `?` |
+
+Also in that update: while +0x3A > 0 the object gives off an effect each frame (smoke `?`); while
++0x3C > 0 it takes +0x3E damage per frame (AP +0x168, floored at 0) and its +0x64 is called with
+damage type 23 (burning `?`).
+
+The player AC's callbacks are set by `0x80086CC0`: +0x58 `0x80084F98`, +0x5C `0x80086840`
+(message 0 = read the pad), +0x60 `0x80086CA0`, +0x64 `0x80083C68`.
+
+## Mission 0 (Eliminate Fugitive): how it is won (2026-11-17, static)
+
+The every-frame hook (`0x800A2E78`) does nothing once M+0x0C has an end bit (0x381) or the
+player's AP is 0. Otherwise:
+- A frame counter at `0x800A87F8` plays opening messages (at frame 10 and 200).
+- **Win:** when the **automatic door in section 290 starts opening** (its controller state = 1,
+  i.e. the player AC walked up to it), the hook clears bit 7 of player block bytes +0x2E4 /
+  +0x322 / +0x360, runs `0x80093844(0x1300, …)`, spawns placement record 5 (`0x801E6824`), runs
+  `0x80093844(0x301, …)`, shows message 153 and ends with **0x80** (complete).
+- Separately it shows message 119 once, the first time a check involving section 285 (the
+  breakable structure) passes `?`; if section 285 is already gone it skips the message.
+
+Nothing in the hook counts kills, so in mission 0 the objective is "reach door 290" as far as the
+code is concerned (the fugitive may be what blocks the way `?`). Other missions will differ: each
+has its own hook.
+
+## Broken Phantasma missions: what sets them apart (2026-11-17, static, PP USA disc)
+
+Mission #k = Phantasma FDAT 5(k−1) (code, base `0x80097A38`) and 5(k−1)+4 (map). PP's missions
+engine is **PP FDAT 202, loaded at `0x800490D0`** (the only overlay that calls `0x80097A38`).
+
+**Ruled out:** PP modules use the same table layout as MoA (hooks, 15 type slots, section
+handlers from +0x60); every section handler number and placement type in all 17 PP maps exists
+in its module; maps have the same 19 blocks (no header block); every PP code file fits MoA's
+module space (MoA engine data starts at `0x800AE5D0`, so the limit is 55,296 bytes = PP #7's
+size exactly, same as MoA mission 6).
+
+**The difference:** comparing the engine routines each PP mission calls against the twelve that
+work (2–6, 8, 10, 12, 13, 15–17):
+
+| Mission | PP engine routines no working mission calls |
+|---|---|
+| #1, #9, #14 | `0x8004B80C`, `0x8006B2BC`, `0x80072D94`, `0x80076880`, `0x800886F8` (the same five) |
+| #9 also | `0x80015344`, `0x80015968` (exe), `0x80073724` |
+| #7 | none (see data below) |
+| #11 (wrong view) | `0x8002CC20`, `0x8004D078`, `0x80054F8C`, `0x80083ED0`, `0x8008475C` |
+
+So the converter (`moa_phantasma.c` fn map) is most likely missing or mis-mapping these. Mission
+#1 calls two of them straight away: its start hook (+0x04, `0x8009CFE8`) calls `0x80076880` to
+put placement record → object slot 1, and its every-frame hook calls `0x800886F8` on frames 0–20.
+A bad mapping there breaks the mission on its first frame (matches "black / hang").
+
+MoA counterparts, found by matching instruction patterns (24 of 24 = same code, different
+addresses):
+
+| PP routine | What it is | MoA match |
+|---|---|---|
+| `0x80076880` | copy a placement record into an object (PP objects are 368 bytes, pool `0x801E2DE0`) | `0x8007EB00` (same code, MoA's 376-byte objects) |
+| `0x800886F8` | screen fade-in, frames 0–20 | `0x80090FF4` (24/24) |
+| `0x80072D94` | ? (object routine) | `0x8007ABF0` (24/24) |
+| `0x8006B2BC` | ? (searches map sections) | `0x8007302C` (24/24; runner-up `0x80077940` 23/24) |
+| `0x8004B80C` | play sound effect (id, ?, volume L, volume R, …) | `0x80053320` `?` (same arguments; MoA adds a play-once-per-frame check) |
+| `0x80015344` / `0x80015968` | exe routines | `0x80014D08` / `0x8001532C` (24/24) |
+| `0x80073724` | small object setter | one of `0x8007B5D0` / `…60C` / `…648` / `…684` (four look identical; check which field each sets) |
+| `0x8002CC20` | exe | near `0x8002C0F4` (17/24, weak) |
+| `0x8004D078` | ? | `0x80054BCC` (24/24) |
+| `0x80054F8C` | ? | `0x8005CBD8` (24/24) |
+| `0x80083ED0` | ? | `0x8008C5C8` (14/24, weak) |
+| `0x8008475C` | ? | `0x8008CD84` (24/24) |
+
+PP data addresses (lui-based) used only by the broken missions; each needs a data-map entry:
+- #1, #9, #14 share `0x801A0020`, `0x801A7FAC`, `0x801DD340`, `0x801E0008`, `0x801E000C`,
+  `0x801E3190`, `0x801E31B4`, `0x801E31C0`, `0x801E6888` (+ #1: `0x801BE2E8`, `0x801E091C`,
+  `0x801E0948`; #9: `0x8008F060`, `0x801A0000`, `0x801E2DEC`; #14: `0x801E00DC`).
+- #7: `0x8003BCDC`, `0x801BD9A8`, `0x801BD9E0`, `0x801DFA80`, `0x801E002C`, `0x801E04A0`,
+  `0x801E0580`, `0x801E2C00`, `0x801E2F40` (= player object +0x160 in PP's layout).
+- #11: `0x801E0630`.
+
+PP layout for those maps: type table `0x801DFC60` (44-byte entries, MoA `0x801E65E8`), object pool
+`0x801E2DE0` (368-byte objects, MoA `0x801E7248`, 376 bytes).
+
+Next: compare this list with the converter's function and data maps in the repo (needs GitHub).
 
 ## Open
 - What `0x8003EA29` (from T+1160) does in the engine; what T+8 counts.
 - Mission 0's three type handlers (`0x800A1680`, `0x800A1EA8`, `0x800A1F50`): what they set up.
-- Callback slots +0x58 / +0x5C / +0x60: which is per-frame update, which is death, etc.
-- How mission code decides "objective done" (counts kills? checks object AP?) before ending with 0x80.
-- Map blocks 0–11 and 14–18; the 36-byte type parameters.
+- Messages 5 and 7; what `0x80093844(0x1300 / 0x301)` runs (cutscene / script `?`).
+- Other missions' win checks (kill counts? object AP?): read each mission's +0x00 hook.
+- File blocks 0–6, 8–10; the 36-byte type parameters; the 32 × 32 grid in block 6.
 - Hooks +0x0C, +0x18, +0x1C; the event numbers passed to +0x08.
 - Mission number 40: which menu screen uses it.
 - Layout of the per-mission code module: entry points / table at its start.

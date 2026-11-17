@@ -150,9 +150,69 @@ Mission number **40** is a special case in the engine (message 155 vs 156 at the
 menu writes 40 at `0x8007DBA0` before compiling the AC, so it's a non-mission use of the missions
 engine (garage test? `?`).
 
+## Map file (FDAT slot × 5 + 4)
+
+Header (84 bytes): `80, 19`, then 19 × `4`. Then 19 blocks, each `u32 size` + data. The engine
+loads them in order (`0x8005589C` …):
+
+| Block | Handled by | What (mission 0 size) |
+|---|---|---|
+| 0–3 | `0x8005999C(72 / 260 / 128 / 160, data)` | graphics uploads `?` (171,868 / 170,944 / 12 / 26,372) |
+| 4 | `0x8005D9EC` | ? (592) |
+| 5 | `0x800529F0` | ? (52,988) |
+| 6 | copied to `0x801CFAB0` | ? (46,540) |
+| 7 | `0x80073694` | ? (46,848) |
+| 8 | `0x80077A00` | ? (52; trigger zones? `?`) |
+| 9 | `0x80078F58` | ? (16,384, same size in every mission) |
+| 10 | `0x80078DE8` | ? (14,336, same in every mission) |
+| 11 | `0x8005CB58` | ? (1,712) |
+| **12** | `0x800795A8` | **object types**: u16 count, then per type `u32 size` + 36 bytes of parameters (→ type entry +4) + model data (appended to a heap) |
+| **13** | `0x80079774` | **placement records**: 64 × 40 bytes (→ record +4 … +0x2B) |
+| 14–18 | loop from `0x80055A08` | more of the same pairs (big + 3,616 bytes): later stages of the mission `?` |
+
+## Mission objects (2026-11-17, static)
+
+**Object pool:** 16 objects × 376 bytes from `0x801E7248`. **Slot 0 = the player AC** (AP at
++0x168 = `0x801E73B0`, as the battle chat noted). Slots 1–15 (from `0x801E73C0`) = mission
+objects; same layout as the AC object where they overlap (+0x168 AP, +0x16C, +0x6D, +0x88 anim
+data…). `0x8007EA24` finds a free slot (+0 = 0); if the placement has flag 0x8000 it may take
+over a slot whose placement doesn't. `0x8007EACC(rec)` finds the object spawned from a record.
+
+**Type table:** 44-byte entries at `0x801E65E8 + 44 × type` (type 1 = `0x801E6614`), filled
+from map block 12. Entry +0 / +2 / +4 → object +0x72 & +0x28 / +0x74 & +0x2A / +0x1E; entry
++0x28 = animation data pointer → object +0x88.
+
+**Placement records:** 64 × 44 bytes at `0x801E6748`, filled from map block 13. Records 4–63
+are checked for spawning, 4 per frame (`0x8007F20C` → `0x8007EEE0`).
+
+| Offset | Meaning |
+|---|---|
+| +0x00 u8 | 1 = spawned (object exists) |
+| +0x01 u8 | object slot |
+| +0x02 u16 | copy of +0x1A at load |
+| +0x04, +0x06, +0x08 | → object +0x08, +0x0A (−1), +0x0C |
+| +0x0A s16 | **object type** (−1 = unused) → object +0x0E; picks the mission's handler and the type entry |
+| +0x0C … +0x13 | → object +0x10 … +0x17 (position? `?`) |
+| +0x12 u16 | **event flag number** (bit in the flag set at `0x801EA9E8`) |
+| +0x14 u16 | flags: bit 0 = spawn by zone, 0x40 = disabled, 0x8000 = priority, bit 5 → object +0x32 |
+| +0x16 u16 | **trigger zone** number (52-byte zones at `0x801E49D8`) |
+| +0x1A u16 | → object +0x168 (AP), +0x16A, +0x16C |
+| +0x22 … +0x2B | → object +0x104 … +0x10D |
+
+**Spawn rule** (`0x8007EEE0`): skip if type = −1, already spawned or disabled. Spawn if the
+record's event flag is set, **or** (bit 0) if the player is inside its trigger zone: zone
++0/+2/+4 = centre x / y / z, signed bytes +0x22 … +0x27 × 256 = box limits. Spawning
+(`0x8007ECEC`) takes a pool slot, copies the record in (`0x8007EB00`), then calls the mission's
+**handler for that type** (module +0x20 + 4 × type), which sets the object up.
+
+So a mission = its object types (models + parameters), up to 60 placements that appear on event
+flags or when the player walks into a box, and its own code for each type.
+
 ## Open
 - What `0x8003EA29` (from T+1160) does in the engine; what T+8 counts.
-- The object-type handlers (+0x24 …) and the object record (+0x0E = type): the mission's enemies.
+- Mission 0's three type handlers (`0x800A1680`, `0x800A1EA8`, `0x800A1F50`): what they set up.
+- Who sets the event flags (`0x801EA9E8`): mission code, script reader, kills?
+- Map blocks 0–11 and 14–18; the 36-byte type parameters.
 - Hooks +0x0C, +0x18, +0x1C; the event numbers passed to +0x08.
 - Mission number 40: which menu screen uses it.
 - Layout of the per-mission code module: entry points / table at its start.

@@ -49,6 +49,10 @@ From battle chat to data chat:
   measured in VS it is **`0x8008907C`** (pool record +0x18 while a missile flies). AC +0x118
   (interceptor burst) confirmed counting down in the snapshots.
 
+- Missile **launcher table `0x800912B0`** (VS, 8 bytes per model ID = slot +1): flight kind, ignition delay,
+  missiles per volley from each side, spread. Model IDs → part names would make it readable
+  (details in `battle-system.md`, "Missiles").
+
 Battle chat → data chat: if you find a write into player block +0x250 … +0x393 (the stat
 block), note it here instead of mapping it.
 

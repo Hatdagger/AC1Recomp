@@ -70,7 +70,8 @@ with the same layout shifted (+0x64 save data, +0x60 battle data).
 2. **Damage path** — what lowers AP: hit test → damage formula (weapon attack vs shell/energy
    defence) → AP write. Ties the part tables' defence numbers to combat.
 3. **Weapons and projectiles** — fire routines, pool layout and update routines done
-   2026-11-17 ("Weapons in flight"). Open: missile steering, lock-on build-up.
+   2026-11-17 ("Weapons in flight"); missile lock slots, volleys and steering read 2026-11-17
+   (static). Open: run-test the missile notes; the second missile spawn call `0x8007BED4`.
 4. **Movement** — ground speed cap (Armored-CoreR uses 75 per axis), boost, jump, turning,
    leg type differences. This is the "feel" Armored-CoreR keeps chasing.
 5. **Match start / end** — the call that sets up both ACs from the build and part tables
@@ -157,7 +158,10 @@ Arena engine (codes): P1 AP at 0x801D8D70 = an object at 0x801D8C08 if the layou
 | +0x016 | u16 | Booster / energy reserve (28,000 full; 18,844 → 6,963 while boosting) | code + snap |
 | +0x030 … +0x03F | | Blade line from the previous swing frame | blade code |
 | +0x07C | u32 | **Lock target**: pointer to the locked AC object (P2's 0x801D4D38 when P2 is in front; 0 when lost). Also the blade lunge target | snap + blade code |
-| +0x080 … +0x0A2 | | Lock data: +0x86 / +0x9A count up while locked (lock timer `?`), +0xA2 = 1 − that, +0x8C / +0x9C = target x | snap |
+| +0x07C … +0x1FB | 8 × 48 | **Lock slots**, one per locked target (+0x7C is slot 0's target, +0xA2 its lock count). Layout in "Missiles: lock slots, volleys and steering" | code `0x80080638` |
+| +0x01A | u16 | Locks still free (missile weapon) | code |
+| +0x020 / +0x022 | u16 | Missile lock cursor pitch / yaw | code + `stat-block.md` |
+| +0x078 | u32 | Lock slot being worked on | code |
 | +0x24C | u16 | "HIT" HUD blink: 40 on landing a hit on the other AC, counts down | code `0x8008821C`, `0x8005699C` |
 | +0x24E | u16 | Set (37) when this AC is hit, counts down (damage indicator `?`) | snap |
 | +0x250 … +0x393 | 324 bytes | Compiled stat block (weapon slots, ammo, range, lock values…) — **data chat's lane, see `stat-block.md`**; writes found here get handed over in README.md | — |
@@ -306,9 +310,128 @@ were in flight:
 | +0xBC / +0xBE / +0xC0 | s16 | Rifle: **position one step earlier** (the hit test runs along this line) |
 | +0xC4 … +0xCA | | Rifle: 25850, 250, 4, 30 `?` |
 
-Not done yet: the missile steering maths in `0x8008907C`, lock-on build-up (player block
-+0x86 / +0x9A count up while locked), and the families 20+ in play (needs a build with
-those weapons).
+Not done yet: the families 20+ in play (needs a build with those weapons). Missiles: see below.
+
+### Missiles: lock slots, volleys and steering (VS engine, static read 2026-11-17, not run-tested)
+
+Read from FDAT 209 only. Angles: 4,096 = 360°. "Step" = one game step (~22 per second).
+Weapon slot offsets are decimal, as in `stat-block.md`. The lock build-up itself (cursor speed
+from slot +32, lock time slot +9) is in `stat-block.md`, "Lock-on"; this adds the rest.
+
+**Lock slots**: 8 × 48 bytes from player block +0x7C (+0x7C … +0x1FB), one per locked target.
+Offsets from the slot start (slot 0 = player block +0x7C):
+
+| Slot off | Meaning |
+|---|---|
+| +0x00 | Target object (0 = empty) |
+| +0x08 | Lock timer (counts up while the cursor sits on the target) |
+| +0x10 / +0x12 / +0x14 | Target position (refreshed from the sight sweep each step) |
+| +0x16 | Flags: bit 1 = lockable, bits 3+4 = locked |
+| +0x18 / +0x1A | Direction to the target (pitch / yaw) |
+| +0x26 | **Locks on this target** (max 6) |
+
+The snapshots' "+0x86 / +0x9A count up" are slot 0 +0x0A / +0x1E: driver still open.
+
+Other player-block fields used (`0x80080638`):
+- **+0x1A** = locks still free (slot +34 − locks held).
+- **+0x1C** = last missile launched at the current target.
+- **+0x20 / +0x22** = cursor pitch / yaw (rests at +0x218 / 0).
+- **+0x26** = cursor shown.
+- **+0x28 / +0x2A / +0x2C** = cursor point in the world.
+- **+0x78** = lock slot being worked on.
+
+**Build-up extras**:
+- Candidates come from the sight sweep `0x80078230` with the inner lock box (slot +28 / +30).
+- A lock is dropped when its direction leaves the outer box (± slot +24 pitch, ± slot +26 yaw)
+  or the target leaves the sweep.
+- It stops gaining locks once the locks held reach slot +34 or the current ammo (slot +16).
+- Each new lock plays sound 0x2B (0x2C for the last free one), and **the cursor jumps back
+  to the centre**. So every extra lock on the same target makes the cursor travel out again.
+- While locking, a tick sound 0x2F plays every 4 steps.
+
+**Firing** (`0x80081888`):
+- It fires when there is at least one lock and either the fire button is held (pad +0x04 &
+  +0x29A), or no locks are free and slot +12 bit 0x80 (SP-M/AUTO) is set.
+- AC +0x47 = locks × 4. It counts down 1 per step, and every 4th step a volley goes out from
+  side A and side B (`0x800815A4` twice). That uses one lock, and the target gets
+  `0x8008F3C8(target, 2, ac)`. After the last volley AC +0x48 = slot +35.
+- `0x800815A4` launches each missile:
+  - ammo slot +16 goes −1;
+  - the start direction is the target direction plus random spread;
+  - the start speed is 100 plus the launcher's motion;
+  - the spawner is `0x8008B070`.
+
+**Launcher table `0x800912B0`**, 8 bytes per model ID (slot +1):
+- +0 = flight kind
+- +1 = ignition delay (steps)
+- +2 / +3 = missiles per volley from side A / B
+- +4 / +6 = random spread (pitch / yaw)
+
+| Model | Kind | Delay | A+B | Spread |
+|---|---|---|---|---|
+| 0 | 0 | 1 | 1+0 | 300 / 600 |
+| 1 | 1 | 1 | 1+0 | 288 / 578 |
+| 2 | 0 | 1 | 1+1 | 0 |
+| 3 | 1 | 1 | 3+3 | 0 |
+| 4 | 2 | 2 | 1+0 | 256 / 512 |
+| 5 | 3 (splits) | 1 | 1+0 | 256 / 512 |
+| 6 | 3 (splits) | 1 | 1+1 | 0 (+0xC0 pitch) |
+| 7 | 0 | 1 | 2+0 | 0 |
+| 8 | 0 | 1 | 3+0 | 0 |
+| 9 | 5 (never lets go) | 3 | 1+0 | 0 |
+| 10 | 4 (aims during delay) | 20 | 1+0 | 0 |
+| 11 | 11 (never lets go) | 1 | 1+0 | 0 |
+
+**Missile pool record** (update `0x8008907C`, spawner `0x8008B070`):
+- +0x16 = life (flight table +0x02)
+- +0x22 / +0x24 / +0x26 = **velocity**
+- +0x38 = target
+- +0x3C = age
+- +0x3E = ignition delay
+- +0x40 = flight kind
+- +0x42 = flags (bit 0 = target has been in the cone, bit 1 = **gave up**)
+- +0xBC / +0xBE = heading (pitch / yaw)
+
+**Flight table `0x80093114`**, 40 bytes per kind:
+
+| Kind | Fuel +0x00 | Life +0x02 | Thrust +0x0C | Top speed +0x0E | Turn/step +0x10 | Cone ± +0x12 |
+|---|---|---|---|---|---|---|
+| 0, 9 | 50 | 60 | 80 | 350 | 110 (9.7°) | 1024 (90°) |
+| 1 | 80 | 100 | 70 | 320 | 100 (8.8°) | 90° |
+| 2, 3, 4, 12 | 120 | 160 | 60 | 300 | 90 (7.9°) | 90° |
+| 5 | 180 | 200 | 30 | 100 | 50 (4.4°) | 90° |
+| 8 | 80 | 100 | 40 | 300 | 45 (4.0°) | 800 (70°) |
+| 10 | 80 | 100 | 40 | 320 | 60 (5.3°) | 90° |
+| 11 | 250 | 300 | 30 | 100 | 60 | 1536 (135°) |
+
+The rest of each flight record:
+- +0x08 / +0x0A = exhaust puff (`0x8008A660`);
+- +0x16 / +0x20 / +0x24 = hit effect and blast data.
+
+Kinds 8, 9, 10, 12 are not used by the launcher table. The other spawn call (`0x8007BED4`) may use them `?`.
+
+**Each step**:
+1. Before ignition (age < +0x3E): coasts with no thrust, under gravity (0x8003EA48). Kind 4 already
+   turns toward the target.
+2. At ignition: sound 0x6E, then an exhaust trail. **Kind 3 splits into 4 kind-0 missiles 6 steps
+   later** (yaw ±0x1C0, two with pitch −0x200), same target.
+3. **Homing** (`0x80088F60` gives the direction to the target):
+   - inside the cone (± table +0x12, pitch and yaw) → bit 0 is set;
+   - **leaving the cone after having been inside → bit 1 is set, and it gives up for good**. It then flies on
+     with a 10% chance per step of a random ±32 wobble. Before it has ever been inside, it keeps turning
+     toward the target;
+   - kinds 5 and 11 clear bit 1 every step, so they never give up;
+   - the heading turns by at most table +0x10 per step (`0x800136E0`).
+4. Thrust: velocity += heading × table +0x0C, capped at table +0x0E. Then position += velocity
+   and the collision sweep runs (`0x80088BF8` → `0x80074FA4`).
+5. Burn-out (age ≥ table +0x00): the nose eases 16 per step toward pitch 0x400 and velocity +0x24
+   gains 8 per step, so it drops. Life ends it.
+6. When nothing is hit: an exhaust puff, and **every 8 steps the target gets `0x8008F3C8(target, 1, …)`**
+   (likely the "missile incoming" signal the interceptor reacts to `?`).
+7. On a hit: hit effect `0x8008C164`, the hit dispatcher `0x8008821C`, a blast `0x8008BB78` on
+   some targets, then removal (`0x8008B60C`).
+
+Arena engine: the same handler is most likely at `0x8008FFB4` (pattern match only).
 
 ## Match timer (VS engine, measured)
 

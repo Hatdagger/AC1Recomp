@@ -17,6 +17,12 @@
  * AC, names, P and parts itself, and in-game saves go to that card. The
  * player's own card is not in the machine.
  *
+ * Since 2026-11-17 the default is the direct boot instead (see "Direct boot"
+ * below): no title, no LOAD GAME, no card screens. The run's save goes
+ * straight into RAM through the game's own unpack, the hub opens on Arena
+ * and opens it, and the player is handed the Arena list. The menu presses
+ * above stay as the fallback (and with PSX_MOA_RUN_DIRECT=0).
+ *
  * If the hub does not come up in time the overlay is dropped and the
  * player is given the menus, so a wrong step can never leave a black screen.
  *
@@ -204,17 +210,66 @@ enum { KIND_BUILDS = 0, KIND_NAMES, KIND_REWARDS, KIND_AI };
 #define RUN_HUB_TIMEOUT      (60u * 90u)  /* frames; fast forward makes this short */
 #define RUN_FADE_FRAMES      24u
 
+/* ---- Direct boot (default; PSX_MOA_RUN_DIRECT=0 brings back the menu presses)
+ *
+ * Instead of the title, LOAD GAME and the card screens, the title-open hook
+ * does what those screens end up doing, with the game's own routines
+ * (docs/mapping/menus-hub.md, mode-launch.md):
+ *   1. SCENARIO row (0x800AB58C): 0x8003EA94 = 255, mode 0, five setup calls,
+ *      Human PLUS bytes cleared, 0x80057B28(2), menu pictures 0x80057CB0(4, 0/1/4).
+ *   2. LOAD (0x80073424 after its card read, 0x800743E8): the save file's
+ *      first 0xE80 bytes (session card, block 1) in a buffer, checksum
+ *      0x80070F70(buf + 560) == word buf + 512, unpack 0x80072E54(buf), emblem
+ *      LoadImage 0x8002C75C(0x800CC070, buf + 1080) / (0x800CC078, buf + 3128),
+ *      DrawSync, six setup calls.
+ *   3. Open the hub (0x800552C0, as LOAD's callback 0x800AC9E8 does) on
+ *      entry 5 (Arena), and press X once in its input state (0x80055848).
+ * The run is handed over at step 2 (the arena hooks need it); the loading
+ * screen stays up until the Arena list opens. Any check failing falls back
+ * to the menu presses. */
+#define RUN_D_SCORE          0x8003EA94u  /* byte: 255 on SCENARIO */
+#define RUN_D_MODE           0x8003EA2Au  /* engine mode byte: 0 */
+#define RUN_D_PLUS           0x8003EAC8u  /* 8 bytes cleared on SCENARIO */
+#define RUN_D_MAIL_SHOWN     0x8003EA82u  /* "You have new mail." already shown */
+static const uint32_t k_run_d_scenario[] = {
+    0x800631FCu, 0x800BA854u, 0x800C566Cu, 0x800B69F8u, 0x800B6A80u };
+#define RUN_D_TASKS_CLEAR    0x80057B28u  /* (2) */
+#define RUN_D_PICTURES       0x80057CB0u  /* (4, entry): MENU_TIM.T 0, 1, 4 */
+#define RUN_D_SIG_PICTURES   0x27BDFFE8u
+#define RUN_D_SAVE_BYTES     3712u        /* 0xE80, what LOAD reads */
+#define RUN_D_SUM            0x80070F70u  /* (buf + 560): byte sum */
+#define RUN_D_SIG_SUM        0x00002821u  /* addu a1,zero,zero */
+#define RUN_D_UNPACK         0x80072E54u  /* (buf) */
+#define RUN_D_SIG_UNPACK     0x27BDFDE0u  /* addiu sp,sp,-544 */
+#define RUN_D_LOAD_IMAGE     0x8002C75Cu  /* boot exe LoadImage(rect, data) */
+#define RUN_D_DRAW_SYNC      0x8002C4B0u
+#define RUN_D_EMBLEM_RECT    0x800CC070u
+#define RUN_D_CLUT_RECT      0x800CC078u
+static const uint32_t k_run_d_after_load[] = {
+    0x800B6A80u, 0x80099098u, 0x800941F4u, 0x80093BC4u, 0x800A2318u, 0x800A2020u };
+#define RUN_D_HUB_OPEN       0x800552C0u
+#define RUN_D_SIG_HUB_OPEN   0x27BDFFB8u  /* addiu sp,sp,-72 */
+#define RUN_D_HUB_INPUT      0x80055848u
+#define RUN_D_SIG_HUB_INPUT  0x27BDFFC0u  /* addiu sp,sp,-64 */
+#define RUN_D_PAD            0x801B1CB8u  /* +0x18 new presses, +0x1C the mask it must lack */
+
 static int run_enabled = -1;
 static int run_autopilot;                 /* driving the menus */
 static int run_at_hub;                    /* the player has the hub */
 static uint32_t run_ticks, run_frames, run_fade;
 static struct moa_run_state run_state;
 static int run_state_ok;
-enum { STAGE_TITLE = 0, STAGE_LOADGAME, STAGE_LOADING, STAGE_BACK };
+enum { STAGE_TITLE = 0, STAGE_LOADGAME, STAGE_LOADING, STAGE_BACK, STAGE_DIRECT };
+static int run_direct;                     /* this session booted directly */
+static int run_direct_press;               /* X still to press at the hub */
+static uint32_t run_direct_buf;            /* guest buffer for the save */
 /* At the hub: one O press (one menu back), at normal speed so the hub's
  * music starts as it would, then hand over behind the loading screen. */
 #define RUN_BACK_FRAMES      90u
 #define RUN_PAD_CIRCLE       0x2000u
+/* Direct boot: the Arena list loads its names from the disc after it opens;
+ * this short hold at normal speed covers that before the hand-over. */
+#define RUN_DIRECT_HOLD      45u
 static uint32_t run_back_start;
 static int run_stage;
 static uint32_t run_newgame_seen;          /* run_frames when that menu last ran */
@@ -271,6 +326,7 @@ static void run_check_session(void)
     run_sent = run_told = 0;
     run_fixes = 0;
     run_arena_at_builds = run_arena_at_ai = 0xFF;
+    run_direct = run_direct_press = 0;
 }
 static const char *run_file_path(void) { return getenv("PSX_MOA_RUN_FILE"); }
 
@@ -339,15 +395,113 @@ static void run_menu_entry(struct CPUState *cpu, uint32_t address)
     run_log("boot: menu reached, autopilot on");
 }
 
-static void run_title_open_entry(struct CPUState *cpu, uint32_t address)
+static int run_direct_wanted(void)
 {
-    if (!run_on() || psx_mod_read_word(address) != RUN_SIG_TITLE_OPEN) return;
-    if (run_at_hub) {                         /* the player quit to the title */
+    const char *e = getenv("PSX_MOA_RUN_DIRECT");
+    return !(e && e[0] == '0');
+}
+
+/* The run's save as LOAD would read it: the session card's block 1, first
+ * 0xE80 bytes (moa_memcard_write_blocks puts file A there). */
+static int run_direct_read_save(uint8_t out[RUN_D_SAVE_BYTES])
+{
+    const char *card = getenv("PSX_MEMCARD1_SESSION");
+    if (!card || !card[0]) return 0;
+    FILE *f = fopen(card, "rb");
+    if (!f) return 0;
+    const int ok = fseek(f, 8192L, SEEK_SET) == 0 &&
+                   fread(out, 1, RUN_D_SAVE_BYTES, f) == RUN_D_SAVE_BYTES;
+    fclose(f);
+    return ok && out[0] == 'S' && out[1] == 'C';
+}
+
+static int run_direct_code_ok(void)
+{
+    return psx_mod_read_word(RUN_D_PICTURES) == RUN_D_SIG_PICTURES &&
+           psx_mod_read_word(RUN_D_SUM) == RUN_D_SIG_SUM &&
+           psx_mod_read_word(RUN_D_UNPACK) == RUN_D_SIG_UNPACK &&
+           psx_mod_read_word(RUN_D_HUB_OPEN) == RUN_D_SIG_HUB_OPEN &&
+           psx_mod_read_word(RUN_D_HUB_INPUT) == RUN_D_SIG_HUB_INPUT;
+}
+
+/* Steps 1-3 of the direct boot (top of file). 1 = done, the title is not
+ * opened; 0 = nothing changed, carry on with the menu presses. */
+static void run_apply_prices(void);
+
+static int run_direct_boot(struct CPUState *cpu)
+{
+    static uint8_t save[RUN_D_SAVE_BYTES];
+    if (!run_direct_code_ok()) { run_log("direct: menu code not as expected"); return 0; }
+    if (!run_direct_read_save(save)) { run_log("direct: run card not readable"); return 0; }
+    if (!run_direct_buf) run_direct_buf = psx_mod_alloc_guest_memory(RUN_D_SAVE_BYTES, 4u);
+    if (!run_direct_buf) { run_log("direct: no guest memory"); return 0; }
+    for (uint32_t i = 0; i < RUN_D_SAVE_BYTES; i += 4u)
+        psx_mod_write_word(run_direct_buf + i, (uint32_t)save[i] | (uint32_t)save[i + 1] << 8 |
+                                               (uint32_t)save[i + 2] << 16 | (uint32_t)save[i + 3] << 24);
+    const uint32_t ra = cpu->gpr[31], buf = run_direct_buf;
+    if (psx_mod_call_guest(cpu, RUN_D_SUM, ra, buf + 560u, 0, 0, 0) != psx_mod_read_word(buf + 512u)) {
+        run_log("direct: save checksum does not match");
+        return 0;
+    }
+    /* 1. SCENARIO MODE */
+    psx_mod_write_byte(RUN_D_SCORE, 255);
+    psx_mod_write_byte(RUN_D_MODE, 0);
+    for (size_t i = 0; i < sizeof k_run_d_scenario / sizeof k_run_d_scenario[0]; i++)
+        (void)psx_mod_call_guest(cpu, k_run_d_scenario[i], ra, 0, 0, 0, 0);
+    for (uint32_t i = 0; i < 8u; i++) psx_mod_write_byte(RUN_D_PLUS + i, 0);
+    (void)psx_mod_call_guest(cpu, RUN_D_TASKS_CLEAR, ra, 2, 0, 0, 0);
+    (void)psx_mod_call_guest(cpu, RUN_D_PICTURES, ra, 4, 0, 0, 0);
+    (void)psx_mod_call_guest(cpu, RUN_D_PICTURES, ra, 4, 1, 0, 0);
+    (void)psx_mod_call_guest(cpu, RUN_D_PICTURES, ra, 4, 4, 0, 0);
+    /* 2. LOAD, after the card read */
+    (void)psx_mod_call_guest(cpu, RUN_D_UNPACK, ra, buf, 0, 0, 0);
+    (void)psx_mod_call_guest(cpu, RUN_D_LOAD_IMAGE, ra, RUN_D_EMBLEM_RECT, buf + 1080u, 0, 0);
+    (void)psx_mod_call_guest(cpu, RUN_D_LOAD_IMAGE, ra, RUN_D_CLUT_RECT, buf + 3128u, 0, 0);
+    (void)psx_mod_call_guest(cpu, RUN_D_DRAW_SYNC, ra, 0, 0, 0, 0);
+    for (size_t i = 0; i < sizeof k_run_d_after_load / sizeof k_run_d_after_load[0]; i++)
+        (void)psx_mod_call_guest(cpu, k_run_d_after_load[i], ra, 0, 0, 0, 0);
+    /* The run is in RAM: hand the data over now (the arena hooks wait for
+     * it), keep the loading screen until the Arena list is up. */
+    run_at_hub = 1;
+    run_apply_state();
+    run_apply_prices();                          /* shop in P; the hub-resume hook redoes it later */
+    psx_mod_write_byte(RUN_ARENA_LOCK, 0);
+    psx_mod_write_byte(RUN_D_MAIL_SHOWN, 1);     /* no mail box in the way */
+    /* 3. The hub, on Arena */
+    const uint32_t hub = psx_mod_call_guest(cpu, RUN_D_HUB_OPEN, ra, 0, 0, 0, 0);
+    if (hub >= 0x80000000u && hub < 0x80200000u) psx_mod_write_byte(hub + RUN_HUB_ENTRY, RUN_HUB_ARENA);
+    run_direct = 1;
+    run_direct_press = 1;
+    run_stage = STAGE_DIRECT;
+    psx_mod_counter_add("moa.run.direct_boot", 1);
+    run_log("direct: save loaded, hub opened on Arena (frame %u)", (unsigned)run_frames);
+    return 1;
+}
+
+static int run_title_open_filter(struct CPUState *cpu, uint32_t address)
+{
+    if (!run_on() || psx_mod_read_word(address) != RUN_SIG_TITLE_OPEN) return 0;
+    if (run_at_hub && !run_autopilot) {       /* the player quit to the title */
         psx_mod_counter_add("moa.run.return_from_title", 1);
         psx_mod_request_return_to_launcher();
-        return;
+        return 0;
     }
-    if (run_autopilot) cpu->gpr[4] = 1;
+    if (!run_autopilot) return 0;
+    if (!run_direct && run_direct_wanted() && run_direct_boot(cpu)) return 1;
+    cpu->gpr[4] = 1;
+    return 0;
+}
+
+/* Hub input state: X once on Arena (the hub opens it the normal way). */
+static void run_hub_input_entry(struct CPUState *cpu, uint32_t address)
+{
+    if (!run_direct_press || !run_on() || psx_mod_read_word(address) != RUN_D_SIG_HUB_INPUT) return;
+    run_direct_press = 0;
+    const uint32_t hub = cpu->gpr[4];
+    if (hub >= 0x80000000u && hub < 0x80200000u) psx_mod_write_byte(hub + RUN_HUB_ENTRY, RUN_HUB_ARENA);
+    psx_mod_write_word(RUN_D_PAD + 0x18u, psx_mod_read_word(RUN_D_PAD + 0x18u) | RUN_PAD_X);
+    psx_mod_write_word(RUN_D_PAD + 0x1Cu, psx_mod_read_word(RUN_D_PAD + 0x1Cu) & ~(uint32_t)RUN_PAD_X);
+    run_log("direct: X at the hub (frame %u)", (unsigned)run_frames);
 }
 
 static int run_movie_filter(struct CPUState *cpu, uint32_t address)
@@ -397,6 +551,10 @@ static void run_menu_input_entry(struct CPUState *cpu, uint32_t address)
      * then X on LOAD GAME and through the load screens (all defaults: slot 1,
      * the card's one save, yes). */
     const uint32_t t = run_ticks++;
+    if (run_direct) {                            /* nothing pressed; the hub hook presses X */
+        psx_mod_write_half(RUN_PAD_BUFFER + 2u, 0xFFFFu);
+        return;
+    }
     if (run_stage == STAGE_BACK) {               /* one O press, once */
         psx_mod_write_half(RUN_PAD_BUFFER + 2u,
                            (t >= 6u && t < 9u) ? (uint16_t)~RUN_PAD_CIRCLE : (uint16_t)0xFFFFu);
@@ -1091,6 +1249,8 @@ static int run_hub_pick_filter(struct CPUState *cpu, uint32_t address)
     if (entry < 0 || entry > 7) return 0;
     psx_mod_counter_add(k_names[entry], 1);
     run_log("hub: entry %d picked", entry);
+    if (run_autopilot && run_stage == STAGE_DIRECT && entry == RUN_HUB_ARENA)
+        run_reach_hub("moa.run.direct_arena");   /* short wait at normal speed, then hand over */
     if (RUN_HUB_ALLOWED & (1u << entry)) return 0;
     const uint32_t flags = psx_mod_read_word(st + RUN_HUB_FLAGS);
     if (flags >= 0x80000000u && flags < 0x80200000u) psx_mod_write_byte(flags + 1u, 1);
@@ -1147,7 +1307,8 @@ static void run_frame_hook(void)
     run_show_frame();
     if (run_loss_wait) run_loss_wait--;      /* the return itself is made in a guest hook */
     if (run_autopilot && run_stage == STAGE_BACK) {
-        if (++run_frames - run_back_start >= RUN_BACK_FRAMES) run_finish_handover();
+        if (++run_frames - run_back_start >= (run_direct ? RUN_DIRECT_HOLD : RUN_BACK_FRAMES))
+            run_finish_handover();
         else psx_mod_set_loading_screen("ROGUE ARENA  Preparing your run", 98);
         return;
     }
@@ -1172,7 +1333,8 @@ PSX_MOD_CONSTRUCTOR(moa_arena_run_boot_register)
     (void)psx_game_register_offline_function_entry(RUN_MENU_INPUT_A, run_menu_input_entry);
     (void)psx_game_register_offline_function_entry(RUN_MENU_INPUT_B, run_menu_input_entry);
     (void)psx_game_register_offline_function_entry(RUN_MODE_CONFIRM, run_mode_confirm_entry);
-    (void)psx_game_register_offline_function_entry(RUN_TITLE_OPEN, run_title_open_entry);
+    (void)psx_game_register_offline_function_filter(RUN_TITLE_OPEN, run_title_open_filter);
+    (void)psx_game_register_offline_function_entry(RUN_D_HUB_INPUT, run_hub_input_entry);
     (void)psx_game_register_offline_function_filter(RUN_MOVIE_PLAY, run_movie_filter);
     (void)psx_game_register_offline_function_entry(RUN_HUB_RESUME, run_hub_entry);
     (void)psx_game_register_offline_function_entry(RUN_NEWGAME_FRAME, run_newgame_entry);

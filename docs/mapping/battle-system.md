@@ -3,13 +3,32 @@
 Goal: decode the battle engine (bucket 3 of the system map) well enough to read, change and
 eventually replace how an AC moves, fights and takes damage. Status today: ~10%.
 
-Disc: USA disc 1 (SLUS-01030). Arena engine = FDAT entry 210, mission engine = FDAT 207.
-Both load from disc over the same address range, so every finding must say which engine.
+Disc: USA disc 1 (SLUS-01030, v1.0). Each mode has its own engine, loaded from
+`GG/COM/FDAT.T` over the same address range (from 0x80050DD8), so every finding must say
+which engine it was measured in:
+
+| FDAT entry | Engine | Mode byte 0x8003EA2A |
+|---|---|---|
+| 206 | menus | — |
+| 207 | missions | |
+| 208 | link-cable versus (netplay) | |
+| 209 | **split-screen VS** | 2 |
+| 210 | **arena** (also AI Battle, which switches the mode byte from 2 to 3) | 3 |
+
+**Earlier research lives in Armored-CoreR** (`docs/research/gen1-*.md` in
+Hatdagger/Armored-CoreR): engine map, movement and energy, weapons/FCS/damage, timing,
+models. That is the main source; this file only adds what the recomp side finds and
+must not contradict it without a measurement.
 
 ## What is already anchored
 
 | Thing | Where | Source |
 |---|---|---|
+| AC state byte: 0 standing, 1 walking, 64 jump take-off, 65 rising, 75 falling, 97 landing | AC object +0x45 | Armored-CoreR gen1-movement.md (VS engine) |
+| Movement values scaled in at match start (rise, boost, turn speeds) | player block +0x200 on, by VS engine 0x8008342C | Armored-CoreR gen1-movement.md |
+| Energy rules (drain, refill, red zone, booster lock) | VS engine 0x80082D90; lock = player block +0x18 bit 0 | Armored-CoreR gen1-movement.md |
+| Weapon detail tables, FCS records, damage factors | menu tables + VS engine | Armored-CoreR gen1-weapons.md |
+| Arena main loop, opponent AI scoring | arena engine 0x80052378 | Armored-CoreR gen1-engine-map.md |
 | Player block, 928 bytes × 2 | 0x80045198 / +928 | repo (moa_ai_battle.c) |
 | Pointer to the slot's AC object | player block +920 | repo |
 | AC object, 376 bytes each, back to back | arena: player AP at 0x801D8D70, opponent at 0x801D8EE8 | codes + repo size |
@@ -25,7 +44,9 @@ See `ram-map-gameshark.md` for the full code-derived list.
 
 Plain 2-player **VS** (split screen), time limit set to unlimited. Both units are under
 direct control (no AI, no clock), so one action at a time can be repeated and logged: one
-shot, one boost, one hit. VS runs on the arena engine, so the arena addresses apply.
+shot, one boost, one hit. VS runs on its **own engine (FDAT 209)**, not the arena engine: the
+arena-only addresses (the AP codes gated on 0x8007BBAE, the AI hooks) do not apply to plain
+VS until re-found there. Player blocks (0x80045198) are shared by all engines.
 Use AI Battle only later, to check that AI-driven units behave the same.
 
 Before trusting any address, confirm the disc is NTSC-U **v1.0**: a v1.1 code set exists
@@ -58,6 +79,7 @@ with the same layout shifted (+0x64 save data, +0x60 battle data).
 
 | Offset | Size | Meaning | Proven by | Engine |
 |---|---|---|---|---|
+| +0x45 | u8 | State: 0 standing, 1 walking, 64 jump take-off, 65 rising, 75 falling, 97 landing | Armored-CoreR (measured) | VS |
 | ? | u16 | AP | codes: 0x801D8D70 player / 0x801D8EE8 opponent; base address of the object still to find | arena |
 
 ## Player block fields (0x80045198)

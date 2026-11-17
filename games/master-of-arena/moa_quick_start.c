@@ -285,6 +285,12 @@ static int qs_title_open(struct CPUState *cpu, uint32_t address)
         return 0;
     qs_done = 1;                        /* once: a later title is the player's */
     if (!qs_code_ok()) { qs_log("moa.start.code_mismatch"); return 0; }
+    /* What opening the title clears (the menu entry clears both after this
+     * call too). Rogue Arena's first direct-boot test found 0x8003EA7A still
+     * 1 after a fight (title branch instead of the hub), so they are cleared
+     * here as well. */
+    psx_mod_write_byte(QS_TO_TITLE, 0);
+    psx_mod_write_byte(QS_NO_LOGOS, 0);
     return qs_mode == QS_LOAD ? qs_load(cpu) : qs_new(cpu);
 }
 

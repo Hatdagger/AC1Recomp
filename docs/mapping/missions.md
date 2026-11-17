@@ -94,8 +94,67 @@ Engine number (T+1136) = slot for every stock mission. T+944 = 0 for all.
 T+1160 is 255 except on three missions; guess: an enemy AC to load (arena roster number?) `?`.
 Window = (lo, hi) bytes of T+80 [slot]; likely the chapter range the mission is offered in `?`.
 
+## Mission state record `M = 0x800A0DB0` (missions engine)
+
+Set up by the engine init `0x80055628`:
+
+| Offset | Size | Meaning |
+|---|---|---|
+| +0x00 | u8 | mission slot (= player block +0x255) |
+| +0x04 | ptr | mission code module = `0x800A0DD0` |
+| +0x08 | ptr | load buffer (`0x800C2D30` at start, advanced as map blocks are read) |
+| +0x0C | u32 | **end result** (0 while running; see below) |
+| +0x10 | u16 | end countdown: set to 100 frames when the result is first set |
+| +0x12, +0x18 | u16 | 0 at start |
+| +0x14 | u16 | cleared before some ends (`0x8007E5B0`) `?` |
+| +0x16 | u16 | 128 at start `?` |
+| +0x1A | u16 | 64 at start `?` |
+
+## Mission code module (FDAT slot × 5, runs at `0x800A0DD0`)
+
+32–55 KB of MIPS code linked to `0x800A0DD0`. It calls straight into the engine (89–103
+distinct engine routines per mission; most used: `0x8007C290`, `0x80015138`, `0x8002C0F4`,
+`0x80054D24` / `0x80054C04`, `0x8007A1BC`, `0x8007BBAC`, `0x80079508`). It starts with a table:
+
+| Offset | Called from (engine) | When / what |
+|---|---|---|
+| +0x00 | `0x80091390` ← main loop `0x80052608` | **every frame** (mission logic) |
+| +0x04 | `0x80052590` | **once at start** (mission init) |
+| +0x08 | `0x80090B28`, arg = event number | mission-specific event from the event dispatcher around `0x80090A30` `?` |
+| +0x0C | not found yet | — |
+| +0x10 | `0x8007EE6C`, arg = object | per-object callback `?` |
+| +0x14 | `0x80055AF4` | after the map blocks are loaded (map setup) |
+| +0x18, +0x1C | not found yet | often the same stub (`jr ra`) |
+| +0x20 | — | 0 |
+| +0x24 … | `0x8007ED44`: `*(module + 0x20 + 4 × obj+0x0E)` | **handler per object type** (types 1, 2, …), list ends with 0 |
+
+Mission 0 has 3 object-type handlers, mission 1 (FDAT 5) 6, mission 19 (FDAT 95) 1.
+These are likely the mission's own objects (MTs, tanks, targets…): next thing to read.
+
+## How a mission ends
+
+`0x80052490(code)`: stores `code` in M+0x0C and starts the 100-frame countdown (only the first
+call counts). The codes found:
+
+| Code | Set by | Meaning | Back to menu (`0x8003EC50`) |
+|---|---|---|---|
+| 0x80 | the mission code (missions 0, 1, 19), event dispatcher | **mission complete** | 0 |
+| 0x100 | mission code (mission 1, with message 158), `0x8007E5B4` and `0x80090B0C` after dialog `0x80058B58(149)` returns 1 | **failed** (objective lost, or quit from a confirm dialog `?`) | 1 |
+| 0x200 | engine `0x800527A0` when a byte (+73 of a struct) hits 0 | probably **AC destroyed** `?` | 2 |
+
+At the end (`0x80052878`), the engine writes `0x8003EC50` = 1 / 2 / 0 and returns to the menu,
+**except** after a successful mission 18 (Enter Factory): it sets player block +0x255 = 19 and
+returns 1, so the Final Mission starts straight away.
+
+Mission number **40** is a special case in the engine (message 155 vs 156 at the 0x200 end). The
+menu writes 40 at `0x8007DBA0` before compiling the AC, so it's a non-mission use of the missions
+engine (garage test? `?`).
+
 ## Open
 - What `0x8003EA29` (from T+1160) does in the engine; what T+8 counts.
+- The object-type handlers (+0x24 …) and the object record (+0x0E = type): the mission's enemies.
+- Hooks +0x0C, +0x18, +0x1C; the event numbers passed to +0x08.
+- Mission number 40: which menu screen uses it.
 - Layout of the per-mission code module: entry points / table at its start.
 - Map header fields (80, 19, 4 × 19) and the blocks after it.
 - Objectives, win/lose checks, timer, results and rewards; enemy list; script reader

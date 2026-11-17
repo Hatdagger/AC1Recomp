@@ -33,6 +33,8 @@
 #include <string.h>
 
 #include "moa_arena_run.h"
+#include "moa_ac_view.h"
+#include "moa_screen.h"
 
 /* Shared with AI Battle (see moa_ai_battle.c for how each was found). */
 #define RUN_MENU_ENTRY       0x800A69C8u  /* menu module entry */
@@ -217,7 +219,9 @@ static uint32_t run_back_start;
 static int run_stage;
 static uint32_t run_newgame_seen;          /* run_frames when that menu last ran */
 static int run_result_seen;                /* this fight's result is booked */
+static uint32_t run_pay;                   /* what the next payout pays: 1 on a new win, else 0 */
 static int run_save_pending;               /* a win waits for the autosave */
+static int run_win_screen;                 /* a booked win waits for the arena screen (P, restock) */
 
 /* A plain log beside the run file (<run file>.log), for test reports: the
  * mod counters are only visible through the debug server. */
@@ -260,7 +264,9 @@ static void run_check_session(void)
     run_stage = 0;
     run_newgame_seen = 0;
     run_result_seen = 0;
+    run_pay = 0;
     run_save_pending = 0;
+    run_win_screen = 0;
     run_loss_wait = 0;
     run_sent = run_told = 0;
     run_fixes = 0;
@@ -301,8 +307,8 @@ static void run_finish_handover(void)
     run_apply_state();
     run_fade = RUN_FADE_FRAMES;
     psx_mod_counter_add("moa.run.handover", 1);
-    run_log("handover: run file loaded %d, wins %u", run_state_ok,
-            run_state_ok ? (unsigned)run_state.run.wins : 0u);
+    run_log("handover: run file loaded %d, P %u", run_state_ok,
+            run_state_ok ? (unsigned)run_state.run.points : 0u);
 }
 
 static void run_reach_hub(const char *why)
@@ -401,43 +407,241 @@ static void run_menu_input_entry(struct CPUState *cpu, uint32_t address)
 }
 
 
-/* ---- Rogue Arena Demo: starting parts cost 1 credit ------------------------
+/* ---- step 2: P prices and shop restocks ------------------------------------
  *
  * Part tables in the menu module (moa_parts.c): rows of `stride` bytes, the
- * credit price a u32 at +36. Each table's rows are the owned table's indexes
- * base + row. Every attempt's starting frame and internal parts (the run
- * file's 1-credit list) are set to 1 credit whenever the hub opens (the
- * module may have been reloaded); weapons keep the game's price. */
+ * credit price a u32 at +36 (options too: 44-byte rows). The garage's owned
+ * counts (0x80036FEC) and the shop's stock (0x800370EC) are 256-byte tables
+ * indexed base + row (the save routine copies them to +640 and +896). */
+#define RUN_OWNED            0x80036FECu
+#define RUN_STOCK            0x800370ECu
 #define RUN_PRICE_AT         36u
+#define RUN_OPTIONS          0x800D1AA0u
+#define RUN_OPTION_STRIDE    44u
+#define RUN_OPTION_COUNT     12u
+#define RUN_RESTOCK_PARTS    8
 
-static const struct { uint32_t addr, stride, end; uint16_t base; } k_run_tables[] = {
-    { 0x800CE690u, 60, 0x800CEAC8u,   0 },    /* head */
-    { 0x800CEAC8u, 56, 0x800CED30u,  18 },    /* core */
-    { 0x800CED30u, 72, 0x800CF870u,  53 },    /* legs */
-    { 0x800CF870u, 52, 0x800CFD50u,  29 },    /* arms */
-    { 0x800CFD50u, 44, 0x800D01C8u, 217 },    /* arm weapons */
-    { 0x800D01C8u, 52, 0x800D0DF8u, 157 },    /* back weapons */
-    { 0x800D0DF8u, 52, 0x800D0F30u, 243 },    /* blades */
-    { 0x800D0F30u, 48, 0x800D11D0u, 143 },    /* boosters */
-    { 0x800D11D0u, 96, 0x800D17D0u, 108 },    /* FCS */
-    { 0x800D17D0u, 48, 0x800D1AA0u,  93 },    /* generators */
+/* folder: the part models' folder (models/menu/<folder>/<row>); label: shown
+ * on the restock screen. */
+static const struct { uint32_t addr, stride, end; uint16_t base; uint8_t back; const char *folder, *label; } k_run_tables[] = {
+    { 0x800CE690u, 60, 0x800CEAC8u,   0, 0, "head",      "HEAD" },
+    { 0x800CEAC8u, 56, 0x800CED30u,  18, 0, "core",      "CORE" },
+    { 0x800CED30u, 72, 0x800CF870u,  53, 0, "legs",      "LEGS" },
+    { 0x800CF870u, 52, 0x800CFD50u,  29, 0, "arms",      "ARMS" },
+    { 0x800CFD50u, 44, 0x800D01C8u, 217, 0, "hand",      "ARM WEAPON" },
+    { 0x800D01C8u, 52, 0x800D0DF8u, 157, 1, "back",      "BACK WEAPON" },   /* stock 2: stays on sale */
+    { 0x800D0DF8u, 52, 0x800D0F30u, 243, 0, "blade",     "BLADE" },
+    { 0x800D0F30u, 48, 0x800D11D0u, 143, 0, "booster",   "BOOSTER" },
+    { 0x800D11D0u, 96, 0x800D17D0u, 108, 0, "fcs",       "FCS" },
+    { 0x800D17D0u, 48, 0x800D1AA0u,  93, 0, "generator", "GENERATOR" },
 };
 
-static void run_apply_cheap(void)
+/* Credits to P, by where the price sits among all 174 parts (USA disc):
+ * bottom 15% 1 P, to 30% 2, to 50% 3, to 70% 4, to 85% 5, to 95% 6, top 7.
+ * Average about 3.5 P, so 49 P buys about 14 parts. */
+static uint32_t run_tier(uint32_t credits)
+{
+    static const uint32_t k_at[6] = { 23000u, 32000u, 48000u, 67000u, 89000u, 138000u };
+    uint32_t p = 1;
+    for (int i = 0; i < 6; i++) if (credits >= k_at[i]) p++;
+    return p;
+}
+
+static int run_row_real(uint32_t row)
+{
+    static const char k_dummy[5] = { 'D', 'U', 'M', 'M', 'Y' };
+    for (int i = 0; i < 5; i++) if (psx_mod_read_byte(row + (uint32_t)i) != (uint8_t)k_dummy[i]) return 1;
+    return 0;
+}
+
+/* Rewrite the shop's prices as P. The tables are part of the menu module, so
+ * this runs whenever the hub opens (the module may have been reloaded); a
+ * price already in P (7 or less, every real price is 10,800 or more) is left. */
+static void run_apply_prices(void)
 {
     if (psx_mod_read_word(k_run_tables[0].addr) != 0x302D4448u) return;   /* "HD-0" */
     unsigned n = 0;
-    for (unsigned ix = 0; ix < 256u; ix++) {
-        if (!(run_state.lineup.cheap[ix >> 3] & (1u << (ix & 7)))) continue;
-        for (size_t t = 0; t < sizeof k_run_tables / sizeof k_run_tables[0]; t++) {
-            const uint32_t rows = (k_run_tables[t].end - k_run_tables[t].addr) / k_run_tables[t].stride;
-            if (ix < k_run_tables[t].base || ix >= k_run_tables[t].base + rows) continue;
-            const uint32_t r = k_run_tables[t].addr + (ix - k_run_tables[t].base) * k_run_tables[t].stride;
-            if (psx_mod_read_word(r + RUN_PRICE_AT) != 1u) { psx_mod_write_word(r + RUN_PRICE_AT, 1u); n++; }
-            break;
+    for (size_t t = 0; t < sizeof k_run_tables / sizeof k_run_tables[0]; t++)
+        for (uint32_t r = k_run_tables[t].addr; r < k_run_tables[t].end; r += k_run_tables[t].stride) {
+            const uint32_t c = psx_mod_read_word(r + RUN_PRICE_AT);
+            if (c > 7u && run_row_real(r)) { psx_mod_write_word(r + RUN_PRICE_AT, run_tier(c)); n++; }
+        }
+    for (uint32_t i = 0; i < RUN_OPTION_COUNT; i++) {
+        const uint32_t r = RUN_OPTIONS + i * RUN_OPTION_STRIDE;
+        const uint32_t c = psx_mod_read_word(r + RUN_PRICE_AT);
+        if (c > 7u) { psx_mod_write_word(r + RUN_PRICE_AT, run_tier(c)); n++; }
+    }
+    if (n) { psx_mod_counter_add("moa.run.prices", n); run_log("shop: %u prices set in P", n); }
+}
+
+/* ---- the restock screen ----------------------------------------------------
+ *
+ * After a restock, once the hub is back: one picture of the 8 new parts (2x4),
+ * each drawn from the player's own disc models with the garage's renderer
+ * (PSX_MOA_MODELS_DIR, set by the launcher; no models: name and price only),
+ * shown as the loading screen until a button is pressed. The game's pad is
+ * held released meanwhile so the press does not reach the hub menu. */
+#define RUN_SHOW_MAX   RUN_RESTOCK_PARTS
+#define RUN_THUMB      128
+struct run_show_part { uint8_t tab, row; char name[19]; char price[8]; };
+static struct run_show_part run_show[RUN_SHOW_MAX];
+static unsigned run_show_n;
+static uint8_t run_show_rank;          /* rank of the restock waiting to be shown; 0 = none */
+static int run_show_on;                /* the picture is up */
+static uint32_t run_show_frames;
+static int run_show_armed;             /* every button seen released since it went up */
+
+static void run_show_add(unsigned t, unsigned row, uint32_t at)
+{
+    if (run_show_n >= RUN_SHOW_MAX) return;
+    struct run_show_part *e = &run_show[run_show_n++];
+    e->tab = (uint8_t)t;
+    e->row = (uint8_t)row;
+    int n = 0;
+    for (; n < 18; n++) {
+        const uint8_t c = psx_mod_read_byte(at + (uint32_t)n);
+        if (c < 32u || c > 126u) break;
+        e->name[n] = (char)c;
+    }
+    while (n && e->name[n - 1] == ' ') n--;
+    e->name[n] = 0;
+    uint32_t c = psx_mod_read_word(at + RUN_PRICE_AT);
+    if (c > 7u) c = run_tier(c);
+    snprintf(e->price, sizeof e->price, "%u P", (unsigned)c);
+}
+
+static int run_show_font(void)
+{
+    if (moa_screen_ready()) return 1;
+    static int tried;
+    if (tried) return 0;
+    tried = 1;
+    uint32_t size = 0;
+    if (!psx_mod_read_disc_file("GG/MS/MENU_TIM.T", NULL, 0, &size) || size < 4096u) return 0;
+    uint8_t *b = (uint8_t *)malloc(size);
+    uint32_t got = 0;
+    int ok = b && psx_mod_read_disc_file("GG/MS/MENU_TIM.T", b, size, &got) &&
+             moa_screen_load_font(b, got);
+    free(b);
+    if (!ok) run_log("restock screen: menu font not found");
+    return ok;
+}
+
+/* One part drawn into 128x128 0xAARRGGBB, background transparent. */
+static int run_show_thumb(const char *dir, unsigned i, uint32_t *argb)
+{
+    uint8_t paint[48];
+    moa_run_paint(run_state.lineup.seed, run_state.run.attempt, paint);
+    moa_acv *v = moa_acv_load_part(dir, k_run_tables[run_show[i].tab].folder, run_show[i].row, paint);
+    if (!v) return 0;
+    static uint8_t rgba[RUN_THUMB * RUN_THUMB * 4];
+    memset(rgba, 0, sizeof rgba);
+    moa_acv_render(v, -0.6f, 0.35f, 0.0f, RUN_THUMB, RUN_THUMB, rgba);
+    moa_acv_free(v);
+    for (int p = 0; p < RUN_THUMB * RUN_THUMB; p++) {
+        const uint8_t *q = rgba + 4 * p;
+        argb[p] = (uint32_t)q[3] << 24 | (uint32_t)q[0] << 16 | (uint32_t)q[1] << 8 | q[2];
+    }
+    return 1;
+}
+
+static void run_show_open(void)
+{
+    const unsigned rank = run_show_rank;
+    run_show_rank = 0;
+    if (!run_show_n || !run_show_font()) return;
+    const char *dir = getenv("PSX_MOA_MODELS_DIR");
+    const int models = dir && dir[0] && moa_acv_has_part_models(dir);
+    static uint32_t thumb[RUN_SHOW_MAX][RUN_THUMB * RUN_THUMB];
+    struct moa_screen_tile tile[RUN_SHOW_MAX];
+    unsigned drawn = 0;
+    for (unsigned i = 0; i < run_show_n; i++) {
+        tile[i].category = k_run_tables[run_show[i].tab].label;
+        tile[i].name = run_show[i].name;
+        tile[i].label = run_show[i].price;
+        tile[i].thumb = models && run_show_thumb(dir, i, thumb[i]) ? (drawn++, thumb[i]) : NULL;
+    }
+    char title[40], line[48];
+    snprintf(title, sizeof title, "SHOP RESTOCK  RANK %u", rank);
+    snprintf(line, sizeof line, "%u NEW PARTS FOR SALE   YOU HAVE %u P", run_show_n, (unsigned)run_state.run.points);
+    int ww = 0, wh = 0, w = 0, h = 0;
+    psx_mod_window_size(&ww, &wh);
+    const uint32_t *px = moa_screen_render_tiles(ww, wh, title, line, tile, (int)run_show_n,
+                                                 "PRESS ANY BUTTON", &w, &h);
+    if (!px) return;
+    psx_mod_set_loading_screen("ROGUE ARENA  Shop restock", -1);
+    psx_mod_set_loading_image(px, w, h);
+    run_show_on = 1;
+    run_show_frames = 0;
+    run_show_armed = 0;
+    run_log("restock screen: rank %u, %u parts, %u pictures%s", rank, run_show_n, drawn,
+            models ? "" : " (no model install)");
+}
+
+/* Per frame while the hub is up. */
+static void run_show_frame(void)
+{
+    if (!run_show_on) {
+        if (run_show_rank && run_at_hub && !psx_mod_read_byte(RUN_FIGHT_DONE)) run_show_open();
+        return;
+    }
+    psx_mod_write_half(RUN_PAD_BUFFER + 2u, 0xFFFFu);       /* the hub sees nothing pressed */
+    psx_mod_set_loading_screen("ROGUE ARENA  Shop restock", -1);
+    const uint16_t b = psx_mod_host_pad_buttons(0);          /* active low */
+    run_show_frames++;
+    if (b == 0xFFFFu) { run_show_armed = 1; return; }
+    if (!run_show_armed || run_show_frames < 30u) return;
+    run_show_on = 0;
+    psx_mod_set_loading_screen(NULL, 0);
+    run_log("restock screen: closed");
+}
+
+/* Restocks on reaching ranks 45, 40 ... 5 and 1: 8 random parts the player
+ * neither owns nor already sees in the shop. Seeded by the run and the rank,
+ * so a seed always restocks the same way. */
+static void run_restock(void)
+{
+    const unsigned w = run_state.run.wins;
+    if (!((w % 5u == 0u && w <= 45u) || w == MOA_RUN_SLOTS - 1)) return;
+    if (psx_mod_read_word(k_run_tables[0].addr) != 0x302D4448u) {
+        run_log("restock: part tables not loaded, skipped");
+        return;
+    }
+    uint16_t pool[256];
+    uint8_t back[256], tab[256];
+    uint32_t rowat[256];
+    unsigned np = 0;
+    for (size_t t = 0; t < sizeof k_run_tables / sizeof k_run_tables[0]; t++) {
+        uint32_t row = 0;
+        for (uint32_t r = k_run_tables[t].addr; r < k_run_tables[t].end; r += k_run_tables[t].stride, row++) {
+            const uint32_t ix = k_run_tables[t].base + row;
+            if (ix > 255u || !run_row_real(r) || !psx_mod_read_word(r + RUN_PRICE_AT)) continue;
+            if (psx_mod_read_byte(RUN_OWNED + ix) || psx_mod_read_byte(RUN_STOCK + ix)) continue;
+            back[np] = k_run_tables[t].back;
+            tab[np] = (uint8_t)t;
+            rowat[np] = r;
+            pool[np++] = (uint16_t)ix;
         }
     }
-    if (n) { psx_mod_counter_add("moa.run.cheap", n); run_log("shop: %u starting parts set to 1 credit", n); }
+    run_show_n = 0;
+    uint64_t rng = run_state.lineup.seed ^ (0x5E570C4Bull * (w + 1u));
+    unsigned added = 0;
+    char list[8 * 5 + 1];
+    list[0] = 0;
+    while (added < RUN_RESTOCK_PARTS && np) {
+        const uint32_t k = moa_run_below(&rng, np);
+        psx_mod_write_byte(RUN_STOCK + pool[k], back[k] ? 2u : 1u);
+        snprintf(list + strlen(list), sizeof list - strlen(list), " %u", pool[k]);
+        run_show_add(tab[k], pool[k] - k_run_tables[tab[k]].base, rowat[k]);
+        pool[k] = pool[--np];
+        back[k] = back[np];
+        tab[k] = tab[np];
+        rowat[k] = rowat[np];
+        added++;
+    }
+    if (added) run_show_rank = (uint8_t)(MOA_RUN_SLOTS - w);
+    psx_mod_counter_add("moa.run.restock", 1);
+    run_log("restock: rank %u, %u parts added:%s", MOA_RUN_SLOTS - w, added, list);
 }
 
 static void run_maybe_return(void);
@@ -448,7 +652,7 @@ static void run_hub_entry(struct CPUState *cpu, uint32_t address)
     if (!run_on() || psx_mod_read_word(address) != RUN_SIG_HUB_RESUME) return;
     if (run_state_ok && run_state.run.over) { run_loss_wait = 0; run_maybe_return(); return; }
     run_reach_hub("moa.run.hub_reached");
-    if (run_state_ok) run_apply_cheap();
+    if (run_state_ok) run_apply_prices();
 }
 
 static uint8_t run_rank_now(uint32_t st)
@@ -517,24 +721,29 @@ static void run_maybe_return(void)
     psx_mod_request_return_to_launcher();
 }
 
-/* A new win over arena 0 entry `who`, booked once (the run file at once;
- * the card is saved by the game's own save once the arena screen has
- * applied the result). The game pays its own prize money. */
-static void run_book_win(uint8_t who, const char *where)
+/* A new win over arena 0 entry `who`, booked once: into the run file at once
+ * (from the fight as soon as it shows the win, so quitting or a crash before
+ * the arena screen can't lose it). The 1 P and the restock wait for the arena
+ * screen (run_result_entry): the shop's part tables are not in memory during
+ * a fight. 1 = newly booked. */
+static int run_book_win(uint8_t who, const char *where)
 {
-    if (!run_state_ok || run_state.run.over || who >= MOA_RUN_LADDER - 1) return;
-    if (run_state.run.beaten & (1u << who)) return;      /* already booked */
-    if (!moa_run_win(&run_state)) return;
-    run_state.run.beaten |= 1u << who;
-    run_result_seen = 1;
+    if (!run_state_ok || run_state.run.over || who >= MOA_RUN_SLOTS - 1u) return 0;
+    uint32_t *word = &run_state.run.beaten[who >> 5];
+    const uint32_t bit = 1u << (who & 31u);
+    if (*word & bit) return 0;                           /* already booked */
+    if (!moa_run_win(&run_state)) return 0;
+    *word |= bit;
+    run_win_screen = 1;
     (void)moa_run_save(run_file_path(), &run_state);
     psx_mod_counter_add("moa.run.win", 1);
-    run_log("win: entry %u booked (%s), wins %u, rank %u", who, where,
-            (unsigned)run_state.run.wins, (unsigned)(MOA_RUN_LADDER - run_state.run.wins));
-    run_save_pending = 1;
+    run_log("win: entry %u booked (%s), wins %u, rank %u, P %u", who, where,
+            (unsigned)run_state.run.wins, (unsigned)(MOA_RUN_SLOTS - run_state.run.wins),
+            (unsigned)run_state.run.points);
+    return 1;
 }
 
-/* A fight's result in the run's arena: a new win is booked, a loss ends the
+/* A fight's result in the run's arena: a new win pays 1 P, a loss ends the
  * run (the file keeps it for Retry) and hands back to the launcher. */
 static void run_result_entry(struct CPUState *cpu, uint32_t address)
 {
@@ -557,25 +766,66 @@ static void run_result_entry(struct CPUState *cpu, uint32_t address)
     const uint32_t st = cpu->gpr[4];
     if (st < 0x80000000u || st >= 0x80200000u) return;
     const uint8_t arena = psx_mod_read_byte(st + RUN_STATE_ARENA);
-    run_log("result: arena %u, opponent %u, won %u, lost %u, rank %u, wins %u",
+    run_log("result: arena %u, opponent %u, won %u, lost %u, rank %u, P %u",
             arena, psx_mod_read_byte(RUN_FIGHT_OPPONENT),
             psx_mod_read_half(RUN_FIGHT_WON), psx_mod_read_half(RUN_FIGHT_WON + 2u),
-            (unsigned)run_rank_now(st), (unsigned)run_state.run.wins);
+            (unsigned)run_rank_now(st), (unsigned)run_state.run.points);
     if (arena != RUN_ARENA) return;
     if (!psx_mod_read_half(RUN_FIGHT_WON)) {
         run_book_loss("arena screen");
         return;
     }
-    /* Only a first win over that opponent counts. */
+    /* Only a first win over that opponent counts (refights pay nothing). */
     const uint32_t flags = psx_mod_read_word(st + RUN_STATE_FLAGS);
     const uint8_t who = psx_mod_read_byte(RUN_FIGHT_OPPONENT);
-    if (flags < 0x80000000u || flags >= 0x80200000u || who >= MOA_RUN_LADDER - 1 ||
+    if (flags < 0x80000000u || flags >= 0x80200000u || who >= MOA_RUN_SLOTS ||
         psx_mod_read_byte(flags + who) == 1u) {
+        run_pay = 0;
+        if (run_win_screen) run_log("win: booked in the fight but the arena calls it a refight");
+        run_win_screen = 0;
         psx_mod_counter_add("moa.run.refight", 1);
-        run_log("win: refight, not booked");
+        run_log("win: refight, nothing paid");
         return;
     }
-    run_book_win(who, "arena screen");
+    (void)run_book_win(who, "arena screen");             /* nothing if the fight booked it */
+    if (!run_win_screen) return;
+    run_win_screen = 0;
+    /* P is the game's credits: the run's P less the 1 the prize screen pays.
+     * If the credits weren't the run's P before this win, say so. */
+    const uint32_t had = run_state.run.points - 1u;
+    const uint32_t credits = psx_mod_read_word(RUN_CREDITS);
+    if (credits != had) psx_mod_counter_add("moa.run.credits_mismatch", 1);
+    psx_mod_write_word(RUN_CREDITS, had);                 /* the game pays the 1 */
+    run_pay = 1;
+    run_log("win: P %u -> %u (credits were %u)", (unsigned)had,
+            (unsigned)run_state.run.points, (unsigned)credits);
+    run_restock();
+    run_save_pending = 1;
+}
+
+/* The payout after a run fight: the game's prize screen shows and pays
+ * run_pay (1 P on a new win, nothing on a refight), not arena 0's stock
+ * money (which paid 20000). */
+static void run_payout_entry(struct CPUState *cpu, uint32_t address)
+{
+    if (!run_on() || !run_at_hub || psx_mod_read_word(address) != RUN_SIG_PAYOUT) return;
+    const uint32_t st = cpu->gpr[4];
+    if (st < 0x80000000u || st >= 0x80200000u) return;
+    if (psx_mod_read_byte(st + RUN_STATE_ARENA) != RUN_ARENA) {
+        run_log("payout: not the run's arena (%u)", psx_mod_read_byte(st + RUN_STATE_ARENA));
+        return;
+    }
+    const uint32_t tab = psx_mod_read_word(st + 0xB8u);
+    const uint8_t who = psx_mod_read_byte(RUN_FIGHT_OPPONENT);
+    if (tab < 0x80000000u || tab >= 0x80200000u || who >= MOA_RUN_SLOTS) {
+        run_log("payout: table %08x, opponent %u: left alone", (unsigned)tab, who);
+        return;
+    }
+    const uint32_t was = psx_mod_read_word(tab + 8u * who);
+    psx_mod_write_word(tab + 8u * who, run_pay);
+    run_log("payout: %u (stock %u), credits %u", (unsigned)run_pay, (unsigned)was,
+            (unsigned)psx_mod_read_word(RUN_CREDITS));
+    run_pay = 0;
 }
 
 /* Arena 0 sites: s2 (open) or s0 (the rest) = state + 0x80. */
@@ -591,7 +841,7 @@ static void run_a0_open(struct CPUState *cpu, uint32_t address)
     (void)address;
     if (!run_a0(cpu, 18)) return;
     const uint32_t b = cpu->gpr[18];
-    cpu->gpr[2] = MOA_RUN_LADDER;                         /* rows: ranks 1-15 only */
+    cpu->gpr[2] = psx_mod_read_byte(b + 0x5Fu);           /* the arena's count */
     psx_mod_write_byte(b + 0x5Cu, 0);                     /* the ranked list */
     psx_mod_counter_add("moa.run.a0_open", 1);
 }
@@ -672,8 +922,7 @@ static uint32_t run_remap(uint32_t entry)
     if (entry < RUN_A0_FIRST || entry >= RUN_A0_FIRST + 4u * MOA_RUN_SLOTS) return entry;
     const uint32_t kind = (entry - RUN_A0_FIRST) / MOA_RUN_SLOTS;
     const uint32_t e = (entry - RUN_A0_FIRST) % MOA_RUN_SLOTS;
-    if (e + 1u >= MOA_RUN_LADDER) return entry;           /* the player's and hidden entries */
-    const struct moa_run_pick p = run_state.lineup.slot[MOA_RUN_LADDER - 1u - e];
+    const struct moa_run_pick p = run_state.lineup.slot[MOA_RUN_SLOTS - 1u - e];
     if (p.arena == MOA_RUN_PLAYER || p.arena == MOA_RUN_GHOST) return entry;
     uint32_t first, count;
     const uint32_t ix = run_index();
@@ -766,14 +1015,16 @@ static void run_apply_fix(int kind, uint32_t buf, uint32_t bytes)
         return;
     }
     int missing = 0;
-    if (kind == KIND_REWARDS) return;                     /* the game's own prize money per rank */
     for (uint32_t i = 0; i < bytes; ++i) out[i] = psx_mod_read_byte(buf + i);
-    /* Entry 14 (rank 15) is the player's place: it takes the stock player
-     * entry (49). Entries 15-49 stay as they are, hidden below the ladder. */
-    memcpy(out + (MOA_RUN_LADDER - 1u) * stride, out + (MOA_RUN_SLOTS - 1u) * stride, stride);
-    for (uint32_t e = 0; e + 1u < MOA_RUN_LADDER; ++e) {
+    for (uint32_t e = 0; e + 1u < MOA_RUN_SLOTS; ++e) {   /* entry 49: the player */
         uint8_t *rec = out + e * stride;
-        const struct moa_run_pick p = run_state.lineup.slot[MOA_RUN_LADDER - 1u - e];
+        const struct moa_run_pick p = run_state.lineup.slot[MOA_RUN_SLOTS - 1u - e];
+        if (kind == KIND_REWARDS) {                       /* every win pays 1 P (the game's own prize screen) */
+            memset(rec, 0, 4);
+            rec[0] = 1;
+            memset(rec + 4, 0xFF, 4);
+            continue;
+        }
         if (p.arena == MOA_RUN_PLAYER) continue;
         if (p.arena == MOA_RUN_GHOST) {
             if (p.rank >= MOA_RUN_SLOTS) continue;
@@ -875,7 +1126,7 @@ static void run_sampler_entry(struct CPUState *cpu, uint32_t address)
         }
         if (!won && !lost) run_result_seen = 0;   /* a new fight: its result is not booked yet */
         if (done && !won && lost) run_book_loss("in fight");
-        if (won && !lost) run_book_win(psx_mod_read_byte(RUN_FIGHT_OPPONENT), "in fight");
+        if (done && won && !lost) (void)run_book_win(psx_mod_read_byte(RUN_FIGHT_OPPONENT), "in fight");
     }
     const uint16_t b = psx_mod_read_half(RUN_PAD_BUFFER + 2u);
     if (!(b & RUN_PAD_SELECT)) {                  /* held (active low) */
@@ -893,10 +1144,11 @@ static void run_frame_hook(void)
         psx_mod_write_byte(RUN_ARENA_LOCK, 0);
         psx_mod_counter_add("moa.run.arena_unlocked", 1);
     }
+    run_show_frame();
     if (run_loss_wait) run_loss_wait--;      /* the return itself is made in a guest hook */
     if (run_autopilot && run_stage == STAGE_BACK) {
         if (++run_frames - run_back_start >= RUN_BACK_FRAMES) run_finish_handover();
-        else psx_mod_set_loading_screen("ROGUE ARENA DEMO  Preparing your run", 98);
+        else psx_mod_set_loading_screen("ROGUE ARENA  Preparing your run", 98);
         return;
     }
     if (run_autopilot) {
@@ -904,12 +1156,12 @@ static void run_frame_hook(void)
         const uint32_t f = run_frames++;
         int permille = (int)(f * 1000u / (RUN_HUB_TIMEOUT / 3u));
         if (permille > 950) permille = 950;
-        psx_mod_set_loading_screen("ROGUE ARENA DEMO  Preparing your run", permille / 10);
+        psx_mod_set_loading_screen("ROGUE ARENA  Preparing your run", permille / 10);
         if (f >= RUN_HUB_TIMEOUT) run_reach_hub("moa.run.hub_timeout");
         return;
     }
     if (run_fade) {                            /* a short hold at 100%, then away */
-        if (--run_fade) psx_mod_set_loading_screen("ROGUE ARENA DEMO  Ready", 100);
+        if (--run_fade) psx_mod_set_loading_screen("ROGUE ARENA  Ready", 100);
         else psx_mod_set_loading_screen(NULL, 0);
     }
 }
@@ -925,6 +1177,7 @@ PSX_MOD_CONSTRUCTOR(moa_arena_run_boot_register)
     (void)psx_game_register_offline_function_entry(RUN_HUB_RESUME, run_hub_entry);
     (void)psx_game_register_offline_function_entry(RUN_NEWGAME_FRAME, run_newgame_entry);
     (void)psx_game_register_offline_function_entry(RUN_RESULT, run_result_entry);
+    (void)psx_game_register_offline_function_entry(RUN_PAYOUT, run_payout_entry);
     (void)psx_game_register_offline_function_filter(RUN_HUB_PICK, run_hub_pick_filter);
     (void)psx_game_register_offline_function_entry(RUN_FIGHT_SAMPLER, run_sampler_entry);
     (void)psx_game_register_offline_instruction(RUN_A0_OPEN, RUN_A0_OPEN_I, run_a0_open);

@@ -226,11 +226,14 @@ enum { KIND_BUILDS = 0, KIND_NAMES, KIND_REWARDS, KIND_AI };
  * (docs/mapping/menus-hub.md, mode-launch.md):
  *   1. SCENARIO row (0x800AB58C): 0x8003EA94 = 255, mode 0, five setup calls,
  *      Human PLUS bytes cleared, 0x80057B28(2), menu pictures 0x80057CB0(4, 0/1/4).
- *   2. LOAD (0x80073424 after its card read, 0x800743E8): the save file's
- *      first 0xE80 bytes (session card, block 1) in a buffer, checksum
- *      0x80070F70(buf + 560) == word buf + 512, unpack 0x80072E54(buf), emblem
- *      LoadImage 0x8002C75C(0x800CC070, buf + 1080) / (0x800CC078, buf + 3128),
- *      DrawSync, six setup calls.
+ *   2. LOAD's 'N' path (Master of Arena's own save; 0x80073424 after its card
+ *      read): the save file's first 0xE80 bytes (session card, block 1),
+ *      checksum = sum of inverted bytes 432..3671 (0x80070F1C) == word +384,
+ *      byte +3672 == 1, then LOAD's inline unpack (0x80073610..0x80073B90),
+ *      replayed here as the 11 copies in k_run_d_unpack, emblem LoadImage
+ *      0x8002C75C(0x800CC070, buf + 1152) / (0x800CC078, buf + 3200),
+ *      DrawSync, six setup calls, 0x8003EA82 = 1. (0x80070F70 / 0x80072E54
+ *      are LOAD's import path for original Armored Core saves, not ours.)
  *   3. Open the hub (0x800552C0, as LOAD's callback 0x800AC9E8 does) on
  *      entry 5 (Arena), and press X once in its input state (0x80055848).
  * The run is handed over at step 2 (the arena hooks need it); the loading
@@ -246,10 +249,30 @@ static const uint32_t k_run_d_scenario[] = {
 #define RUN_D_PICTURES       0x80057CB0u  /* (4, entry): MENU_TIM.T 0, 1, 4 */
 #define RUN_D_SIG_PICTURES   0x27BDFFE8u
 #define RUN_D_SAVE_BYTES     3712u        /* 0xE80, what LOAD reads */
-#define RUN_D_SUM            0x80070F70u  /* (buf + 560): byte sum */
-#define RUN_D_SIG_SUM        0x00002821u  /* addu a1,zero,zero */
-#define RUN_D_UNPACK         0x80072E54u  /* (buf) */
-#define RUN_D_SIG_UNPACK     0x27BDFDE0u  /* addiu sp,sp,-544 */
+#define RUN_D_SUM_AT         384u         /* word: sum of ~byte over 3240 bytes from 432 */
+#define RUN_D_SUM_FROM       432u
+#define RUN_D_SUM_BYTES      3240u
+#define RUN_D_VERSION_AT     3672u        /* byte: 1 */
+/* LOAD's 'N' check and first copy, so the copy list below is the right one. */
+#define RUN_D_LOAD_N         0x80073480u  /* addiu v0,zero,'N' */
+#define RUN_D_SIG_LOAD_N     0x2402004Eu
+#define RUN_D_LOAD_COPY      0x80073620u  /* addiu t4,v0,0x6FB0 */
+#define RUN_D_SIG_LOAD_COPY  0x244C6FB0u
+/* LOAD's inline unpack for 'N' saves (0x80073610..0x80073B90, flag 0),
+ * traced statically: every byte it writes comes from the save, unchanged. */
+static const struct { uint32_t dst; uint16_t from, bytes; } k_run_d_unpack[] = {
+    { 0x80036FB0u,  440,  12 },   /* garage parts */
+    { 0x80036FBCu,  592, 560 },   /* paint, owned (+640), shop stock (+896) ... */
+    { 0x800371ECu,  460,  36 },   /* AC name, pilot name */
+    { 0x8003EA70u,  454,   2 },   /* options */
+    { 0x8003EA72u,  452,   2 },
+    { 0x8003EA74u,  456,   4 },   /* credits */
+    { 0x8003EAC8u, 3564,   8 },   /* Human PLUS */
+    { 0x8004AC50u, 3232,  44 },
+    { 0x8004B508u,  496,  96 },
+    { 0x8004B568u, 3276, 288 },
+    { 0x8004B688u, 3572, 100 },
+};
 #define RUN_D_LOAD_IMAGE     0x8002C75Cu  /* boot exe LoadImage(rect, data) */
 #define RUN_D_DRAW_SYNC      0x8002C4B0u
 #define RUN_D_EMBLEM_RECT    0x800CC070u
@@ -427,8 +450,8 @@ static int run_direct_read_save(uint8_t out[RUN_D_SAVE_BYTES])
 static int run_direct_code_ok(void)
 {
     return psx_mod_read_word(RUN_D_PICTURES) == RUN_D_SIG_PICTURES &&
-           psx_mod_read_word(RUN_D_SUM) == RUN_D_SIG_SUM &&
-           psx_mod_read_word(RUN_D_UNPACK) == RUN_D_SIG_UNPACK &&
+           psx_mod_read_word(RUN_D_LOAD_N) == RUN_D_SIG_LOAD_N &&
+           psx_mod_read_word(RUN_D_LOAD_COPY) == RUN_D_SIG_LOAD_COPY &&
            psx_mod_read_word(RUN_D_HUB_OPEN) == RUN_D_SIG_HUB_OPEN &&
            psx_mod_read_word(RUN_D_HUB_INPUT) == RUN_D_SIG_HUB_INPUT;
 }
@@ -443,16 +466,21 @@ static int run_direct_boot(struct CPUState *cpu)
     static uint8_t save[RUN_D_SAVE_BYTES];
     if (!run_direct_code_ok()) { run_log("direct: menu code not as expected"); return 0; }
     if (!run_direct_read_save(save)) { run_log("direct: run card not readable"); return 0; }
+    uint32_t sum = 0;
+    for (uint32_t i = 0; i < RUN_D_SUM_BYTES; i++) sum += ~(uint32_t)save[RUN_D_SUM_FROM + i];  /* nor on the byte */
+    const uint32_t want = (uint32_t)save[RUN_D_SUM_AT] | (uint32_t)save[RUN_D_SUM_AT + 1] << 8 |
+                          (uint32_t)save[RUN_D_SUM_AT + 2] << 16 | (uint32_t)save[RUN_D_SUM_AT + 3] << 24;
+    if (sum != want || save[RUN_D_VERSION_AT] != 1u) {
+        run_log("direct: save check failed (sum %08x, stored %08x, byte 3672 = %u)",
+                (unsigned)sum, (unsigned)want, save[RUN_D_VERSION_AT]);
+        return 0;
+    }
     if (!run_direct_buf) run_direct_buf = psx_mod_alloc_guest_memory(RUN_D_SAVE_BYTES, 4u);
     if (!run_direct_buf) { run_log("direct: no guest memory"); return 0; }
     for (uint32_t i = 0; i < RUN_D_SAVE_BYTES; i += 4u)
         psx_mod_write_word(run_direct_buf + i, (uint32_t)save[i] | (uint32_t)save[i + 1] << 8 |
                                                (uint32_t)save[i + 2] << 16 | (uint32_t)save[i + 3] << 24);
     const uint32_t ra = cpu->gpr[31], buf = run_direct_buf;
-    if (psx_mod_call_guest(cpu, RUN_D_SUM, ra, buf + 560u, 0, 0, 0) != psx_mod_read_word(buf + 512u)) {
-        run_log("direct: save checksum does not match");
-        return 0;
-    }
     /* 1. SCENARIO MODE */
     psx_mod_write_byte(RUN_D_SCORE, 255);
     psx_mod_write_byte(RUN_D_MODE, 0);
@@ -463,10 +491,12 @@ static int run_direct_boot(struct CPUState *cpu)
     (void)psx_mod_call_guest(cpu, RUN_D_PICTURES, ra, 4, 0, 0, 0);
     (void)psx_mod_call_guest(cpu, RUN_D_PICTURES, ra, 4, 1, 0, 0);
     (void)psx_mod_call_guest(cpu, RUN_D_PICTURES, ra, 4, 4, 0, 0);
-    /* 2. LOAD, after the card read */
-    (void)psx_mod_call_guest(cpu, RUN_D_UNPACK, ra, buf, 0, 0, 0);
-    (void)psx_mod_call_guest(cpu, RUN_D_LOAD_IMAGE, ra, RUN_D_EMBLEM_RECT, buf + 1080u, 0, 0);
-    (void)psx_mod_call_guest(cpu, RUN_D_LOAD_IMAGE, ra, RUN_D_CLUT_RECT, buf + 3128u, 0, 0);
+    /* 2. LOAD's 'N' path, after the card read */
+    for (size_t k = 0; k < sizeof k_run_d_unpack / sizeof k_run_d_unpack[0]; k++)
+        for (uint32_t i = 0; i < k_run_d_unpack[k].bytes; i++)
+            psx_mod_write_byte(k_run_d_unpack[k].dst + i, save[k_run_d_unpack[k].from + i]);
+    (void)psx_mod_call_guest(cpu, RUN_D_LOAD_IMAGE, ra, RUN_D_EMBLEM_RECT, buf + 1152u, 0, 0);
+    (void)psx_mod_call_guest(cpu, RUN_D_LOAD_IMAGE, ra, RUN_D_CLUT_RECT, buf + 3200u, 0, 0);
     (void)psx_mod_call_guest(cpu, RUN_D_DRAW_SYNC, ra, 0, 0, 0, 0);
     for (size_t i = 0; i < sizeof k_run_d_after_load / sizeof k_run_d_after_load[0]; i++)
         (void)psx_mod_call_guest(cpu, k_run_d_after_load[i], ra, 0, 0, 0, 0);

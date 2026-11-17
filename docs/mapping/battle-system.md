@@ -42,8 +42,9 @@ See `ram-map-gameshark.md` for the full code-derived list.
 
 ## Test setup
 
-Plain 2-player **VS** (split screen), time limit set to unlimited. Both units are under
-direct control (no AI, no clock), so one action at a time can be repeated and logged: one
+Plain 2-player **VS** (split screen). The clock is kept alive by writing 2,600 back into
+0x80097EB4 (unlimited time is also a real option in player 1's or 2's VS settings, but the
+write is quicker to set up). Both units are under direct control (no AI), so one action at a time can be repeated and logged: one
 shot, one boost, one hit. VS runs on its **own engine (FDAT 209)**, not the arena engine: the
 arena-only addresses (the AP codes gated on 0x8007BBAE, the AI hooks) do not apply to plain
 VS until re-found there. Player blocks (0x80045198) are shared by all engines.
@@ -124,6 +125,22 @@ Check: WG-RF35 (attack 218) on the default AC (shell factor 27): 218 × 27 >> 6 
 Hit record (`0x801D6F88` for P2's rifle): byte 0 flags (= weapon detail +0x12, 0x17),
 +2 attack (218), +4 impact (3) — the weapon detail table values.
 
+## Blade (VS engine, measured 2026-11-17)
+
+The default VS AC carries an LS-2001 blade. It is not in the Triangle weapon cycle; it has
+its own button, **Circle**. A swing lunges about 500 units forward along the facing
+(facing 0 = +z).
+
+- One blade hit on the default AC = **246 AP**. Same damage routine as guns
+  (AP write at `0x80079720`), treated as an **energy** hit: 738 × 32 (player block +0x273)
+  >> 6 = 369, × 2 / 3 = **246**. Repeated 4 times, same result each time.
+- In RAM: P1 player block **+0x2B8 = 738** (compiled +0x68, blade attack) and
+  **+0x26C = 2,050** (compiled +0x1C, charge drain). This confirms the data chat's reading:
+  blade record **+0x30 = attack**, +0x2C = charge drain.
+- Armored-CoreR's "492 seen" is two blade hits (one swing once landed 492 here too). The
+  "683 expected" came from the swapped fields and can be dropped.
+- Reach: a hit landed from 650–700 units away facing the target; from 400 it missed.
+
 ## Match timer (VS engine, measured)
 
 - Time left = **game steps** at `0x80097EB4` (u16, timer struct `0x80097EA0` +0x14).
@@ -137,16 +154,14 @@ Hit record (`0x801D6F88` for P2's rifle): byte 0 flags (= weapon detail +0x12, 0
 Debug-tools Linux build from branch `mapping-debug` (draft release, not for players),
 run headless with the debug server on port 4370. Pad input via `press` (port 1/2),
 RAM via `read_ram`/`write_ram`, writers via `wtrace_add` + `wtrace_dump`. VS from the
-title screen: Start, Start, Down, Cross, Cross. Cross confirms; Square fires; Circle
-boosts; L1/R1 strafe; L2/R2 look; Left/Right turn.
+title screen: Start, Start, Down, Cross, Cross. Cross confirms; Square fires; **Circle
+swings the blade; Cross boosts** (user-confirmed; earlier notes had Circle as boost);
+Triangle changes weapon; L1/R1 strafe; L2/R2 look; Left/Right turn.
 
 ## Open questions
 
-- Unlimited time as a real option: NOP the decrement at `0x800523CC` (needs a mod hook).
-- Blade: the default VS AC shows only RIFLE and SMALL MISSILE (Triangle cycles them), so
-  the blade test needs an AC with a blade set up first.
-
-- Blade damage mismatch (683 expected vs 492 seen in Armored-CoreR): data chat says blade record +0x30 is attack and +0x2C charge drain (swapped in the old notes). Re-measure a blade hit in VS.
+- Blade double hit: one swing once did 492 (= 2 × 246). Not caught in the write trace;
+  which conditions give a second hit (lunge passing through, distance) is still open.
 
 - Base address of the AC object array in the arena engine, and AP's offset in it.
 - Is the player block a copy made at match start, or live? (Test: poke range mid-fight.)

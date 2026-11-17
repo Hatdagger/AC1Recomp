@@ -107,7 +107,7 @@ jobs:
             -DPSXRECOMP_REQUIRE_GAME_C=ON \
             -DPSXRECOMP_FORCE_SETUP_HOST=OFF \
             -DPSXRECOMP_ALLOW_NO_BIOS=OFF \
-            -DPSX_SETUP_WIZARD=ON \
+            -DPSX_SETUP_WIZARD=ON -DPSX_DEBUG_TOOLS=ON \
             -DGLSLC_EXE="$(command -v glslc)" \
             -DFETCHCONTENT_SOURCE_DIR_SDL3="${PSX_SDL3_SOURCE_DIR}" \
             2>&1 | tee build-ci-configure.log

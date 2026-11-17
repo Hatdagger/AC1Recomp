@@ -1107,9 +1107,9 @@ static void draw_main(LauncherModel* m, const Gfx& g, const Input& in) {
                       : "Start Armored Core: Master of Arena with the settings "
                         "and mods chosen here." };
     if (!m->in_session)
-        entries[count++] = { MAIN_RUN, "ROGUE ARENA DEMO",
-            "Demo: 14 opponents, random lineup. A random AC against 14 opponents "
-            "from every arena, weakest first, and one loss ends it." };
+        entries[count++] = { MAIN_RUN, "ROGUE ARENA",
+            "A roguelike run: a random AC, 49 opponents from every arena, 1 P "
+            "a win to spend in the shop, and one loss ends it." };
     if (m->netplay_supported && !m->in_session)
         entries[count++] = { MAIN_NETWORK, "MULTIPLAYER",
             "Versus for two players over your network, or straight to an address "

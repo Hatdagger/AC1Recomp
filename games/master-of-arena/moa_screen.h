@@ -48,7 +48,8 @@ const uint32_t *moa_screen_render(int win_w, int win_h, const char *status,
  * under it, up to 8 tiles in rows of 4 and a footer. A tile shows its
  * thumbnail (128x128 0xAARRGGBB, NULL = the category in large text), the
  * part's name and its label (price). Same canvas and font as above;
- * returns NULL until the font is loaded. */
+ * returns NULL until the font is loaded. see_through: no steel backdrop, a
+ * dark veil instead (alpha 0xB4), for psx_mod_set_overlay_image. */
 struct moa_screen_tile {
     const char *category;     /* "HEAD", "BACK WEAPON" ... */
     const char *name;
@@ -57,7 +58,18 @@ struct moa_screen_tile {
 };
 const uint32_t *moa_screen_render_tiles(int win_w, int win_h, const char *title,
                                         const char *line, const struct moa_screen_tile *tile,
-                                        int count, const char *footer, int *out_w, int *out_h);
+                                        int count, const char *footer, int see_through,
+                                        int *out_w, int *out_h);
+
+/* A choice screen (Rogue Arena prize picks): a title, a line under it, up
+ * to 4 boxes stacked in the middle, one shared width that fits the longest
+ * label (16 characters at most), the box at `cursor` highlighted, and a
+ * footer. Same canvas and font as above; NULL until the font is loaded.
+ * see_through: as for the tiles. */
+const uint32_t *moa_screen_render_choice(int win_w, int win_h, const char *title,
+                                         const char *line, const char *const *label,
+                                         int count, int cursor, const char *footer,
+                                         int see_through, int *out_w, int *out_h);
 
 #ifdef __cplusplus
 }

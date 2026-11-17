@@ -15,10 +15,7 @@
 extern "C" {
 #endif
 
-#define MOA_RUN_SLOTS 50     /* storage (arena 0 holds 50 entries on the disc) */
-/* Rogue Arena Demo: the ladder is the player's place (rank 15) and 14
- * opponents above it (ranks 14-1); arena 0's entries 15-49 are hidden. */
-#define MOA_RUN_LADDER 15
+#define MOA_RUN_SLOTS 50
 
 /* Where an opponent comes from. Each source is one arena block. */
 enum moa_run_band {
@@ -82,7 +79,7 @@ int moa_run_start_ac(const struct moa_parts *p, uint64_t seed, uint8_t rec[13]);
 /* ---- the run file -------------------------------------------------------- */
 
 #define MOA_RUN_MAGIC   0x4E555241u   /* "ARUN" */
-#define MOA_RUN_VERSION 4u
+#define MOA_RUN_VERSION 6u    /* 4 was the 14-opponent demo; 5 had no prizes (still loads) */
 
 /* A lineup slot whose arena is MOA_RUN_GHOST is a ghost: `rank` is its
  * index in moa_run_lineup.ghost. */
@@ -96,7 +93,7 @@ struct moa_run_ghost {
     uint8_t  rec[13];              /* the build, as moa_run_state.start_ac */
     uint8_t  used;                 /* 1 = on the ladder */
     uint8_t  attempt;              /* the attempt it came from */
-    uint8_t  pad;
+    uint8_t  rank_held;            /* the best rank it reached (where it lost); 0 = not kept (older runs) */
     char     pilot[17];
     char     ac[17];
     struct moa_run_pick ai_from;   /* AI: copied from the opponent it displaced */
@@ -109,9 +106,6 @@ struct moa_run_lineup {
     uint8_t  ghosts;               /* ghosts on the ladder now */
     uint8_t  pad[2];
     uint32_t menu_lba;             /* GG/MS/MENU_TIM.T's first sector on the disc */
-    /* Parts that cost 1 credit: every attempt's starting frame and internal
-     * parts (owned-table index, base + row). Never cleared on Retry. */
-    uint8_t  cheap[32];
     struct moa_run_pick slot[MOA_RUN_SLOTS];          /* ranks 50..1 */
     struct moa_run_ghost ghost[MOA_RUN_SLOTS];
 };
@@ -125,11 +119,23 @@ struct moa_run_progress {
     uint8_t  over;                 /* 1 = lost: Retry or New Run only */
     uint8_t  best;                 /* most wins of any attempt */
     uint8_t  pad[2];
-    uint32_t beaten;               /* bit e: arena 0 entry e beaten (booked once) */
+    uint32_t beaten[2];            /* bit e: arena 0 entry e beaten (booked once) */
     char     pilot[17];            /* ASCII, as typed in the launcher */
     char     ac[17];               /* may be empty */
-    /* step 2 adds shop stock and owned parts here. */
+    /* Version 6. P: `points` is every P earned (wins and prizes); `p_paid` how
+     * much of it went into the game's credits, `p_card` how much of that the
+     * run card holds (its last save). The card's credits are what is left
+     * after shopping, so P is added to them, never set from `points`. */
+    uint8_t  p_paid, p_card;
+    uint8_t  prizes;               /* bit m: prize pick m taken (MOA_RUN_PRIZE_WINS) */
+    uint8_t  prize_saved;          /* bit m: that prize is on the run card */
+    uint8_t  prize_ix[7];          /* the part's owned index, MOA_RUN_PRIZE_P = P */
 };
+
+/* Prize picks after these wins; prize_ix value for a P prize. */
+#define MOA_RUN_PRIZES      7
+#define MOA_RUN_PRIZE_WINS  { 1, 3, 6, 9, 12, 18, 24 }
+#define MOA_RUN_PRIZE_P     0xFFu
 
 struct moa_run_state {
     uint32_t magic, version;
@@ -149,10 +155,8 @@ int moa_run_retry(const struct moa_parts *p, struct moa_run_state *s);
 
 /* A new win (the caller checks it beat someone not beaten before). */
 int moa_run_win(struct moa_run_state *s);
-/* Owned-table index of a part (record byte b), -1 if none. */
+/* Owned/shop table index of a part (record byte b), -1 if none. */
 int moa_run_part_index(const uint8_t rec[13], int b);
-/* 1 = that record byte is a frame or internal part (1 credit in the demo). */
-int moa_run_part_cheap(const uint8_t rec[13], int b);
 /* A loss: the run is over (kept for Retry). */
 void moa_run_lose(struct moa_run_state *s);
 

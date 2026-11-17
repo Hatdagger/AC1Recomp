@@ -2439,6 +2439,25 @@ extern "C" int psx_debug_window_size(int w, int h) {
 static bool          g_gl_active = false;    /* GL context live -> GL present path */
 static bool          g_vk_active = false;    /* Vulkan context live -> VK present path */
 
+/* A plugin's see-through overlay (psx_mod_set_overlay_image): the runtime
+ * overlay layer's lowest slot. Drawn by the emulation thread's present (the
+ * render thread gets a copy per frame), so the buffer only changes here. */
+static std::vector<uint32_t> s_mod_overlay;
+extern "C" int psx_mod_set_overlay_image(const uint32_t *argb, int w, int h) {
+    if (!argb || w <= 0 || h <= 0 || w > 4096 || h > 4096) {
+        psx_savestate_menu_set_mod_overlay(NULL, 0, 0);
+        s_mod_overlay.clear();
+        return 1;
+    }
+    if (g_vk_active) {               /* the Vulkan OSD is copied, not blended */
+        psx_savestate_menu_set_mod_overlay(NULL, 0, 0);
+        return 0;
+    }
+    s_mod_overlay.assign(argb, argb + (size_t)w * (size_t)h);
+    psx_savestate_menu_set_mod_overlay(s_mod_overlay.data(), w, h);
+    return 1;
+}
+
 /* present_shot — capture the COMPOSED present surface, i.e. the frame after the
  * backend has fitted the display buffer to the window, so the PNG carries the
  * aspect the player is actually looking at.
@@ -21566,6 +21585,7 @@ soft_return_lobby:
     g_offline_launcher_return = 0;
     g_mod_fast_forward = 0;
     psx_mod_set_loading_screen(NULL, 0);
+    (void)psx_mod_set_overlay_image(NULL, 0, 0);
     teardown_game_session_keep_lobby();
     PSXRecompV4::mod_runtime_end_netplay();
 #if defined(RECOMP_LAUNCHER) && defined(PSX_HAS_LOBBY_CLIENT)

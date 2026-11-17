@@ -1166,7 +1166,81 @@ static void png_sink_write(void *ctx, void *data, int size)
     s->size += (size_t)size;
 }
 
+/* Text `scale` x the card font, `y` its vertical middle. */
+static void draw_text_x(struct canvas *cv, int x, int y, const char *s, int scale, int r, int g, int b)
+{
+    const int top = y - MOA_FONT_H * scale / 2;
+    for (; *s; s++) {
+        int ch = (unsigned char)*s;
+        if (ch >= 'a' && ch <= 'z') ch -= 32;
+        if (ch < 32 || ch >= 127) ch = '?';
+        const uint16_t *rows = moa_font_rows[ch - 32];
+        for (int j = 0; j < MOA_FONT_H; j++)
+            for (int i = 0; i < 16; i++)
+                if (rows[j] >> i & 1u) fill(cv, x + i * scale, top + j * scale, scale, scale, r, g, b);
+        x += (moa_font_width[ch - 32] + 1) * scale;
+    }
+}
+
+/* The art (512x512 RGBA over the card background) as the card's emblem:
+ * 8x8 blocks averaged, then 16 colours by a few rounds of k-means. */
+static void art_to_emblem(const uint8_t *art, struct moa_card *c)
+{
+    static int px[64 * 64][3];
+    for (int y = 0; y < 64; y++)
+        for (int x = 0; x < 64; x++) {
+            int sum[3] = { 0, 0, 0 };
+            for (int j = 0; j < 8; j++)
+                for (int i = 0; i < 8; i++) {
+                    const uint8_t *q = art + (((size_t)(y * 8 + j) * 512) + (size_t)(x * 8 + i)) * 4;
+                    const int a = q[3], bg[3] = { 6, 9, 13 };
+                    for (int k = 0; k < 3; k++) sum[k] += (q[k] * a + bg[k] * (255 - a)) / 255;
+                }
+            for (int k = 0; k < 3; k++) px[y * 64 + x][k] = sum[k] / 64;
+        }
+    double cen[16][3];
+    for (int i = 0; i < 16; i++)                 /* start: spread over the pixels by brightness */
+        for (int k = 0; k < 3; k++) cen[i][k] = px[(i * 4096 / 16 + 2048 / 16) % 4096][k];
+    for (int round = 0; round < 10; round++) {
+        double acc[16][4];
+        memset(acc, 0, sizeof acc);
+        for (int p = 0; p < 4096; p++) {
+            int best = 0; double bd = 1e18;
+            for (int i = 0; i < 16; i++) {
+                const double d0 = px[p][0] - cen[i][0], d1 = px[p][1] - cen[i][1], d2 = px[p][2] - cen[i][2];
+                const double d = d0 * d0 + d1 * d1 + d2 * d2;
+                if (d < bd) { bd = d; best = i; }
+            }
+            for (int k = 0; k < 3; k++) acc[best][k] += px[p][k];
+            acc[best][3] += 1;
+            c->emblem[p] = (uint8_t)best;
+        }
+        for (int i = 0; i < 16; i++)
+            if (acc[i][3] > 0) for (int k = 0; k < 3; k++) cen[i][k] = acc[i][k] / acc[i][3];
+    }
+    for (int i = 0; i < 16; i++) {
+        c->palette[i] = c15(cen[i][0], cen[i][1], cen[i][2]);
+        if (!c->palette[i]) c->palette[i] = 1u << 10;   /* 0 is see-through on the PlayStation */
+    }
+}
+
+static int card_png(const struct moa_card *c, const char *path, const uint8_t *art,
+                    const char *badge, const char *footer);
+
 int moa_card_write_png(const struct moa_card *c, const char *path)
+{
+    return card_png(c, path, NULL, NULL, NULL);
+}
+
+int moa_card_write_png_ex(struct moa_card *c, const char *path, const uint8_t *art_rgba,
+                          const char *badge, const char *footer)
+{
+    if (art_rgba) art_to_emblem(art_rgba, c);
+    return card_png(c, path, art_rgba, badge, footer);
+}
+
+static int card_png(const struct moa_card *c, const char *path, const uint8_t *art,
+                    const char *badge, const char *footer)
 {
     uint8_t payload[164];
     const int n = card_pack(c, payload);
@@ -1198,18 +1272,33 @@ int moa_card_write_png(const struct moa_card *c, const char *path)
              v & 4 ? CARD_INK_ON : CARD_INK_OFF, v & 2 ? CARD_INK_ON : CARD_INK_OFF,
              v & 1 ? CARD_INK_ON : CARD_INK_OFF);
     }
-    /* emblem: 64x64 at 8x */
-    for (int y = 0; y < 64; y++)
-        for (int x = 0; x < 64; x++) {
-            const int *p = rgb[c->emblem[y * 64 + x] & 15];
-            fill(&cv, CARD_EX + x * 8, CARD_EY + y * 8, 8, 8, p[0], p[1], p[2]);
+    /* emblem: 64x64 at 8x, or the art at full size (its 8x8 averages are the emblem) */
+    for (int y = 0; y < 64 * 8; y += art ? 1 : 8)
+        for (int x = 0; x < 64 * 8; x += art ? 1 : 8) {
+            if (art) {
+                const uint8_t *q = art + ((size_t)y * 512 + (size_t)x) * 4;
+                const int a = q[3];
+                fill(&cv, CARD_EX + x, CARD_EY + y, 1, 1, (q[0] * a + 6 * (255 - a)) / 255,
+                     (q[1] * a + 9 * (255 - a)) / 255, (q[2] * a + 13 * (255 - a)) / 255);
+                continue;
+            }
+            const int *p = rgb[c->emblem[(y / 8) * 64 + x / 8] & 15];
+            fill(&cv, CARD_EX + x, CARD_EY + y, 8, 8, p[0], p[1], p[2]);
         }
+    if (badge && badge[0]) {                       /* top right of the picture, on a plate */
+        const int sc = 3, w = text_width(badge) * sc + 24, h = MOA_FONT_H * sc + 16;
+        const int x1 = CARD_EX + 512 - 8, x0 = x1 - w, y0 = CARD_EY + 8;
+        fill(&cv, x0, y0, w, h, 14, 20, 28);
+        fill(&cv, x0, y0, w, 2, 255, 196, 70); fill(&cv, x0, y0 + h - 2, w, 2, 255, 196, 70);
+        fill(&cv, x0, y0, 2, h, 255, 196, 70); fill(&cv, x1 - 2, y0, 2, h, 255, 196, 70);
+        draw_text_x(&cv, x0 + 12, y0 + h / 2, badge, sc, 255, 214, 120);
+    }
     char up[20];
     upper_copy(up, c->ac);
     draw_text(&cv, CARD_EX, 44, up, 185, 212, 207);
     upper_copy(up, c->pilot);
     draw_text(&cv, CARD_EX + 512 - text_width(up), 44, up, 95, 127, 128);
-    draw_text(&cv, CARD_EX, 598, "MASTER OF ARENA  /  AI BATTLE ENTRY", 95, 127, 128);
+    draw_text(&cv, CARD_EX, 598, footer ? footer : "MASTER OF ARENA  /  AI BATTLE ENTRY", 95, 127, 128);
 
     struct png_sink sink = { 0 };
     const int ok = stbi_write_png_to_func(png_sink_write, &sink, CARD_N, CARD_N, 3, cv.px,

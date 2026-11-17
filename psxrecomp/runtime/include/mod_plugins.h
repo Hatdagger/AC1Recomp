@@ -113,6 +113,13 @@ void psx_mod_set_loading_screen(const char *text, int percent);
  * above is then only logged). Copied; NULL clears it. Render it at the
  * window's aspect from psx_mod_window_size. */
 void psx_mod_set_loading_image(const uint32_t *argb, int w, int h);
+/* Offline only. A picture drawn over the live game (the game keeps running
+ * and showing underneath), 0xAARRGGBB, stretched over the whole window and
+ * blended by its alpha: a menu over a dimmed game. Copied; NULL clears it.
+ * Below the runtime's own menus. Returns 1 when it is shown see-through; 0
+ * when this renderer can't blend it (Vulkan) and nothing was set, so the
+ * caller can fall back to psx_mod_set_loading_image. */
+int psx_mod_set_overlay_image(const uint32_t *argb, int w, int h);
 /* The output window's size in pixels; 0x0 when there is none (headless). */
 void psx_mod_window_size(int *w, int *h);
 /* Port `slot`'s buttons as the host controller holds them, PSX layout,

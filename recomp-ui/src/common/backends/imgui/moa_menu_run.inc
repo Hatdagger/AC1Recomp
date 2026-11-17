@@ -1,4 +1,4 @@
-/* ---- Rogue Arena Demo page (Arena Run) -------------------------------------------------------------
+/* ---- Rogue Arena page (Arena Run) -------------------------------------------------------------
  *
  * The roguelike mode: NEW RUN, CONTINUE and SEED. The run is made here
  * (games/master-of-arena/moa_arena_run.c) and kept in a file beside memory
@@ -15,10 +15,11 @@ static char g_run_pilot[17] = "";
 static char g_run_ac[17] = "";             /* optional: blank is fine */
 enum { R_NEW = 0, R_CONTINUE, R_PILOT, R_AC, R_SEED, R_ROWS };
 
-/* The one-time notice before the first run: once OK is pressed a marker
- * file beside memory card 1 keeps it from showing again. */
+/* The one-time notice before the first run (kept from the demo for a feature
+ * to come): once OK is pressed a marker file beside memory card 1 keeps it
+ * from showing again. */
 static const char* const kRunNotice =
-    "Rogue Arena Demo may use your in-game save data, such as your AC builds, "
+    "Rogue Arena may use your in-game save data, such as your AC builds, "
     "names and run results, and may share it online with other players. "
     "Press OK to continue.";
 static int g_run_notice_for = -1;        /* the row waiting on the notice; -1 = none */
@@ -110,6 +111,7 @@ static void new_run(LauncherModel* m) {
     const int pp = phantasma_installed(m) ? 1 : 0;
     moa_run_source src[16];
     const int n = moa_run_sources_load(disc.c_str(), pp, src, 16);
+    (void)moa_run_sources_mark(disc.c_str(), &parts, src, n);   /* KARASAWA users: top 25 */
     if (n == 0 || !moa_run_new(&parts, src, n, pp, g_run_seed, &g_run)) {
         g_run_status = "A RUN COULD NOT BE MADE FROM YOUR DISC.";
         return;
@@ -179,15 +181,15 @@ static void draw_run_page(LauncherModel* m, const Gfx& g, const Input& in) {
     }
     if (!g_name_edit) move_cursor(PAGE_RUN, R_ROWS, in, R_ROWS);
     int& cur = g_state.cursor[PAGE_RUN];
-    header(g, "ROGUE ARENA DEMO", "14 OPPONENTS  ONE LIFE");
+    header(g, "ROGUE ARENA", "49 OPPONENTS  ONE LIFE");
     panel(g, 24.0f, 76.0f, 592.0f, 166.0f, "SELECT");
     char seed[17];
     moa_run_seed_text(g_run_seed, seed);
     char cont[48] = "";
     if (g_run_live)
-        std::snprintf(cont, sizeof cont, "%s  RANK %d", upper(g_run.run.pilot).c_str(), MOA_RUN_LADDER - g_run.run.wins);
+        std::snprintf(cont, sizeof cont, "%s  RANK %d", upper(g_run.run.pilot).c_str(), 50 - g_run.run.wins);
     else if (g_run_over)
-        std::snprintf(cont, sizeof cont, "LOST AT RANK %d  SAME ARENA, NEW AC", MOA_RUN_LADDER - g_run.run.wins);
+        std::snprintf(cont, sizeof cont, "LOST AT RANK %d  SAME ARENA, NEW AC", 50 - g_run.run.wins);
     const std::string pilot = name_shown(2), ac = name_shown(1);
     struct { const char* label; std::string value; bool on; } rows[R_ROWS] = {
         { "NEW RUN", g_run_live ? "ENDS THE CURRENT RUN" : "", true },
@@ -208,10 +210,10 @@ static void draw_run_page(LauncherModel* m, const Gfx& g, const Input& in) {
 
     panel(g, 24.0f, 248.0f, 592.0f, 168.0f, "RULES");
     text(g, 38.0f, 264.0f, 11.0f, kText,
-         "Demo: 14 opponents, random lineup. A random legal AC against 14 opponents "
-         "from every arena, weakest first. Wins pay the game's prize money; starting "
-         "frame and internal parts are worth 1 credit. One loss ends the run. Your "
-         "own saves are not touched.", 560.0f);
+         "A random legal AC and 49 opponents from every arena, easiest first; you "
+         "start at the bottom. Each win pays 1 P for the shop, and wins 1, 3, 6, 9, "
+         "12, 18 and 24 give a prize pick. No leaving a fight; one loss ends the "
+         "run. It plays from its own memory card; your saves are not touched.", 560.0f);
     text(g, 38.0f, 308.0f, 9.0f, kDim, kRunNotice, 560.0f);
     text(g, 38.0f, 340.0f, 11.0f, kDim, "PROJECT PHANTASMA");
     text(g, 220.0f, 340.0f, 11.0f, phantasma_installed(m) ? kOn : kDim,
@@ -221,7 +223,7 @@ static void draw_run_page(LauncherModel* m, const Gfx& g, const Input& in) {
              "Select for a new random seed. The same seed always makes the same AC and lineup.", 560.0f);
     if (!g_run_status.empty()) text(g, 38.0f, 384.0f, 11.0f, kWarn, g_run_status.c_str(), 560.0f);
     if (g_run_notice_for >= 0) {
-        panel(g, 120.0f, 150.0f, 400.0f, 130.0f, "ROGUE ARENA DEMO");
+        panel(g, 120.0f, 150.0f, 400.0f, 130.0f, "ROGUE ARENA");
         text(g, 134.0f, 168.0f, 11.0f, kText, kRunNotice, 372.0f);
         text(g, 134.0f, 252.0f, 10.0f, kText, "A  OK      B  BACK");
     }

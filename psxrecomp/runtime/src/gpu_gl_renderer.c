@@ -9028,6 +9028,7 @@ static void pass_apply_promotion(void) {
 /* Draw one host OSD ARGB image into the default framebuffer at (vx,vy)
  * in top-left window coordinates (y down). Bitmap is ow×oh; viewport is
  * dw×dh (may upscale for HiDPI / large windows). */
+static int s_osd_blend;   /* 1: the next gl_draw_osd_image keeps the image's alpha */
 static void gl_draw_osd_image(const uint32_t *px, int ow, int oh,
                               int dw, int dh, int vx, int vy, int ww, int wh) {
     if (!px || ow <= 0 || oh <= 0 || dw <= 0 || dh <= 0 ||
@@ -9061,6 +9062,12 @@ static void gl_draw_osd_image(const uint32_t *px, int ow, int oh,
     glDisable(GL_BLEND);
     if (p_glBlendEquationSeparate)
         p_glBlendEquationSeparate(PSXGL_FUNC_ADD, PSXGL_FUNC_ADD);
+    /* A plugin overlay (psx_mod_set_overlay_image) is see-through: blend it
+     * over the game by its own alpha. */
+    if (s_osd_blend && p_glBlendFuncSeparate) {
+        glEnable(GL_BLEND);
+        p_glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE);
+    }
     /* GL viewport origin is bottom-left. */
     glViewport(vx, wh - vy - dh, dw, dh);
     p_glUseProgram(s_present_prog);
@@ -9077,6 +9084,7 @@ static void gl_draw_osd_image(const uint32_t *px, int ow, int oh,
         glDrawArrays(GL_TRIANGLES, 0, 3);
         p_glBindVertexArray(0);
     }
+    if (s_osd_blend) glDisable(GL_BLEND);
     p_glUseProgram(0);
 }
 
@@ -9174,6 +9182,7 @@ static struct {
     const uint32_t *px[4];
     int w[4], h[4];
     float slide;
+    int blend3;          /* slot 3 is a plugin overlay: drawn with its alpha */
 } s_rth_ov;
 static int ov_image(int i, const uint32_t **px, int *w, int *h) {
     if (rth_replaying() && s_rth_ov.valid) {
@@ -9186,6 +9195,9 @@ static int ov_image(int i, const uint32_t **px, int *w, int *h) {
     case 2: return psx_rewind_overlay_image(px, w, h);
     default: return psx_savestate_menu_overlay_image(px, w, h);
     }
+}
+static int ov_blend3(void) {
+    return (rth_replaying() && s_rth_ov.valid) ? s_rth_ov.blend3 : psx_savestate_menu_overlay_blend();
 }
 static float ov_rewind_slide(void) {
     return (rth_replaying() && s_rth_ov.valid) ? s_rth_ov.slide : psx_rewind_slide();
@@ -9460,8 +9472,11 @@ static void gl_swap_with_osd(void) {
                 vy = wh - (int)((float)dh * slide + 0.5f);
                 gl_draw_osd_image(px, ow, oh, dw, dh, 0, vy, ww, wh);
             }
-            if (ov_image(3, &px, &ow, &oh) && px)
+            if (ov_image(3, &px, &ow, &oh) && px) {
+                s_osd_blend = ov_blend3();
                 gl_draw_osd_image(px, ow, oh, ww, wh, 0, 0, ww, wh);
+                s_osd_blend = 0;
+            }
         }
     }
     if (!rth_replaying()) host_osd_present_done();   /* replay: done at record */
@@ -10796,6 +10811,7 @@ static int rth_record_mode(void) {
 typedef struct RthOvHdr {
     int32_t needs_present, has, w[4], h[4];
     float   slide;
+    int32_t blend3;
     int32_t args[8], nargs;
 } RthOvHdr;
 
@@ -10811,6 +10827,7 @@ static int rth_record_present(uint16_t op, int n, const int32_t *v) {
         }
     }
     hd.slide = psx_rewind_slide();
+    hd.blend3 = (hd.has & 8) ? psx_savestate_menu_overlay_blend() : 0;
     hd.nargs = n;
     for (int i = 0; i < n && i < 8; i++) hd.args[i] = v[i];
     size_t bytes = sizeof hd;
@@ -10864,6 +10881,7 @@ static void rth_present_payload(uint16_t op, const uint8_t *p) {
     s_rth_ov.valid = 1;
     s_rth_ov.needs_present = hd.needs_present;
     s_rth_ov.slide = hd.slide;
+    s_rth_ov.blend3 = hd.blend3;
     for (int i = 0; i < 4; i++)
         if (hd.has & (1 << i)) {
             s_rth_ov.px[i] = (const uint32_t *)q;
@@ -12699,6 +12717,7 @@ static void fg_generate_timed(double t) {
         s_rth_ov.valid = 1;
         s_rth_ov.needs_present = hd.needs_present;
         s_rth_ov.slide = hd.slide;
+        s_rth_ov.blend3 = hd.blend3;
         for (int i = 0; i < 4; i++)
             if (hd.has & (1 << i)) {
                 s_rth_ov.px[i] = (const uint32_t *)qq;

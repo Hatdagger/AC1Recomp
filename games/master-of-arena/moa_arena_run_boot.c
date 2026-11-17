@@ -285,7 +285,7 @@ static uint32_t run_newgame_seen;          /* run_frames when that menu last ran
 static int run_result_seen;                /* this fight's result is booked */
 static uint32_t run_pay;                   /* what the next payout pays: 1 on a new win, else 0 */
 static int run_save_pending;               /* a win waits for the autosave */
-static int run_win_screen;                 /* a booked win waits for the arena screen (P, restock) */
+static unsigned run_win_screen;            /* booked wins waiting for the arena screen (P, restock) */
 
 /* A plain log beside the run file (<run file>.log), for test reports: the
  * mod counters are only visible through the debug server. */
@@ -901,7 +901,7 @@ static int run_book_win(uint8_t who, const char *where)
     if (*word & bit) return 0;                           /* already booked */
     if (!moa_run_win(&run_state)) return 0;
     *word |= bit;
-    run_win_screen = 1;
+    run_win_screen++;
     (void)moa_run_save(run_file_path(), &run_state);
     psx_mod_counter_add("moa.run.win", 1);
     run_log("win: entry %u booked (%s), wins %u, rank %u, P %u", who, where,
@@ -956,12 +956,14 @@ static void run_result_entry(struct CPUState *cpu, uint32_t address)
     }
     (void)run_book_win(who, "arena screen");             /* nothing if the fight booked it */
     if (!run_win_screen) return;
-    run_win_screen = 0;
     /* P is the game's credits: the run's P less the 1 the prize screen pays.
-     * If the credits weren't the run's P before this win, say so. */
+     * If the credits weren't the run's P before the waiting win(s), say so
+     * (more than one: a win booked in a fight that never reached this screen). */
     const uint32_t had = run_state.run.points - 1u;
+    const uint32_t before = run_state.run.points - run_win_screen;
+    run_win_screen = 0;
     const uint32_t credits = psx_mod_read_word(RUN_CREDITS);
-    if (credits != had) psx_mod_counter_add("moa.run.credits_mismatch", 1);
+    if (credits != before) psx_mod_counter_add("moa.run.credits_mismatch", 1);
     psx_mod_write_word(RUN_CREDITS, had);                 /* the game pays the 1 */
     run_pay = 1;
     run_log("win: P %u -> %u (credits were %u)", (unsigned)had,

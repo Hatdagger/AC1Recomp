@@ -18,7 +18,7 @@ Several chats map Master of Arena at the same time. To avoid double work:
 | Mode launch | `mode-launch.md` | launch chat | Boot → menu → engine loop, the mode byte, resume flags, how Scenario (hub) and VS (menu → VS START → fight) start; goal: starting modes straight from the launcher | static read done 2026-11-17; repo gaps filled; runtime test next |
 | GameShark RAM list | `ram-map-gameshark.md` | shared, append-only | Raw code-derived addresses | reference |
 | Missions: weapon detail +0x04 | `parts-tables.md` | data chat | Narrow check only: does the missions engine (FDAT 207) read weapon detail +0x04? Not the rest of the missions lane | done 2026-11-17: yes, and so do VS, arena and replay (the earlier "no reader" was wrong); see `parts-tables.md` |
-| Menus: scenario hub | `menus-hub.md` | hub chat | The hub ring (FDAT 206 from `0x800552C0`): its 8 entries, tables, input, models and labels, and how to add / remove / replace entries. Not the screens behind the entries (garage, shop, …) | static read done 2026-11-17; icon textures open |
+| Menus: scenario hub | `menus-hub.md` | hub chat | The hub ring (FDAT 206 from `0x800552C0`): its 8 entries, tables, input, models and labels, and how to add / remove / replace entries. Not the screens behind the entries (garage, shop, …) | static read done 2026-11-17, icon and caption pictures found |
 
 Not claimed yet (claim before starting): missions data (FDAT 207, apart from the +0x04 check above), save/memory card format,
 menus and UI flow (other than mode launch and the hub ring), sound/music, stage data.
@@ -126,6 +126,15 @@ Launch chat → battle chat:
   VS engine sets 0x8003EA92 = 1 and returns 2 (`0x80052290`); the exe then loads 211, keeping
   RAM above 0x801F8000 (the replay buffer). Engine table: 207 missions, 208 link, 209 VS,
   210 arena, 211 VS replay. Details in `mode-launch.md`.
+
+Hub chat → launch chat:
+- **The game's LOAD = `0x80073424(port, file, flag)`**: reads 0xE80 bytes of the card file into a
+  buffer, checksum `0x80070F70(buf + 560)` (byte sum of 3,044 bytes) == word buf + 512, then
+  **`0x80072E54(buf)` unpacks it into RAM**, LoadImage `0x8002C75C(0x800CC070, buf + 1080)` and
+  `(0x800CC078, buf + 3128)` (emblem picture and palette), DrawSync, then `0x800B6A80`,
+  `0x80099098`, `0x800941F4`, `0x80093BC4`, `0x800A2318`, `0x800A2020`. That answers §7's
+  "Scenario true skip": no need to map the save → RAM copy by hand. Used by the Rogue Arena
+  direct boot (branch `rogue-direct`, `moa_arena_run_boot.c`).
 
 Launch chat → data chat:
 - Stage (compiled +0x05 = player block +0x255) at VS START = byte `0x800D5800[map − 1]`,

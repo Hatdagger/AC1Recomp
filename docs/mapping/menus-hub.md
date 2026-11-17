@@ -76,8 +76,34 @@ Entry 1 (Shop) runs `0x8006354C` then `0x80099048`. Entries 2–7 go straight on
 | **Caption** (under the ring) | 12-byte sprite records at **`0x800CB6C0`** (w 128, h 24) | record = entry |
 | Pictures in VRAM | `MS\MENU_TIM.T` entries 1 and 4, loaded by `0x80056DBC` (the backdrop); `MENU_TMD` entry 1 → slot 15 (backdrop model) | |
 
-`?` Which texture the icon models use: their primitives didn't parse as standard TMD
-packets in a quick read; next step if a new icon *look* is wanted.
+### Where the pictures live (found 2026-11-17)
+
+**Icon art = title-banner art.** Each icon model is a set of textured quads on texture page
+`0x00A5` (VRAM x 320, y 0, 8-bit) with palette `0x7800` (VRAM 0, 480), and its UVs fall inside the
+same 96 × 48 picture its title banner shows. All eight are 96 × 48, 8-bit TIMs in
+**`MS\MENU_TIM.T` entry 1** (16 TIMs; the six icons + two more, plus other menu art):
+
+| Entry | Banner record → VRAM | TIM in MENU_TIM 1 (0-based, file offset) |
+|---|---|---|
+| 0 Garage | (320, 48) | #0, 0x00000 |
+| 1 Shop | (320, 144) | #5, 0x064A0 |
+| 2 Missions | (320, 96) | #2, 0x02840 |
+| 3 System | (368, 48) | #4, 0x05080 |
+| 4 Mail | (320, 0) | #1, 0x01420 |
+| 5 Arena | (320, 192) | #3, 0x03C60 |
+| 6 Ex Arena | (368, 0) | #13, 0x1FDBC |
+| 7 Arena Maker | (384, 192), page `0x00A6` | #14, 0x2121C |
+
+**Captions** (the 128 × 24 name under the ring): one 4-bit sheet, page `0x0027` (VRAM 448, 0),
+palette `0x3817` (VRAM 368, 224) = **`MS\MENU_TIM.T` entry 0, TIM #1** (256 × 216 px, file offset
+0x2620). Records at `0x800CB6C0` give each caption's u, v: 0 (0, 144), 1 (0, 168), 2 (0, 120),
+3 (128, 168), 4 (128, 120), 5 (128, 144), 6 (128, 192), 7 (0, 192).
+
+All three files (MENU_TIM 0, 1 and 4) are put into VRAM by the title's SCENARIO row
+(`0x80057CB0(4, 0 / 1 / 4)`, `0x800AB5F4`) and again by the hub backdrop (`0x80056DBC`, 1 and 4).
+So a new icon look = replace a 96 × 48 TIM in entry 1 (same size, same palette, or give it its
+own palette row); a new name = redraw a 128 × 24 box on the caption sheet. Both can be done by
+writing VRAM after those loads instead of editing the disc file.
 
 ## 5. Adding, removing or replacing entries
 

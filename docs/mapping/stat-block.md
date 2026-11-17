@@ -31,10 +31,10 @@ Part records named below are the menu tables in `parts-tables.md`. "Garage" = lo
 | Off | Size | Meaning | Source |
 |---|---|---|---|
 | +0x00 | u16 | **Match time limit in seconds**: 120 or 300 or 0 (no limit), from options record +0x34 (`0x8004B59C`: 0 → 120, 1 → 300, else 0). VS setup (`0x80055C48`) takes the larger of the two players' values × 22 as the time left in steps at `0x80097EB4` (120 → 2,640, matches the battle chat's measured timer); the clock only runs while it's ≥ 2 | options |
-| +0x02 | u8 | Flags: bit 0 cleared, bits 1 and 2 set, **bit 3 = legs can fit a booster** (legs +0x42). **Bit 0** is a fight-time flag (set `0x8007CC70`; cleared `0x8007CA88`, `0x80082920`, `0x8008FB68`). **Bit 5** comes from options record +0x35 (default 1; `0x800B6AE4`), meaning unknown. Bit 1 read at `0x80087760`, bit 4 at `0x80087EB8` | |
+| +0x02 | u8 | Flags: bit 0 cleared, bits 1 and 2 set, **bit 3 = legs can fit a booster** (legs +0x42). **Bit 0 = alternate camera** (likely a cockpit view): set at `0x8007CC70` while START is held when the pad reads exactly START + △ + □ (`0x9008`); cleared at `0x8007CA88` (START held), `0x80082920`, `0x8008FB68`. With it set the camera (`0x80087B90`) sits at model joints +0x5A / +0x5B and the joints in list +0x6E are hidden (see "Camera setup") — **confirm by test**. **Bit 5** comes from options record +0x35 (default 1; `0x800B6AE4`), meaning unknown. Bit 1 read at `0x80087760`, bit 4 at `0x80087EB8` | |
 | +0x03 | u8 | **Human PLUS level** (`0x8003EAC8`) | |
 | +0x04 | | no access found in the menus, VS or arena engines: padding | |
-| +0x05 | u8 | **Stage number (very likely)**. Set by the menus in both players' blocks (same value, e.g. `0x800C097C` from a table indexed by `0x8003EA78`; `0x8007E0DC` writes 29). At VS load `0x80055930` copies player 1's or player 2's (picked by bit 0 of `0x8003EA94`) to the global `0x80097EA0` | menus |
+| +0x05 | u8 | **Stage number** (confirmed by the launch chat: at VS START it is byte `0x800D5800[map − 1]`, map = `0x8003EA81` (1–10), written by `0x800B348C`). Set by the menus in both players' blocks (same value, e.g. `0x800C097C` from a table indexed by `0x8003EA78`; `0x8007E0DC` writes 29). At VS load `0x80055930` copies player 1's or player 2's (picked by bit 0 of `0x8003EA94`) to the global `0x80097EA0` | menus |
 | +0x06, +0x08 | u8 | Thrust: booster power (9,800 for caterpillars) × 4096 ÷ carried weight ÷ 224, 1–64 | known |
 | +0x07, +0x09 | u8 | Thrust × 0.8, 1–50 | known |
 | +0x0A, +0x0B | u8 | Thrust × 1.2, 1–64; fixed for legs 21 (26), 22 (23), 23 (19), 24 (26), 26 (24), 27 (6), 28 (7), 30 (13), 31 (11), 32 (13) | known |
@@ -55,7 +55,7 @@ Carried weight = every part except the generator, capped at legs weight + carry 
 | +0x16 | u16 | Refill standing: (output − standing drain) × 64 ÷ 1000, 1–384 | known |
 | +0x18 | u16 | Red zone (generator +0x2E) | known |
 | +0x1A | u16 | Refill moving, 1–192 | known |
-| +0x1C | u16 | Blade +0x2C (charge drain; 0 without a blade) | known |
+| +0x1C | u16 | Blade +0x2C (charge drain; 0 without a blade). The battle chat confirmed the damage routine doesn't use it (2,050 on the test blade) | known |
 | +0x1E | u16 | **Radar range**: head +0x38, or a back radar's +0x2E if larger; 5,120 with Human PLUS and no radar | |
 | +0x20 | u16 | **Total AP × 4** (head + core + legs + arms) | |
 | +0x22 | u8 | Shell damage factor, 1–45 (SP-S/SCR: defence × 1.15) | known |
@@ -87,7 +87,10 @@ Back radars (40–51) switch the head's radar off first (+0x1E, +0x25, +0x27 = 0
 | +0x32 | u8 | Back R ID (same) |
 | +0x33 | u8 | Blade ID |
 | +0x34 | u16 | Flags, starts at 3: bit 0 cleared if head byte +0x34 = 1; bit 1 cleared if head byte +0x35 = 1; **bit 3 = SP-JAM (missile jammer)**. Match start copies the flags minus bits 0–1 to AC object +0x38, then **clears bit 3 here** (the jammer lives in the AC object from then on) |
-| +0x36 – +0x3C | 4×u16 | From the body table (650, 40, 100, 2 on every body except combination 1, core 0 + regular arms + caterpillar, which has 0 instead of 40). Match start (`0x8007DC24`) passes all four, +0x3A squared, layout bytes 4–5 (+0x5A, +0x5B) and the layout list (+0x6E) to `0x800876C4`, so likely **body collision sizes** (+0x3A = 100 looks like a radius) — **name by test** |
+| +0x36 | u16 | **Camera distance**, 650 on every body. Copied to camera +0x0A; the chase camera (`0x800878FC`) scales its direction vector by it (× 650 ÷ 4096, then halved) to place the camera behind the AC. See "Camera setup" |
+| +0x38 | u16 | **Camera height**, 40 (0 on combination 1, core 0 + regular arms + caterpillar). Copied to camera +0x0C and subtracted from the camera's Y (PS1 −Y = up), so the camera sits 40 above the follow point |
+| +0x3A | u16 | 100 on every body. Copied to camera +0x10, and its square to camera +0x14, but **nothing reads either** in the VS engine, the arena engine or the main executable: unused (a leftover; was guessed as a collision radius) |
+| +0x3C | u16 | **Camera smoothing shift**, 2. Copied to camera +0x0E; each frame the camera moves (target − current) >> 2, a quarter of the way |
 
 ## Options and button masks (+0x3E – +0x55)
 
@@ -149,12 +152,12 @@ layout, same +0x36–0x3C as normal legs. All entries have 650, 40, 100, 2 excep
 
 | Off | Size | Meaning |
 |---|---|---|
-| +0x56 – +0x65 | 16×u8 | Layout bytes 0–15 (look like model joint numbers) |
+| +0x56 – +0x65 | 16×u8 | Layout bytes 0–15 (look like model joint numbers). Bytes 4–5 (**+0x5A, +0x5B**) go to camera +0x01 / +0x02: the two joints the alternate camera is placed from (`0x80078888`) |
 | +0x66 | u16 | Blade +0x2E (39 on every blade) |
 | +0x68 | u16 | **Blade attack** (blade +0x30) |
 | +0x6A | u16 | Blade +0x32 |
 | +0x6C | u16 | Bit mask: two bits picked by layout bytes 16 and 17 |
-| +0x6E – +0x85 | u8 list | Layout list from layout byte 34, ending in 255 (joints that take hits?) |
+| +0x6E – +0x85 | u8 list | Layout list from layout byte 34, ending in 255: **joints hidden in the alternate camera**. Camera +0x04 points here; `0x80067620` (when +0x02 bit 0 is set) passes it to `0x8005ACC8`, which shifts each listed joint's +0x12 by −4,096 if it isn't already negative |
 | +0x86 | u8 | **Stealth**: 1 when a P77-ST is fitted |
 | +0x87 | u8 | **Number of usable weapons**: hand, weapon arms, back weapons other than radars, M118-TD and P77-ST |
 
@@ -215,7 +218,7 @@ Runs once per player with the AC object in a0; player block pointer from `0x8003
 Order:
 
 1. Clears player block +0x10, +0x11; `0x80082834` sets the selected-weapon values (slot +7/+8/+9
-   above); `0x8007DC24` sets up the body collision from +0x36–0x3C.
+   above); `0x8007DC24` sets up the camera from +0x36–0x3C (see "Camera setup").
 2. Derives battle values from the block into player block +0x200–0x216, +0x16, +0x44, +0x1FC
    (handed to the battle chat in `README.md`).
 3. Human PLUS ≥ 6: energy adjustment (see "Energy").
@@ -231,16 +234,37 @@ Writes into the block during the fight (outside match start), found by a code sc
 `0x800571BC` when player 1's block +0x08 bit 0 is set (purpose unknown, looks like a display
 mode).
 
+## Camera setup (VS `0x8007DC24` → `0x800876C4`; arena copy `0x8008DFE0`)
+
+Each player has a 56-byte camera record: VS `0x801D6EF8` (player 1) and `0x801D6F30`
+(player 2), pointer at player block +0x39C (set `0x80055918`); arena uses one record at
+`0x801E29C8`. Match start fills it from the stat block:
+
+| Camera | From | Use |
+|---|---|---|
+| +0x01, +0x02 (u8) | +0x5A, +0x5B | Joints the alternate camera is placed from |
+| +0x04 (ptr) | &+0x6E | Joint list hidden in the alternate camera |
+| +0x0A (u16) | +0x36 = 650 | Chase distance |
+| +0x0C (u16) | +0x38 = 40 | Height above the follow point |
+| +0x0E (u16) | +0x3C = 2 | Smoothing shift (moves 1/4 of the gap per frame) |
+| +0x10 (u16), +0x14 (u32) | +0x3A = 100, 100² | Never read (checked VS, arena and the main executable) |
+
+`0x80087658` resets the rest (+0x00 = 255, +0x08, +0x18 = 0, angles +0x2C–0x33 from
+`0x8003EA48`). Chase camera: `0x800878FC` (angles +0x2C / +0x2E, pitch clamped to ±800);
+alternate camera: `0x80087B90`, picked by stat +0x02 bit 0. The camera state beyond these
+fields belongs to the battle chat (its "Camera routine" row).
+
 ## To name by a test in VS
 
 Poke one, watch the effect, log the result here:
-+0x02 bit 5 (options +0x35), +0x05 (stage?), +0x0F/+0x10 (core bytes),
-+0x26, +0x2A (head bytes), +0x34 bits 0–1, +0x36–0x3C (collision?), body frame 3 (Human
++0x02 bit 5 (options +0x35), +0x0F/+0x10 (core bytes),
++0x26, +0x2A (head bytes), +0x34 bits 0–1, body frame 3 (Human
 PLUS ≥ 4), slot +7/+8/+9 → player block +0x210–0x214, slot +10 to +12. Watch slot +58–61 and
-+0x04/+0x11 for any write to confirm they're padding.
++0x04/+0x11 for any write to confirm they're padding. Hold START + △ + □ in a fight to
+confirm the alternate camera (+0x02 bit 0); see what START + ○ + ✕ (`0x6008`, sets camera
++0x08 bit 0) does.
 
 ## Next steps
 
-1. Read `0x800876C4` (collision setup) to name +0x36–0x3C without a test.
-2. Check in game which way SP-AXL moves lock time for solid weapons.
-3. The tests above (needs the user's PC).
+1. Check in game which way SP-AXL moves lock time for solid weapons.
+2. The tests above (needs the user's PC).

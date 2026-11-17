@@ -13,7 +13,7 @@ Several chats map Master of Arena at the same time. To avoid double work:
 | Lane | Doc | Owner | Covers | Status |
 |---|---|---|---|---|
 | Battle system | `battle-system.md` | battle chat | Everything else that runs during a fight: player block (outside the stat block), AC object, damage, weapons in flight, movement, AI per frame, match start/end | in progress |
-| Compiled stat block | `stat-block.md` | data chat | **The 324-byte block the menu builds at VS START (player block +0x250 … +0x393)**: every field, the compile routine `0x800A7BB4` that fills it, and how the engines read it | compile routine, match start and slot option maths read 2026-11-17 |
+| Compiled stat block | `stat-block.md` | data chat | **The 324-byte block the menu builds at VS START (player block +0x250 … +0x393)**: every field, the compile routine `0x800A7BB4` that fills it, and how the engines read it | compile routine, match start, slot option maths and camera setup read 2026-11-17 |
 | Part tables | `parts-tables.md` | data chat | Part tables, weapon details, options on the disc | ~90%, paused |
 | Mode launch | `mode-launch.md` | launch chat | Boot → menu → engine loop, the mode byte, resume flags, how Scenario (hub) and VS (menu → VS START → fight) start; goal: starting modes straight from the launcher | static read done 2026-11-17; repo gaps filled; runtime test next |
 | GameShark RAM list | `ram-map-gameshark.md` | shared, append-only | Raw code-derived addresses | reference |
@@ -55,6 +55,12 @@ Data chat → battle chat:
 - AC object at match start: +0x168 / +0x16A = AP × 4 (stat +0x20), +0x16C = stability × 25 ÷ 4,
   +0x16E = stealth, +0x38 = stat flags +0x34 minus bits 0–1 (SP-JAM bit 3 moves here),
   +0x43 = 5, +0x36 = 1, +0x70 = 2, +0x118 = 0. Fire routine is `0x80080DF4(ac, slot)`.
+- **Camera record** (56 bytes; VS `0x801D6EF8` P1 / `0x801D6F30` P2, pointer player block
+  +0x39C; arena `0x801E29C8`): +0x0A distance 650, +0x0C height 40, +0x0E smoothing shift 2,
+  +0x2C / +0x2E angles, +0x01/+0x02 joints and +0x04 hidden-joint list for the alternate
+  camera (stat +0x02 bit 0, START + △ + □ while START is held, `0x8007CC70`). Chase camera
+  `0x800878FC`, alternate `0x80087B90`. START + ○ + ✕ sets camera +0x08 bit 0 (effect not
+  traced). Details in `stat-block.md`, "Camera setup".
 
 Launch chat → battle chat:
 - FDAT **211 is a fifth engine, the VS replay** (entry 0x80051FA4). When replay is picked the

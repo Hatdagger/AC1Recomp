@@ -549,7 +549,89 @@ static const struct { uint8_t mission; uint16_t word; uint32_t xor_; } k_ppm_fix
     {  7u,   680u, 0x000020D2u },
     { 12u,   666u, 0x0000DBEAu },
     { 14u,   771u, 0x0000DF7Eu },
-    { 15u,   593u, 0x0000DB1Au }
+    { 15u,   593u, 0x0000DB1Au },
+    /* 2026-11-17 (missions chat): object-pool strides left at Phantasma's 368 bytes
+     * (Master of Arena objects are 376); addresses worked out from a moved base
+     * (type table / placement records / object pool / trigger zones) whose offsets
+     * were not moved with it (missions 1, 9, 14 start-up hang); #4 unmapped call. */
+    {  0u,  5328u, 0x00000008u },   /* #1 stride */
+    {  0u,  5331u, 0x00000008u },   /* #1 stride */
+    {  0u,  5453u, 0x00000DE0u },   /* #1 addr */
+    {  0u,  5459u, 0x00000C60u },   /* #1 addr */
+    {  0u,  5490u, 0x00002778u },   /* #1 addr */
+    {  1u,  2798u, 0x00000008u },   /* #2 stride */
+    {  1u,  2801u, 0x00000008u },   /* #2 stride */
+    {  2u,  1727u, 0x00000008u },   /* #3 stride */
+    {  2u,  1730u, 0x00000008u },   /* #3 stride */
+    {  3u,  3505u, 0x00000008u },   /* #4 stride */
+    {  3u,  3508u, 0x00000008u },   /* #4 stride */
+    {  3u,  3676u, 0x000004E0u },   /* #4 addr */
+    {  3u,  3680u, 0x00000420u },   /* #4 addr */
+    {  4u,  4041u, 0x00000008u },   /* #5 stride */
+    {  4u,  4044u, 0x00000008u },   /* #5 stride */
+    {  5u,  5757u, 0x00000008u },   /* #6 stride */
+    {  5u,  5760u, 0x00000008u },   /* #6 stride */
+    {  5u,  6224u, 0x00000008u },   /* #6 stride */
+    {  5u,  6227u, 0x00000008u },   /* #6 stride */
+    {  5u,  6612u, 0x00002700u },   /* #6 addr */
+    {  5u,  6926u, 0x00002700u },   /* #6 addr */
+    {  6u,  2124u, 0x00000008u },   /* #7 stride */
+    {  6u,  2127u, 0x00000008u },   /* #7 stride */
+    {  6u,  2076u, 0x00003D20u },   /* #7 addr */
+    {  6u,  3008u, 0x0000D8F8u },   /* #7 addr */
+    {  6u,  3020u, 0x0000D8F8u },   /* #7 addr */
+    {  6u,  5742u, 0x000004E0u },   /* #7 addr */
+    {  6u,  5750u, 0x00000C20u },   /* #7 addr */
+    {  6u,  5883u, 0x00000C20u },   /* #7 addr */
+    {  6u,  5900u, 0x000004E0u },   /* #7 addr */
+    {  6u,  6004u, 0x00000420u },   /* #7 addr */
+    {  6u,  6314u, 0x000004E0u },   /* #7 addr */
+    {  6u,  6613u, 0x000004E0u },   /* #7 addr */
+    {  6u,  6675u, 0x00000420u },   /* #7 addr */
+    {  6u,  6724u, 0x00000C60u },   /* #7 addr */
+    {  7u,  4473u, 0x00000008u },   /* #8 stride */
+    {  7u,  4476u, 0x00000008u },   /* #8 stride */
+    {  7u,  5312u, 0x000004E0u },   /* #8 addr */
+    {  8u,  5350u, 0x00000008u },   /* #9 stride */
+    {  8u,  5353u, 0x00000008u },   /* #9 stride */
+    {  8u,  5471u, 0x00002778u },   /* #9 addr */
+    {  8u,  5756u, 0x00000420u },   /* #9 addr */
+    {  9u,  3760u, 0x00000008u },   /* #10 stride */
+    {  9u,  3763u, 0x00000008u },   /* #10 stride */
+    {  9u,  3807u, 0x00000420u },   /* #10 addr */
+    {  9u,  3811u, 0x00000420u },   /* #10 addr */
+    { 10u,  2768u, 0x00000008u },   /* #11 stride */
+    { 10u,  2771u, 0x00000008u },   /* #11 stride */
+    { 10u,  2982u, 0x00000420u },   /* #11 addr */
+    { 10u,  2993u, 0x000004E0u },   /* #11 addr */
+    { 11u,  1383u, 0x0000D8F8u },   /* #12 addr */
+    { 11u,  1395u, 0x0000D8F8u },   /* #12 addr */
+    { 12u,  3168u, 0x00000008u },   /* #13 stride */
+    { 12u,  3171u, 0x00000008u },   /* #13 stride */
+    { 12u,  3687u, 0x00000008u },   /* #13 stride */
+    { 12u,  3690u, 0x00000008u },   /* #13 stride */
+    { 12u,  3120u, 0x00003D20u },   /* #13 addr */
+    { 13u,  6072u, 0x00000008u },   /* #14 stride */
+    { 13u,  6075u, 0x00000008u },   /* #14 stride */
+    { 13u,  6102u, 0x00002778u },   /* #14 addr */
+    { 14u,  3482u, 0x00000008u },   /* #15 stride */
+    { 14u,  3485u, 0x00000008u },   /* #15 stride */
+    { 14u,  4014u, 0x00000008u },   /* #15 stride */
+    { 14u,  4017u, 0x00000008u },   /* #15 stride */
+    { 14u,  1345u, 0x0000D8F8u },   /* #15 addr */
+    { 14u,  1357u, 0x0000D8F8u },   /* #15 addr */
+    { 14u,  3434u, 0x00003D20u },   /* #15 addr */
+    { 14u,  4181u, 0x00000420u },   /* #15 addr */
+    { 14u,  4281u, 0x00000420u },   /* #15 addr */
+    { 14u,  4336u, 0x00000420u },   /* #15 addr */
+    { 15u,  1939u, 0x00000008u },   /* #16 stride */
+    { 15u,  1942u, 0x00000008u },   /* #16 stride */
+    { 15u,  3578u, 0x00000008u },   /* #16 stride */
+    { 15u,  3581u, 0x00000008u },   /* #16 stride */
+    { 15u,  1891u, 0x00003D20u },   /* #16 addr */
+    { 16u,  3505u, 0x00000008u },   /* #17 stride */
+    { 16u,  3508u, 0x00000008u },   /* #17 stride */
+    {  3u,  3133u, 0x00005F1Bu },   /* #4 call PP 0x80087A34 -> MoA 0x80090658 */
 };
 #define PPM_FIX_COUNT (sizeof k_ppm_fixes / sizeof k_ppm_fixes[0])
 

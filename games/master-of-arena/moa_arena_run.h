@@ -143,6 +143,8 @@ int moa_run_retry(const struct moa_parts *p, struct moa_run_state *s);
 
 /* A new win (the caller checks it beat someone not beaten before). */
 int moa_run_win(struct moa_run_state *s);
+/* Owned/shop table index of a part (record byte b), -1 if none. */
+int moa_run_part_index(const uint8_t rec[13], int b);
 /* A loss: the run is over (kept for Retry). */
 void moa_run_lose(struct moa_run_state *s);
 

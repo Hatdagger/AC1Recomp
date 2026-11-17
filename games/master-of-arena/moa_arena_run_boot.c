@@ -436,6 +436,7 @@ static int run_direct_code_ok(void)
 /* Steps 1-3 of the direct boot (top of file). 1 = done, the title is not
  * opened; 0 = nothing changed, carry on with the menu presses. */
 static void run_apply_prices(void);
+static void run_restock_catch_up(const char *where);
 
 static int run_direct_boot(struct CPUState *cpu)
 {
@@ -474,6 +475,7 @@ static int run_direct_boot(struct CPUState *cpu)
     run_at_hub = 1;
     run_apply_state();
     run_apply_prices();                          /* shop in P; the hub-resume hook redoes it later */
+    run_restock_catch_up("load");
     psx_mod_write_byte(RUN_ARENA_LOCK, 0);
     psx_mod_write_byte(RUN_D_MAIL_SHOWN, 1);     /* no mail box in the way */
     /* 3. The hub, on Arena */
@@ -763,52 +765,88 @@ static void run_show_frame(void)
     run_log("restock screen: closed");
 }
 
-/* Restocks on reaching ranks 45, 40 ... 5 and 1: 8 random parts the player
- * neither owns nor already sees in the shop. Seeded by the run and the rank,
- * so a seed always restocks the same way. */
-static void run_restock(void)
+/* Restocks on reaching ranks 45, 40 ... 5 and 1 (wins 5, 10 ... 45, 49):
+ * 8 parts each. Each milestone's 8 are fixed by the seed and the attempt,
+ * drawn in order from every real part except the starting AC's, none twice,
+ * so they never depend on what the shop holds at the time. They are put on
+ * sale (and caught up) whenever the hub opens or the Shop is picked: a win
+ * booked in a fight, two wins before an arena screen, or a session that ended
+ * before the card was saved can't skip one. A part already owned or on sale is
+ * left alone, so this can run any number of times. */
+#define RUN_RESTOCKS 10u
+struct run_pool_part { uint16_t ix; uint8_t tab, back; uint32_t row; };
+
+static unsigned run_restock_wins(unsigned k) { return k + 1u < RUN_RESTOCKS ? 5u * (k + 1u) : MOA_RUN_SLOTS - 1u; }
+
+static void run_restock_lists(struct run_pool_part out[RUN_RESTOCKS][RUN_RESTOCK_PARTS],
+                              unsigned n[RUN_RESTOCKS])
 {
-    const unsigned w = run_state.run.wins;
-    if (!((w % 5u == 0u && w <= 45u) || w == MOA_RUN_SLOTS - 1)) return;
-    if (psx_mod_read_word(k_run_tables[0].addr) != 0x302D4448u) {
-        run_log("restock: part tables not loaded, skipped");
-        return;
+    static struct run_pool_part pool[256];
+    uint8_t start[256];
+    memset(start, 0, sizeof start);
+    for (int b = 0; b < 13; ++b) {
+        const int ix = moa_run_part_index(run_state.run.start_ac, b);
+        if (ix >= 0) start[ix] = 1;
     }
-    uint16_t pool[256];
-    uint8_t back[256], tab[256];
-    uint32_t rowat[256];
     unsigned np = 0;
     for (size_t t = 0; t < sizeof k_run_tables / sizeof k_run_tables[0]; t++) {
         uint32_t row = 0;
         for (uint32_t r = k_run_tables[t].addr; r < k_run_tables[t].end; r += k_run_tables[t].stride, row++) {
             const uint32_t ix = k_run_tables[t].base + row;
-            if (ix > 255u || !run_row_real(r) || !psx_mod_read_word(r + RUN_PRICE_AT)) continue;
-            if (psx_mod_read_byte(RUN_OWNED + ix) || psx_mod_read_byte(RUN_STOCK + ix)) continue;
-            back[np] = k_run_tables[t].back;
-            tab[np] = (uint8_t)t;
-            rowat[np] = r;
-            pool[np++] = (uint16_t)ix;
+            if (ix > 255u || start[ix] || !run_row_real(r) || !psx_mod_read_word(r + RUN_PRICE_AT)) continue;
+            pool[np].ix = (uint16_t)ix;
+            pool[np].tab = (uint8_t)t;
+            pool[np].back = k_run_tables[t].back;
+            pool[np].row = r;
+            np++;
         }
     }
-    run_show_n = 0;
-    uint64_t rng = run_state.lineup.seed ^ (0x5E570C4Bull * (w + 1u));
-    unsigned added = 0;
-    char list[8 * 5 + 1];
-    list[0] = 0;
-    while (added < RUN_RESTOCK_PARTS && np) {
-        const uint32_t k = moa_run_below(&rng, np);
-        psx_mod_write_byte(RUN_STOCK + pool[k], back[k] ? 2u : 1u);
-        snprintf(list + strlen(list), sizeof list - strlen(list), " %u", pool[k]);
-        run_show_add(tab[k], pool[k] - k_run_tables[tab[k]].base, rowat[k]);
-        pool[k] = pool[--np];
-        back[k] = back[np];
-        tab[k] = tab[np];
-        rowat[k] = rowat[np];
-        added++;
+    for (unsigned k = 0; k < RUN_RESTOCKS; k++) {
+        uint64_t rng = run_state.lineup.seed ^ (0x5E570C4Bull * (k + 1u)) ^
+                       (0x9E3779B97F4A7C15ull * (uint64_t)(run_state.run.attempt + 1u));
+        n[k] = 0;
+        while (n[k] < RUN_RESTOCK_PARTS && np) {
+            const uint32_t pick = moa_run_below(&rng, np);
+            out[k][n[k]++] = pool[pick];
+            pool[pick] = pool[--np];
+        }
     }
-    if (added) run_show_rank = (uint8_t)(MOA_RUN_SLOTS - w);
-    psx_mod_counter_add("moa.run.restock", 1);
-    run_log("restock: rank %u, %u parts added:%s", MOA_RUN_SLOTS - w, added, list);
+}
+
+static void run_restock_catch_up(const char *where)
+{
+    if (!run_state_ok || run_state.run.over || run_state.run.wins < 5u) return;
+    if (psx_mod_read_word(k_run_tables[0].addr) != 0x302D4448u) {
+        run_log("restock (%s): part tables not loaded, later", where);
+        return;
+    }
+    static struct run_pool_part list[RUN_RESTOCKS][RUN_RESTOCK_PARTS];
+    unsigned n[RUN_RESTOCKS];
+    run_restock_lists(list, n);
+    int fresh = -1;
+    for (unsigned k = 0; k < RUN_RESTOCKS && run_state.run.wins >= run_restock_wins(k); k++) {
+        unsigned seen = 0, added = 0;
+        char ids[RUN_RESTOCK_PARTS * 5 + 1];
+        ids[0] = 0;
+        for (unsigned i = 0; i < n[k]; i++) {
+            const uint16_t ix = list[k][i].ix;
+            if (psx_mod_read_byte(RUN_OWNED + ix) || psx_mod_read_byte(RUN_STOCK + ix)) { seen++; continue; }
+            psx_mod_write_byte(RUN_STOCK + ix, list[k][i].back ? 2u : 1u);
+            snprintf(ids + strlen(ids), sizeof ids - strlen(ids), " %u", ix);
+            added++;
+        }
+        if (!added) continue;
+        if (!seen) fresh = (int)k;                 /* a new restock, not a sold part coming back */
+        psx_mod_counter_add("moa.run.restock", 1);
+        run_log("restock (%s): rank %u, %u parts on sale:%s", where,
+                (unsigned)(MOA_RUN_SLOTS - run_restock_wins(k)), added, ids);
+    }
+    if (fresh < 0) return;
+    run_show_n = 0;                                 /* the newest restock's picture */
+    for (unsigned i = 0; i < n[fresh]; i++)
+        run_show_add(list[fresh][i].tab, list[fresh][i].ix - k_run_tables[list[fresh][i].tab].base,
+                     list[fresh][i].row);
+    run_show_rank = (uint8_t)(MOA_RUN_SLOTS - run_restock_wins((unsigned)fresh));
 }
 
 static void run_maybe_return(void);
@@ -819,7 +857,10 @@ static void run_hub_entry(struct CPUState *cpu, uint32_t address)
     if (!run_on() || psx_mod_read_word(address) != RUN_SIG_HUB_RESUME) return;
     if (run_state_ok && run_state.run.over) { run_loss_wait = 0; run_maybe_return(); return; }
     run_reach_hub("moa.run.hub_reached");
-    if (run_state_ok) run_apply_prices();
+    if (run_state_ok) {
+        run_apply_prices();
+        run_restock_catch_up("hub");
+    }
 }
 
 static uint8_t run_rank_now(uint32_t st)
@@ -968,8 +1009,7 @@ static void run_result_entry(struct CPUState *cpu, uint32_t address)
     run_pay = 1;
     run_log("win: P %u -> %u (credits were %u)", (unsigned)had,
             (unsigned)run_state.run.points, (unsigned)credits);
-    run_restock();
-    run_save_pending = 1;
+    run_save_pending = 1;                                 /* restocks: at the hub (run_restock_catch_up) */
 }
 
 /* The payout after a run fight: the game's prize screen shows and pays
@@ -1340,6 +1380,7 @@ static int run_hub_pick_filter(struct CPUState *cpu, uint32_t address)
     run_log("hub: entry %d picked", entry);
     if (run_autopilot && run_stage == STAGE_DIRECT && entry == RUN_HUB_ARENA)
         run_reach_hub("moa.run.direct_arena");   /* short wait at normal speed, then hand over */
+    if (entry == 1 && run_state_ok) run_restock_catch_up("shop");   /* before the shop lists its stock */
     if (RUN_HUB_ALLOWED & (1u << entry)) return 0;
     const uint32_t flags = psx_mod_read_word(st + RUN_HUB_FLAGS);
     if (flags >= 0x80000000u && flags < 0x80200000u) psx_mod_write_byte(flags + 1u, 1);

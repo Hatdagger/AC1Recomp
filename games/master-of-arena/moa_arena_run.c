@@ -427,6 +427,13 @@ static int owned_base(int cat)
     return -1;
 }
 
+int moa_run_part_index(const uint8_t rec[13], int b)
+{
+    const int base = owned_base(moa_record_cat(b));
+    if (base < 0 || rec[b] == 255) return -1;
+    return base + rec[b] < 256 ? base + rec[b] : -1;
+}
+
 /* A random paint scheme for one attempt (the same for its ghost later):
  * base, optional, detail, joint, RGB 0..63, on all four sections. */
 void moa_run_paint(uint64_t seed, uint8_t attempt, uint8_t paint[48])

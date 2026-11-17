@@ -60,8 +60,10 @@ blocks when it exits, so nothing leaks back into the save):
   already loop over IDs 0–18. The plugin keeps its own copy of the 19-record table with ID 13
   as OP-WLINK (name `OP-WLINK`, type `WEAPON LINKER`, 24,000 credits, 1 slot), and the ten
   places that load the table address (`lui 0x800D` / `addiu 0x1AA0`) are given the copy.
-  Bit 13 of the owned-options word `0x8004B558` is set just before the option list reads it
-  (`0x80091A1C`).
+  Bit 13 of the owned-options word `0x8004B558` is set just before menu code reads it: AC
+  SETUP checks the word at `0x8007D764` and shows "No OPTIONAL parts available." when it is 0
+  (seen in the second test build), and the option list helpers read it at `0x8009179C`,
+  `0x800917F4`, `0x80091838`, `0x8009187C`, `0x800918BC`, `0x8009190C`, `0x80091A1C`.
 - **Never write into the loaded menu module.** The first test build wrote the record straight
   into it from a VBlank callback, and the game hung on its first loading screen (fixed by
   turning the mod off, 2026-11-17). The runtime watches overlay memory for code changes.

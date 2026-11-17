@@ -18,7 +18,8 @@
  *     module from a VBlank callback and the game hung on its first loading
  *     screen; writes there are watched as code changes.)
  *   - Owned from the start: bit 13 of the owned-options word 0x8004B558 is
- *     set just before the option list reads it (0x80091A1C).
+ *     set just before menu code reads it (AC SETUP's "No OPTIONAL parts"
+ *     check at 0x8007D764 and the option list helpers).
  *   - The description table 0x800CDE8C has only 13 entries: the read at
  *     0x80092004 is pointed at our own entry for ID 13.
  *   - After compile(player) 0x800A7BB4 builds the stat block, each weapon slot
@@ -248,10 +249,17 @@ static void wl_table_hook(struct CPUState *cpu, uint32_t address) {
     }
 }
 
-/* Owned from the start: set bit 13 just before the option list reads the
- * owned word (0x80091A1C: lw s2,-19112(v0), v0 = 0x80050000). */
-#define WL_OWNED_PC       0x80091A1Cu
-#define WL_OWNED_INSN     0x8C52B558u
+/* Owned from the start: set bit 13 just before any menu code reads the
+ * owned word (lw rt,-19112(v0), v0 = 0x80050000). 0x8007D764 is the AC
+ * SETUP check that shows "No OPTIONAL parts available." when the word is 0;
+ * the rest are the option list helpers. */
+typedef struct { uint32_t pc, insn; } WlOwnedSite;
+static const WlOwnedSite kOwnedSites[] = {
+    { 0x8007D764u, 0x8C42B558u }, { 0x8009179Cu, 0x8C43B558u },
+    { 0x800917F4u, 0x8C43B558u }, { 0x80091838u, 0x8C44B558u },
+    { 0x8009187Cu, 0x8C43B558u }, { 0x800918BCu, 0x8C43B558u },
+    { 0x8009190Cu, 0x8C45B558u }, { 0x80091A1Cu, 0x8C52B558u },
+};
 static void wl_owned_hook(struct CPUState *cpu, uint32_t address) {
     (void)address;
     if (cpu->gpr[REG_V0] != 0x80050000u || !wl_menu_resident()) return;
@@ -685,7 +693,9 @@ PSX_MOD_CONSTRUCTOR(psx_register_moa_wlink_plugin) {
     for (unsigned i = 0; i < sizeof kTableSites / sizeof kTableSites[0]; ++i)
         (void)psx_mod_register_instruction_plugin(id, kTableSites[i].pc,
                                                   kTableSites[i].insn, wl_table_hook);
-    (void)psx_mod_register_instruction_plugin(id, WL_OWNED_PC, WL_OWNED_INSN, wl_owned_hook);
+    for (unsigned i = 0; i < sizeof kOwnedSites / sizeof kOwnedSites[0]; ++i)
+        (void)psx_mod_register_instruction_plugin(id, kOwnedSites[i].pc,
+                                                  kOwnedSites[i].insn, wl_owned_hook);
     (void)psx_mod_register_instruction_plugin(id, WL_DESC_PC, WL_DESC_INSN, wl_desc_hook);
     (void)psx_mod_register_function_filter_plugin(id, WL_COMPILE_FN, wl_compile_filter);
     (void)psx_mod_register_function_filter_plugin(id, WL_FIRE_GUN, wl_fire_filter);

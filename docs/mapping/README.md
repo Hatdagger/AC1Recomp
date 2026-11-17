@@ -136,13 +136,18 @@ Launch chat → battle chat:
   210 arena, 211 VS replay. Details in `mode-launch.md`.
 
 Hub chat → launch chat:
-- **The game's LOAD = `0x80073424(port, file, flag)`**: reads 0xE80 bytes of the card file into a
-  buffer, checksum `0x80070F70(buf + 560)` (byte sum of 3,044 bytes) == word buf + 512, then
-  **`0x80072E54(buf)` unpacks it into RAM**, LoadImage `0x8002C75C(0x800CC070, buf + 1080)` and
-  `(0x800CC078, buf + 3128)` (emblem picture and palette), DrawSync, then `0x800B6A80`,
-  `0x80099098`, `0x800941F4`, `0x80093BC4`, `0x800A2318`, `0x800A2020`. That answers §7's
-  "Scenario true skip": no need to map the save → RAM copy by hand. Used by the Rogue Arena
-  direct boot (branch `rogue-direct`, `moa_arena_run_boot.c`).
+- **The game's LOAD = `0x80073424(port, file, flag)`** (corrected 2026-11-17). It picks a path by the
+  save's type letter in the card list (list + 0x890): **'N' = Master of Arena's own save**:
+  checksum `0x80070F1C(buf + 432)` (sum of inverted bytes, 3,240 bytes) == word buf + 384, then an
+  **inline** unpack inside LOAD (`0x800735E0` … `0x80073B78`), LoadImage `0x8002C75C(0x800CC070,
+  buf + 1152)` / `(0x800CC078, buf + 3200)` (emblem, palette), DrawSync, then `0x800B6A80`,
+  `0x80099098`, `0x800941F4`, `0x80093BC4`, `0x800A2318`, `0x800A2020`. The other paths (from
+  `0x80073E28`) are the **imports**: Project Phantasma (type 'S', checksum at 512 over 3,288 from
+  560) and original Armored Core (checksum `0x80070F70`, 3,044 bytes from 560, unpack
+  `0x80072E54`). My first note called the AC1 import path "the game's LOAD"; that was wrong.
+  Effect: the Rogue Arena direct boot (branch `rogue-direct`) used the import checksum/unpack, so
+  on a real run card it always falls back to the old menu presses (safe, no speed-up). Fix =
+  replay the 'N' inline copies in C (needs that unpack's copy table; save-format lane).
 
 Launch chat → data chat:
 - Stage (compiled +0x05 = player block +0x255) at VS START = byte `0x800D5800[map − 1]`,

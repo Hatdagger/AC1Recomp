@@ -166,6 +166,14 @@
 #define RUN_A0_CURSOR_I      0x10400015u
 #define RUN_A0_CLEAR         0x800BC274u
 #define RUN_A0_CLEAR_I       0x10400005u
+/* L1/R1 page flip (ranked <-> sub arena), arena 0 only: `lbu v0,93(s1)`
+ * then this `bne v0,zero,0x800BD474` skips it for every other arena. In a run
+ * there is no sub page (all 50 rows are on page 0, and flipping showed rows
+ * the run never fills while its hooks forced ranked rules: the hang), so v0 = 1
+ * takes the other arenas' way. v0 is set again at 0x800BD474 before any use;
+ * the delay slot (lui t0) runs either way. */
+#define RUN_A0_FLIP          0x800BD310u
+#define RUN_A0_FLIP_I        0x14400058u
 
 /* The run's opponents in arena 0 (GG/MS/MENU_TIM.T, file 4 of the table at
  * 0x8004402C: 18 slots of 12 bytes, word 0 the entry index in RAM, halfword
@@ -180,8 +188,9 @@
  * Per-opponent entries are loaded one by one, through 0x800BDE88 (a0 =
  * entry) and 0x800586A0 (a0 = file, a1 = entry): the entry is pointed at the
  * source arena's own. The whole-arena entries are read (asynchronously) by
- * 0x800160C4 at four sites; once the game's CD queue is empty (checked where
- * the game itself checks it, 0x800589DC) they are rebuilt from the sources.
+ * 0x800160C4 at four sites; each is rebuilt from the sources as soon as its
+ * read has landed (checked where the game itself checks the CD queue,
+ * 0x800589DC; see run_queue_fix).
  * Arena 0's entry e is rank e + 1, so the run's slot 49 - e. */
 #define RUN_FILE_TABLE       0x8004402Cu
 #define RUN_FILE_COUNT       18u
@@ -1028,6 +1037,13 @@ static void run_a0_clear(struct CPUState *cpu, uint32_t address)
     if (run_a0(cpu, 16)) cpu->gpr[2] = 0;
 }
 
+static void run_a0_flip(struct CPUState *cpu, uint32_t address)
+{
+    (void)address;
+    if (!run_a0(cpu, 17)) return;
+    cpu->gpr[2] = 1;                                      /* no page flip (runs every frame) */
+}
+
 /* ---- the run's opponents in arena 0 ---------------------------------------- */
 
 /* MENU_TIM.T's entry table, read from the disc's first sector of the file
@@ -1100,7 +1116,42 @@ static void run_load_file_entry(struct CPUState *cpu, uint32_t address)
     cpu->gpr[5] = run_remap(cpu->gpr[5] & 0xFFFFu);
 }
 
-static struct { int kind; uint32_t buf, bytes; } run_fix[4];
+/* Whole-arena reads waiting to be rebuilt. A fix is applied the moment its
+ * buffer holds arena 0's stock entry exactly as the disc has it (the read
+ * has landed: the checksum is the entry's last word, so it lands last), and
+ * dropped once the CD queue is empty without that happening (the memory was
+ * reused). So a fix can never write into memory that isn't that read any
+ * more, and a new read into the same buffer replaces the older fix. If the
+ * buffer already held the stock entry when the read was asked for, landing
+ * can't be told apart, so that fix waits for the empty queue. */
+#define RUN_FIX_MAX 16
+static struct { int kind; uint32_t buf, bytes, sum; int early; } run_fix[RUN_FIX_MAX];
+static int run_fix_landed(int i);
+
+/* Arena 0's stock whole-arena entry `kind` (builds, names, rewards, AI) as
+ * on the disc, read once per menu file. NULL = not available. */
+static const uint8_t *run_stock_entry(int kind, uint32_t bytes)
+{
+    static uint8_t ent[4][4096];
+    static uint32_t got_lba[4], got_bytes[4];
+    if (kind < 0 || kind > 3 || bytes > sizeof ent[0] || !run_index()) return NULL;
+    if (got_lba[kind] == run_state.lineup.menu_lba && got_bytes[kind] == bytes) return ent[kind];
+    uint32_t first, count;
+    if (!run_source(1u, RUN_ARENA, &first, &count)) return NULL;
+    const uint32_t entry = first + 4u * count + (uint32_t)kind;
+    const uint32_t a = run_hdr(entry), b = run_hdr(entry + 1u);
+    if (b <= a || (b - a) > 2u || bytes > (b - a) * 2048u ||
+        !psx_mod_read_disc_sectors(run_state.lineup.menu_lba + a, b - a, ent[kind]))
+        return NULL;
+    got_lba[kind] = run_state.lineup.menu_lba;
+    got_bytes[kind] = bytes;
+    return ent[kind];
+}
+
+static uint32_t run_le32(const uint8_t *p)
+{
+    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
+}
 
 static void run_queue_fix(int kind, uint8_t arena, struct CPUState *cpu)
 {
@@ -1111,17 +1162,28 @@ static void run_queue_fix(int kind, uint8_t arena, struct CPUState *cpu)
         return;
     }
     const uint32_t bytes = cpu->gpr[6], buf = cpu->gpr[7];
+    const uint8_t *stock = NULL;
     if (bytes < 8u || bytes > 4096u || (bytes & 3u) || buf < 0x80000000u ||
-        buf + bytes > 0x80200000u || run_fixes >= 4) {
-        run_log("data %s: not queued (bytes %u, buffer %08x, queued %d)", k_kind[kind],
-                (unsigned)bytes, (unsigned)buf, run_fixes);
+        buf + bytes > 0x80200000u || !(stock = run_stock_entry(kind, bytes))) {
+        run_log("data %s: not queued (bytes %u, buffer %08x, stock entry %s)", k_kind[kind],
+                (unsigned)bytes, (unsigned)buf, stock ? "read" : "not read");
         return;
     }
+    int at = 0;
+    while (at < run_fixes && run_fix[at].buf != buf) ++at;    /* same buffer: replace */
+    if (at == RUN_FIX_MAX) {                                  /* full: the oldest goes */
+        memmove(run_fix, run_fix + 1, sizeof run_fix[0] * (RUN_FIX_MAX - 1));
+        at = RUN_FIX_MAX - 1;
+        run_log("data: queue full, oldest fix dropped");
+    }
+    run_fix[at].kind = kind;
+    run_fix[at].buf = buf;
+    run_fix[at].bytes = bytes;
+    run_fix[at].sum = run_le32(stock + bytes - 4u);
+    run_fix[at].early = 0;
+    if (at == run_fixes) run_fixes++;
+    run_fix[at].early = run_fix_landed(at);
     run_log("data %s: queued (bytes %u, buffer %08x)", k_kind[kind], (unsigned)bytes, (unsigned)buf);
-    run_fix[run_fixes].kind = kind;
-    run_fix[run_fixes].buf = buf;
-    run_fix[run_fixes].bytes = bytes;
-    run_fixes++;
 }
 
 static void run_read_names(struct CPUState *c, uint32_t a)   { (void)a; run_queue_fix(KIND_NAMES, (uint8_t)c->gpr[20], c); }
@@ -1219,14 +1281,39 @@ static void run_apply_fix(int kind, uint32_t buf, uint32_t bytes)
             (unsigned)run_state.lineup.ghosts);
 }
 
-/* The queued entries, once every read is in. */
+/* 1 = the buffer holds the stock entry exactly (its read has landed). */
+static int run_fix_landed(int i)
+{
+    const uint32_t buf = run_fix[i].buf, bytes = run_fix[i].bytes;
+    if (psx_mod_read_word(buf + bytes - 4u) != run_fix[i].sum) return 0;
+    const uint8_t *stock = run_stock_entry(run_fix[i].kind, bytes);
+    if (!stock) return 0;
+    for (uint32_t k = 0; k + 4u < bytes; k += 4u)
+        if (psx_mod_read_word(buf + k) != run_le32(stock + k)) return 0;
+    return 1;
+}
+
+/* Each queued read, as soon as it is in; leftovers once the queue is empty. */
 static void run_apply_fixes(void)
 {
     if (!run_fixes) return;
     const uint32_t rd = psx_mod_read_word(RUN_CDQ + 0x37Cu);
-    if (rd != psx_mod_read_word(RUN_CDQ + 0x378u) || psx_mod_read_byte(rd) != 0u) return;
-    for (int i = 0; i < run_fixes; ++i) run_apply_fix(run_fix[i].kind, run_fix[i].buf, run_fix[i].bytes);
-    run_fixes = 0;
+    const int idle = rd == psx_mod_read_word(RUN_CDQ + 0x378u) && psx_mod_read_byte(rd) == 0u;
+    int n = 0;
+    for (int i = 0; i < run_fixes; ++i) {
+        if ((idle || !run_fix[i].early) && run_fix_landed(i)) {
+            run_apply_fix(run_fix[i].kind, run_fix[i].buf, run_fix[i].bytes);
+            continue;
+        }
+        if (idle) {
+            psx_mod_counter_add("moa.run.data_stale", 1);
+            run_log("data kind %d: dropped (buffer %08x no longer holds the read)",
+                    run_fix[i].kind, (unsigned)run_fix[i].buf);
+            continue;
+        }
+        run_fix[n++] = run_fix[i];
+    }
+    run_fixes = n;
 }
 
 static void run_cd_busy_entry(struct CPUState *cpu, uint32_t address)
@@ -1356,5 +1443,6 @@ PSX_MOD_CONSTRUCTOR(moa_arena_run_boot_register)
     (void)psx_game_register_offline_instruction(RUN_A0_RANKED, RUN_A0_RANKED_I, run_a0_ranked);
     (void)psx_game_register_offline_instruction(RUN_A0_CURSOR, RUN_A0_CURSOR_I, run_a0_cursor);
     (void)psx_game_register_offline_instruction(RUN_A0_CLEAR, RUN_A0_CLEAR_I, run_a0_clear);
+    (void)psx_game_register_offline_instruction(RUN_A0_FLIP, RUN_A0_FLIP_I, run_a0_flip);
     mod_register_frame_hook(run_frame_hook);
 }

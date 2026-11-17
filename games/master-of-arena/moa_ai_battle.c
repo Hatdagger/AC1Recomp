@@ -563,6 +563,9 @@ static int moa_time_limit_secs(void)
 static uint8_t moa_unit_record[2][MOA_RECORD_BYTES];
 static uint8_t moa_unit_ai[2][MOA_AI_RECORD_BYTES];
 
+static void moa_set_ff(int on);
+static int moa_manual_unit1(void);
+
 static void moa_units_ready(void)
 {
     memcpy(moa_side_record, moa_unit_ai[0], MOA_AI_RECORD_BYTES);
@@ -573,6 +576,12 @@ static void moa_units_ready(void)
     moa_stage_pick();
     moa_matches++;
     psx_mod_counter_add("moa.ai.match", 1);
+    /* Player vs AI: the player takes over here, at the game's own loading
+     * screen before the fight (no stop on the versus menu). */
+    if (moa_manual_unit1()) {
+        moa_set_ff(0);
+        psx_mod_counter_add("moa.ai.handover_loading", 1);
+    }
 }
 
 static uint8_t moa_menu_loaded[2];             /* unit came in through DATA LOAD */
@@ -591,6 +600,7 @@ static int moa_vs_start_filter(struct CPUState *cpu, uint32_t address)
     if (!moa_vs_direct_loading()) {
         if (!moa_pick_units(moa_unit_record, moa_unit_ai)) {
             psx_mod_counter_add("moa.ai.roster_failed", 1);
+            if (moa_manual_unit1()) moa_set_ff(0);  /* the player still gets the fight */
             return 0;                          /* stock versus match instead */
         }
         if (moa_menu_loaded[0] && moa_menu_loaded[1]) {
@@ -656,8 +666,8 @@ static uint32_t moa_autopilot_ticks;
  *   slot 2, PSX_MOA_AI_LOADMENU=1), SELECT MAP to PSX_MOA_AI_MAP (1..10),
  *   back to VS START.
  *
- * Player vs AI (PSX_MOA_AI_P1=1): the player takes over there. AI vs AI: VS
- * START, the fight in fast forward, START at the result to watch the replay;
+ * Player vs AI (PSX_MOA_AI_P1=1): VS START, and the player takes over at the
+ * game's own loading screen before the fight. AI vs AI: VS START, the fight in fast forward, START at the result to watch the replay;
  * the player takes over when the replay begins. A loaded build is checked
  * against its card; a unit that did not come through falls back to the
  * direct entry at VS START.
@@ -676,7 +686,7 @@ static uint32_t moa_autopilot_ticks;
 #define MOA_PAD_X           0x4000u
 #define MOA_PAD_O           0x2000u
 
-enum { STEP_PRESS, STEP_CHECK, STEP_HANDOVER, STEP_FIGHT, STEP_ROW };
+enum { STEP_PRESS, STEP_CHECK, STEP_HANDOVER, STEP_FIGHT, STEP_ROW, STEP_START };
 #define MOA_VS_ROW          0x801B2038u  /* versus menu cursor: 0 VS START .. 3 SELECT MAP */
 struct moa_step { uint8_t kind, port; uint16_t buttons, hold, wait; uint8_t phase; };
 enum { PH_READY = 0, PH_UNIT1, PH_UNIT2, PH_START };
@@ -797,12 +807,10 @@ static void moa_script_build(void)
      * input (the first press after the menu opens is otherwise lost). */
     moa_add(STEP_ROW, 1, 1, 0, 0);
     moa_add(STEP_ROW, 1, 0, 0, 0);                      /* VS START */
-    if (moa_manual_unit1()) {
-        moa_add(STEP_HANDOVER, 1, 0, 0, 0);
-    } else {
-        moa_add(STEP_FIGHT, 1, 0, 0, 0);
-        moa_tap(1, MOA_PAD_X, 0);                       /* VS START */
-    }
+    /* Both kinds press VS START: Player vs AI is handed over at the game's
+     * loading screen (moa_units_ready), not on the menu. */
+    moa_add(moa_manual_unit1() ? STEP_START : STEP_FIGHT, 1, 0, 0, 0);
+    moa_tap(1, MOA_PAD_X, 0);                           /* VS START */
 }
 
 static uint32_t moa_step_budget(const struct moa_step *st);
@@ -865,6 +873,10 @@ static void moa_script_frame(void)
         moa_set_ff(0);
         psx_mod_counter_add("moa.ai.handover_menu", 1);
         moa_script_pos = moa_script_len;
+        return;
+    case STEP_START:                                    /* Player vs AI: VS START, no lock */
+        moa_vs_start_armed = 1;
+        moa_script_pos++; moa_step_time = 0;
         return;
     case STEP_FIGHT:                                    /* stays fast through the fight */
         moa_vs_start_armed = 1;

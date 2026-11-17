@@ -160,7 +160,7 @@ loads them in order (`0x8005589C` …):
 | 0–3 | `0x8005999C(72 / 260 / 128 / 160, data)` | graphics uploads `?` (171,868 / 170,944 / 12 / 26,372) |
 | 4 | `0x8005D9EC` | ? (592) |
 | 5 | `0x800529F0` | ? (52,988) |
-| 6 | copied to `0x801CFAB0` | ? (46,540) |
+| 6 | copied to `0x801CFAB0` | **map sections** (64 bytes each + link lists) (46,540) |
 | 7 | `0x80073694` | ? (46,848) |
 | 8 | `0x80077A00` | ? (52; trigger zones? `?`) |
 | 9 | `0x80078F58` | ? (16,384, same size in every mission) |
@@ -193,25 +193,38 @@ are checked for spawning, 4 per frame (`0x8007F20C` → `0x8007EEE0`).
 | +0x04, +0x06, +0x08 | → object +0x08, +0x0A (−1), +0x0C |
 | +0x0A s16 | **object type** (−1 = unused) → object +0x0E; picks the mission's handler and the type entry |
 | +0x0C … +0x13 | → object +0x10 … +0x17 (position? `?`) |
-| +0x12 u16 | **event flag number** (bit in the flag set at `0x801EA9E8`) |
+| +0x12 u16 | **map section number** (bit in the active-section set at `0x801EA9E8`, see below) |
 | +0x14 u16 | flags: bit 0 = spawn by zone, 0x40 = disabled, 0x8000 = priority, bit 5 → object +0x32 |
 | +0x16 u16 | **trigger zone** number (52-byte zones at `0x801E49D8`) |
 | +0x1A u16 | → object +0x168 (AP), +0x16A, +0x16C |
 | +0x22 … +0x2B | → object +0x104 … +0x10D |
 
+**Active sections** (corrected 2026-11-17: not event flags). Each frame `0x8007F20C` clears the
+512-bit set at `0x801EA9E8` (`0x8007448C`) and sets (`0x800744A8`) the bit of the map section the
+player is in plus its linked sections. Sections = 64-byte records from map block 6, copied to
+`0x801CFAB0` (section number = (ptr − `0x801CFAB0`) ÷ 64; +0x26 = link count, +0x28 = link list).
+A second section (pointer `0x801BB58C`) is added when `0x801EAA30` bit 0 is set (camera? `?`).
+The same set is also read at `0x800798D4`, `0x80079C2C` and `0x8007D7CC` (drawing / culling `?`).
+
 **Spawn rule** (`0x8007EEE0`): skip if type = −1, already spawned or disabled. Spawn if the
-record's event flag is set, **or** (bit 0) if the player is inside its trigger zone: zone
+record's map section is active (player in it or next to it), **or** (bit 0) if the player is inside its trigger zone: zone
 +0/+2/+4 = centre x / y / z, signed bytes +0x22 … +0x27 × 256 = box limits. Spawning
 (`0x8007ECEC`) takes a pool slot, copies the record in (`0x8007EB00`), then calls the mission's
 **handler for that type** (module +0x20 + 4 × type), which sets the object up.
 
-So a mission = its object types (models + parameters), up to 60 placements that appear on event
-flags or when the player walks into a box, and its own code for each type.
+So a mission = its object types (models + parameters), up to 60 placements that appear when the
+player gets near their map section or walks into a box, and its own code for each type.
+
+**Type handlers set the object's callbacks** at +0x58, +0x5C, +0x60, +0x64 (+0x64 = hit
+callback, per `battle-system.md`), plus +0x36 and +0x16C. Mission 0: type 1 (`0x800A1680`) sets
++0x60 / +0x64 only (hittable, no own movement `?`); type 2 (`0x800A1EA8`) sets all four (the
+enemy `?`); type 3 (`0x800A1F50`) sets none (scenery `?`).
 
 ## Open
 - What `0x8003EA29` (from T+1160) does in the engine; what T+8 counts.
 - Mission 0's three type handlers (`0x800A1680`, `0x800A1EA8`, `0x800A1F50`): what they set up.
-- Who sets the event flags (`0x801EA9E8`): mission code, script reader, kills?
+- Callback slots +0x58 / +0x5C / +0x60: which is per-frame update, which is death, etc.
+- How mission code decides "objective done" (counts kills? checks object AP?) before ending with 0x80.
 - Map blocks 0–11 and 14–18; the 36-byte type parameters.
 - Hooks +0x0C, +0x18, +0x1C; the event numbers passed to +0x08.
 - Mission number 40: which menu screen uses it.

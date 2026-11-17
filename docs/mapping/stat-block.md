@@ -30,7 +30,7 @@ Part records named below are the menu tables in `parts-tables.md`. "Garage" = lo
 
 | Off | Size | Meaning | Source |
 |---|---|---|---|
-| +0x00 | u16 | 120 or 300 or 0, picked by options record +0x34 (`0x8004B59C`: 0 → 120, 1 → 300, else 0). The VS engine takes the **larger of the two players' values** (`0x80055C48`), so most likely the **match time limit in seconds** (0 = none) | options; **confirm by test** |
+| +0x00 | u16 | **Match time limit in seconds**: 120 or 300 or 0 (no limit), from options record +0x34 (`0x8004B59C`: 0 → 120, 1 → 300, else 0). VS setup (`0x80055C48`) takes the larger of the two players' values × 22 as the time left in steps at `0x80097EB4` (120 → 2,640, matches the battle chat's measured timer); the clock only runs while it's ≥ 2 | options |
 | +0x02 | u8 | Flags: bit 0 cleared, bits 1 and 2 set, **bit 3 = legs can fit a booster** (legs +0x42). **Bit 0** is a fight-time flag (set `0x8007CC70`; cleared `0x8007CA88`, `0x80082920`, `0x8008FB68`). **Bit 5** comes from options record +0x35 (default 1; `0x800B6AE4`), meaning unknown. Bit 1 read at `0x80087760`, bit 4 at `0x80087EB8` | |
 | +0x03 | u8 | **Human PLUS level** (`0x8003EAC8`) | |
 | +0x04 | | no access found in the menus, VS or arena engines: padding | |
@@ -196,7 +196,7 @@ mode).
 ## To name by a test in VS
 
 Poke one, watch the effect, log the result here:
-+0x00 (time limit?), +0x02 bit 5 (options +0x35), +0x05 (stage?), +0x0F/+0x10 (core bytes),
++0x02 bit 5 (options +0x35), +0x05 (stage?), +0x0F/+0x10 (core bytes),
 +0x26, +0x2A (head bytes), +0x34 bits 0–1, +0x36–0x3C (collision?), body frame 3 (Human
 PLUS ≥ 4), slot +7/+8/+9 → player block +0x210–0x214, slot +10 to +12. Watch slot +42–61 and
 +0x04/+0x11 for any write to confirm they're padding.

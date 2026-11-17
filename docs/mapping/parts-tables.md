@@ -57,7 +57,9 @@ index is the part's ID in cards, the garage struct and arena opponent records.
 | Category | Offset | Size | Meaning | Proven by |
 |---|---|---|---|---|
 | Head, core, arms, legs | +0x2C / +0x2E / +0x30 | u16 | AP / shell defence / energy defence | garage, damage formula |
-| Head | +0x32–0x35 | 4×u8 | Small values 0–3; same pattern as radars' +0x30 (see unknowns) | disc |
+| Head | +0x32 | u8 | Arena only: picks a HUD item (stat +0x2A), likely display style | arena code |
+| Head | +0x33 | u8 | Never read in fights (stat +0x26) | VS, arena |
+| Head | +0x34, +0x35 | u8 | When 1, clear stat +0x34 bit 0 / bit 1: an ignore mask for the collision sweep, so the AC's sweeps also see objects flagged with that bit | VS code |
 | Head | +0x36 | u16 | Has a radar (1) / none (0) | disc: range is 0 whenever this is 0 |
 | Head | +0x38 | u16 | Radar range (PERFORMANCE shows ÷10) | perf maths |
 | Head | +0x3A | u16 | Padding (always 0) | disc |
@@ -70,6 +72,8 @@ index is the part's ID in cards, the garage struct and arena opponent records.
 | Legs | +0x42 | u16 | Can fit a booster (1); 0 on every caterpillar | disc |
 | Legs | +0x46 | u16 | Padding (always 0) | disc |
 | Core | +0x32 | u16 | Arm load limit (arms + hand + blade; weapon arms count alone) | VS START check |
+| Core | +0x34 | u8 | **Missile interceptor reaction**: chance per frame ÷ 128 (XCA-00 48 = 37.5%, XXL-D0 32 = 25%) | VS code |
+| Core | +0x35 | u8 | **Missile interceptor angle**: ±value × 4 (4,096 = 360°): XCL-01 64 = ±22.5°, XCA-00 48 = ±16.9°, XXL-D0 20 = ±7° | VS code |
 | Core | +0x36 | u16 | Option slots | VS START check |
 | Legs | +0x32 | u16 | Carry limit | VS START check |
 | Legs | +0x34 | u16 | Energy drain standing | compiled block |
@@ -134,15 +138,31 @@ or one read of the code that uses it.
 
 | Table | Bytes | What the disc shows | Best guess |
 |---|---|---|---|
-| Head | +0x32–0x35 | four bytes, each 0–3 | Head system features (AC1 heads list map, noise canceler, bio sensor…) |
+| Head | +0x34–0x35 | each 0–1 here | Which objects the head's flags let the AC's collision sweep see (battle chat) |
 | Back radars | +0x30–0x31 | two bytes, 0–2, same style as the head bytes | Radar features (missile/AC display?) |
-| Core | +0x34–0x35 | two bytes: XCA-00 48/48, XCL-01 48/64, XCH-01 48/32, XXA-S0 50/50, XXL-D0 32/20 | Anti-missile / interceptor figures? |
 | Blade | +0x2E, +0x32 | 39 always; 11–42 with attack | Reach or lunge figures |
 | FCS | +0x2D | 0–4 per FCS | Lock-on display or targeting style |
 | Weapon detail | +0x02 | rockets 64, missiles 4, cannons 0–64, weapon arms 9–10 | Recoil (SP-SAP "decreases cannon recoil" acts on weapon records) |
 | Weapon detail | +0x03 | hand 0, missile 1, cannon 3, rocket 5, radar/two-slot 255, weapon arms 0/7 | Firing group / muzzle point |
 | Weapon detail | +0x04 | 255 most; 2 radars and two-slot units; 1 grenade launcher, WC-IR24 | Slot use (two-slot = 2)? |
 | Weapon detail | +0x05 | 1 most; rockets 6; energy cannons 3; dispensers, radars 0 | Aim mode (rockets fire straight, no lock) |
+
+## Missile interceptor (core +0x34 / +0x35)
+
+VS `0x800829E4` (arena `0x800846A0`), every frame for each AC:
+
+1. If `(rand & 127) <` reaction (stat +0x0F), or a burst is running (AC +0x118, odd frames):
+   look for a missile.
+2. From the interceptor joints (layout bytes 0–1, stat +0x56/+0x57), scan the 256 objects at
+   `0x801D6F6C` (228 bytes each) for an enemy missile (handler `0x8009907C`, alive) within
+   5,000 on every axis and 5,000 straight-line, and inside ±angle × 4 (stat +0x10) of the AC's
+   facing, sideways and up/down. Take the nearest.
+3. Found: start a 15-frame burst (AC +0x118 = 15). Each shot has a **1 in 32** chance
+   (`rand < 1024`) to be aimed at the missile and **destroy it**; otherwise it fires off with a
+   random spread of up to 31 units. Shots spawn through `0x8008A7C0`.
+
+So better cores react more often (+0x34) and cover a wider cone (+0x35); range and hit chance
+are fixed. The user suspected this from the garage stats (2026-11-17).
 
 ## Room for more optional parts
 

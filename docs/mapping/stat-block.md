@@ -41,7 +41,8 @@ Part records named below are the menu tables in `parts-tables.md`. "Garage" = lo
 | +0x0C | u8 | Turn acceleration (legs +0x38 ÷ weight) | known |
 | +0x0D | u8 | Turn speed (legs +0x3A ÷ weight), 0–64 | known |
 | +0x0E | u8 | Friction: weight × 8 ÷ 1000, 32–96 | known |
-| +0x0F, +0x10 | u8 | **Core bytes +0x34, +0x35**, copied as is | **name by test** |
+| +0x0F | u8 | **Missile interceptor reaction** (core +0x34): each frame the interceptor looks for a missile with chance value ÷ 128 (`(rand & 127) < value`, VS `0x80082A0C`, arena `0x800846BC`). 48 → 37.5% | code |
+| +0x10 | u8 | **Missile interceptor angle** (core +0x35): a missile is only taken if it lies within ±value × 4 of the AC's facing, both sideways (player block +0x218) and up/down (4,096 = 360°, so 48 → ±16.9°, 64 → ±22.5°, 20 → ±7°) | code |
 | +0x11 | | no access found anywhere: padding | |
 
 Carried weight = every part except the generator, capped at legs weight + carry limit.
@@ -62,11 +63,11 @@ Carried weight = every part except the generator, capped at legs weight + carry 
 | +0x23 | u8 | Energy damage factor, 1–45 (SP-E/SCR) | known |
 | +0x24 | u8 | Stability, 32–255 (legs +0x40, SP-ABS +800, SP-ABS_Re +1600) | known |
 | +0x25 | u8 | **Radar flags**: head +0x3A or back radar +0x30; bit 0 set by SP-MAW (missile indicator); 1 with Human PLUS and no radar | |
-| +0x26 | u8 | Head byte +0x33 | **name by test** |
+| +0x26 | u8 | Head byte +0x33. **No reads** in the VS or arena engine: unused in fights | |
 | +0x27 | u8 | **Radar type**: head +0x3B or back radar +0x31; 3 with Human PLUS and no radar | |
 | +0x28 | u8 | **Body frame**: 0 two-legged, 1 caterpillar, 2 four-legged (from the body table). Match start turns 0 into **3** when Human PLUS level ≥ 4; frames 0/3 then run init `0x80085688`, frames 1/2 run `0x800875C8` | |
 | +0x29 | u8 | **Body combination** (0–71): core × arms group × legs group, see "Body layout" | |
-| +0x2A | u8 | Head byte +0x32 | **name by test** |
+| +0x2A | u8 | Head byte +0x32. VS never reads it; the arena engine uses it to pick a HUD item, entry 176 + value × 64 passed to `0x800540EC` (`0x8005A438`), likely the head's display style | arena |
 
 **Human PLUS level 6 and up** (match start, `0x80083560`): rise drain +0x14 is halved, both
 refill rates (+0x16, +0x1A) are doubled, then each refill is capped at the new rise drain.
@@ -86,7 +87,7 @@ Back radars (40–51) switch the head's radar off first (+0x1E, +0x25, +0x27 = 0
 | +0x31 | u8 | Back L ID (rewritten when a P77-ST is fitted) |
 | +0x32 | u8 | Back R ID (same) |
 | +0x33 | u8 | Blade ID |
-| +0x34 | u16 | Flags, starts at 3: bit 0 cleared if head byte +0x34 = 1; bit 1 cleared if head byte +0x35 = 1; **bit 3 = SP-JAM (missile jammer)**. Match start copies the flags minus bits 0–1 to AC object +0x38, then **clears bit 3 here** (the jammer lives in the AC object from then on) |
+| +0x34 | u16 | Flags, starts at 3: bit 0 cleared if head byte +0x34 = 1; bit 1 cleared if head byte +0x35 = 1; **bit 3 = SP-JAM (missile jammer)**. Bits 0–1 are passed as an *ignore* mask to the collision sweep `0x80078230` (from `0x800806A0` and the shot code `0x800800E4`): objects whose +0x38 flags share a set bit are skipped, so a head with byte +0x34 / +0x35 = 1 lets its AC's sweeps see those objects. Which objects carry bits 0–1 is for the battle chat. Match start copies the flags minus bits 0–1 to AC object +0x38, then **clears bit 3 here** (the jammer lives in the AC object from then on) |
 | +0x36 | u16 | **Camera distance**, 650 on every body. Copied to camera +0x0A; the chase camera (`0x800878FC`) scales its direction vector by it (× 650 ÷ 4096, then halved) to place the camera behind the AC. See "Camera setup" |
 | +0x38 | u16 | **Camera height**, 40 (0 on combination 1, core 0 + regular arms + caterpillar). Copied to camera +0x0C and subtracted from the camera's Y (PS1 −Y = up), so the camera sits 40 above the follow point |
 | +0x3A | u16 | 100 on every body. Copied to camera +0x10, and its square to camera +0x14, but **nothing reads either** in the VS engine, the arena engine or the main executable: unused (a leftover; was guessed as a collision radius) |
@@ -152,7 +153,7 @@ layout, same +0x36–0x3C as normal legs. All entries have 650, 40, 100, 2 excep
 
 | Off | Size | Meaning |
 |---|---|---|
-| +0x56 – +0x65 | 16×u8 | Layout bytes 0–15 (look like model joint numbers). Bytes 4–5 (**+0x5A, +0x5B**) go to camera +0x01 / +0x02: the two joints the alternate camera is placed from (`0x80078888`) |
+| +0x56 – +0x65 | 16×u8 | Layout bytes 0–15 (look like model joint numbers). Bytes 0–1 (**+0x56, +0x57**) are the joints the missile interceptor fires from. Bytes 4–5 (**+0x5A, +0x5B**) go to camera +0x01 / +0x02: the two joints the alternate camera is placed from (`0x80078888`) |
 | +0x66 | u16 | Blade +0x2E (39 on every blade) |
 | +0x68 | u16 | **Blade attack** (blade +0x30) |
 | +0x6A | u16 | Blade +0x32 |
@@ -258,8 +259,7 @@ screenshot camera** (START + ○ + ✕, tested in game; see below).
 ## To name by a test in VS
 
 Poke one, watch the effect, log the result here:
-+0x02 bit 5 (options +0x35), +0x0F/+0x10 (core bytes),
-+0x26, +0x2A (head bytes), +0x34 bits 0–1, body frame 3 (Human
++0x02 bit 5 (options +0x35), +0x34 bits 0–1 (which objects they skip), body frame 3 (Human
 PLUS ≥ 4), slot +7/+8/+9 → player block +0x210–0x214, slot +10 to +12. Watch slot +58–61 and
 +0x04/+0x11 for any write to confirm they're padding. 
 

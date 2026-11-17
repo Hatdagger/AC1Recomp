@@ -71,6 +71,12 @@ Data chat → battle chat:
   on the weapon: hand weapons always give 11 / 31, back weapons give values from the legs'
   second turn figure (legs +0x3C) and carried weight (formulas in `stat-block.md`, slot +7/+8).
   Worth checking how the engine uses them next to +0x20C / +0x20E (normal turning).
+- **Missile interceptor** `0x800829E4` (VS; arena `0x800846A0`): reaction chance stat +0x0F ÷ 128
+  per frame, cone ±stat +0x10 × 4, range 5,000, AC +0x118 = 15-frame burst, 1 in 32 shots kill
+  the missile. Object list `0x801D6F6C` (256 × 228 bytes), missile handler `0x8009907C`. Details
+  in `parts-tables.md`.
+- Stat +0x34 bits 0–1 (cleared by head bytes +0x34 / +0x35 = 1) are an ignore mask for the
+  collision sweep `0x80078230`: which objects carry +0x38 bits 0–1?
 
 Launch chat → battle chat:
 - FDAT **211 is a fifth engine, the VS replay** (entry 0x80051FA4). When replay is picked the

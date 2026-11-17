@@ -264,6 +264,14 @@ int moa_vs_direct_load_frame(struct CPUState *cpu, uint32_t vs_state, int *timed
     }
 }
 
+void moa_vs_direct_reset(void)
+{
+    vsd_boot_armed = 0;
+    vsd_step = 0;
+    vsd_frames = 0;
+    moa_vs_direct_clear();
+}
+
 PSX_MOD_CONSTRUCTOR(moa_vs_direct_register)
 {
     (void)psx_game_register_offline_function_filter(VSD_TITLE_OPEN, vsd_title_filter);

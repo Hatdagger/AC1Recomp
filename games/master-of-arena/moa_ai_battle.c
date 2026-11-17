@@ -1177,14 +1177,19 @@ static void moa_session_check(void)
     moa_limit_armed = 0;
     moa_stage_pending = 0;
     moa_screen_frames = 0;
+    moa_vs_direct_reset();                     /* incl. a graphics load cut short */
 }
 
 static void moa_menu_entry(struct CPUState *cpu, uint32_t address)
 {
     (void)cpu;
     moa_ai_enabled = -1;
-    if (!moa_ai_battle_on() || psx_mod_read_word(address) != MOA_SIG_MENU_ENTRY)
+    if (!moa_ai_battle_on() || psx_mod_read_word(address) != MOA_SIG_MENU_ENTRY) {
+        /* Not an AI Battle boot: a direct boot left armed must not turn
+         * this game's title into the versus menu. */
+        if (!moa_ai_battle_on()) moa_vs_direct_arm_boot(0);
         return;
+    }
     moa_session_check();
     if (moa_matches > 0) {                     /* back from a match */
         moa_return_to_launcher("moa.ai.return_after_match");

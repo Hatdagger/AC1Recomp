@@ -53,6 +53,9 @@ int moa_vs_direct_boot_armed(void);
 void moa_vs_direct_set_unit(unsigned player, const struct moa_vs_unit *unit);
 /* Forget kept emblems (a new match). */
 void moa_vs_direct_clear(void);
+/* A new session: drop everything (boot arm, kept emblems, a load cut short
+ * by the last session). */
+void moa_vs_direct_reset(void);
 
 /* 3. Graphics. Call from a VS START filter every time VS START runs, with
  * the menu state VS START was given (a0). Returns 1 while loading (the filter

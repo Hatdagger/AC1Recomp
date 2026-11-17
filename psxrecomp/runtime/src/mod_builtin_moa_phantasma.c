@@ -375,11 +375,10 @@ static void ppm_progress_write(void) {
     fclose(f);
 }
 
-/* Missions left out of the rotation for now: 1, 7, 9 and 14 hang on a black
- * screen after loading, 11 loads with a broken view (ported code faults that
- * are not yet found). */
+/* Missions left out of the rotation (1 = hidden). 1, 7, 9, 11 and 14 were hidden
+ * while broken; shown again 2026-11-17 to test the k_ppm_fixes port fixes. */
 static const uint8_t k_pp_skip[PPM_MISSIONS] = {
-    1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 };
 
 /* The next unfinished mission, or PPM_MISSIONS when all are done. */

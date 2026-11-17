@@ -38,8 +38,10 @@ Mission screen material, not mission code:
 - entry 0 = the mission screen table copied to `0x8019F7A8 + 80` (see `PHANTASMA-MISSIONS.md`).
 - entries 1 … ~380, in groups of 5 per slot: briefing text (2 KB, e.g. "Sender: Lana Nielsen /
   Requester: …"), 12 KB pictures, many empty slots.
-- entries ~381 … 408: bigger blocks and the mail texts ("Sender: …" per mail).
-Exact per-slot layout still to map.
+- entry 385 = 20 KB of part descriptions ("Head unit with built-in bio sensor." …) `?`.
+- **entry 386 = the mail table**, **387–406 = the 20 mail texts**, **407 / 408 = the two mail
+  pictures**. See "Mail" below.
+Per-slot page layout of the mission entries: see `PHANTASMA-MISSIONS.md` (T+1184 page records).
 
 ## Menu → engine: how the mission number gets there (2026-11-17, static)
 
@@ -383,6 +385,118 @@ PP layout for those maps: type table `0x801DFC60` (44-byte entries, MoA `0x801E6
 
 Next: compare this list with the converter's function and data maps in the repo (needs GitHub).
 
+## Mail (2026-11-17, static)
+
+Mail code is in the menu module (FDAT 206), `0x800A1F00` … `0x800A5100`. Hub entry 4 opens it
+(`0x800A273C`, see `menus-hub.md`).
+
+### Mail block `S = 0x801A4F98`
+
+| Offset | Size | Meaning |
+|---|---|---|
+| +0x00 | 32 × u8 | **per-mail flags**: bit 0 = received, bit 1 = opened (set at `0x800A3178`), bits 2–7 = arrival order (the count at +0x60 when it arrived) |
+| +0x20 | 32 × 2 bytes | **trigger table**: (kind, value) per mail, see below |
+| +0x60 | u8 | number of mails received so far |
+| +0x61 | u8 | cleared at new game `?` |
+| +0x64 | u8 | table load in progress |
+| +0x65 | s8 | selected row of the mail list |
+| +0x66 | u8 | mail screen state `?` |
+| +0x70 | 32 × s8 | mail list, newest first (−1 = empty), rebuilt by `0x800A26B8` + `0x800A26E4` |
+| +0x90 | 2,112 bytes | copy of MIS.T entry 386 (first 0x840 bytes): +0x90 table, **+0xD0 subjects**, **+0x4D0 page records** |
+| +0x8D0 | ptr | screen work area |
+
+**Saved with the game:** S+0x00 … +0x63 (100 bytes, so the trigger table too) = RAM `0x8004B688` =
+save +3,572. Copies: S → `0x8004B688` = `0x800A1F68`; back = `0x800A2020` (also `0x800A20D8`
+/ `0x800A2190`).
+- **New game** (`0x80072E28`, `0x80073364`): `0x800A2318` clears flags and count and loads the table
+  from **MIS.T 386** (file 19, async load `0x800A22C8`, callback `0x800A2248` copies 528 words to
+  S+0x90 and the 32 pairs to S+0x20), then `0x800A1F68` stores it.
+- **Load game** (`0x80073BCC`, `0x8007443C`): `0x800A2318` (disc table), then `0x800A2020` puts the
+  **save's** block back over it. So a loaded game uses the trigger table **stored in its save**,
+  not the disc's.
+
+### MIS.T entry 386 layout (4,096 bytes)
+
+| Offset | What |
+|---|---|
+| 0x000 | 32 × (kind, value) trigger pairs; unused = (0xFF, 0) |
+| 0x040 | 32 × 32-byte subjects (ASCII, `>` ends); 20 real, 12 "ダミー" (dummy) placeholders |
+| 0x440 | 32 × 32-byte page records: **u16[8] pictures**, then **u16[8] text pages**, each = MIS.T entry − 387, −1 = none |
+| 0x840 | zero; last word = checksum |
+
+Each mail can have up to 8 text pages and 8 pictures. The screen loads them from MIS.T (file 19)
+as entry 387 + n (`0x800A3D68`, `0x800A4764`, …).
+
+### When a mail arrives
+
+`0x800A24FC` delivers mail (called when the mail screen opens, `0x800A2B84`, and at `0x800AC2D4`):
+a mail that isn't received yet gets bit 0, its order number and +0x60 goes up. Which ones:
+
+- **Story mode (T+4 = 1)**, by kind:
+
+| Kind | Arrives when |
+|---|---|
+| 0 | **chapter** T+2 ≥ value |
+| 1 | mission slot *value* **completed** (T+20[value] bit 1) |
+| 2 | mission slot *value* **completed or failed** (T+20[value] bit 1 or bit 2) |
+| 3 and up, 0xFF | never |
+
+- **T+4 = 0** (not story `?`): every mail of kind 0–3 arrives at once.
+
+`0x800A23F4` is the same test without delivering ("any new mail due?"); the hub uses it for "You have
+new mail." (`0x800557AC`) and for the Mail entry (`0x8005594C`). `0x800A1F00` = "has any mail".
+
+**Stock table:** all 20 mails are kind 0 (chapter):
+
+| Mail | Chapter | Sender | Subject | Text | Picture |
+|---|---|---|---|---|---|
+| 0 | 0 | Lana Nielsen | Request | 387 | |
+| 1 | 1 | Lana Nielsen | Arena | 388 | |
+| 2 | 4 | Lana Nielsen | Sponsor | 389 | |
+| 3 | 5 | PROGTECH | Arena Registration | 390 | 407 |
+| 4 | 5 | Lana Nielsen | PROGTECH | 391 | |
+| 5 | 8 | PROGTECH | Emergency | 392 | |
+| 6 | 9 | Elan Cubis | Mysterious MT | 393 | |
+| 7 | 9 | Lana Nielsen | Warning | 394 | |
+| 8 | 13 | Lana Nielsen | PROGTECH Request | 395 | |
+| 9 | 14 | PROGTECH | Promotion | 396 | 408 |
+| 10 | 15 | PROGTECH | Destruction Request | 397 | |
+| 11 | 16 | Elan Cubis | Nine-Ball | 398 | |
+| 12 | 16 | Lana Nielsen | Support Cut Off | 399 | |
+| 13 | 17 | PROGTECH | MT Rescue Operation | 400 | |
+| 14 | 18 | Elan Cubis | Data Manipulation | 401 | |
+| 15 | 19 | Elan Cubis | Connections | 402 | |
+| 16 | 19 | PROGTECH | HQ Protection Request | 403 | |
+| 17 | 20 | Elan Cubis | RAVENS' NEST | 404 | |
+| 18 | 21 | Elan Cubis | RAVENS' NEST Contact | 405 | |
+| 19 | 21 | Lana Nielsen | The Promise | 406 | |
+
+### Mission results and chapters (`0x80093CD8`, run on return from a mission)
+
+Mission table T (`0x8019F7A8`): **T+20[slot] bit 1 = completed, bit 2 = failed** (bit 0 = accepted);
+T+0x0C successes, T+0x10 failures (each capped at 999). When 19 of slots 0–19 are completed,
+`0x8003EACB` = 1 (guest arena unlocked). On a **story-mode success**: chapter T+2 += 1 and points
+T+5 += 4; reaching chapter 5 or 14 also gives 50,000 credits and one part (owned-part count
++247 / +241). Then, on any return, chapters jump or wait:
+- chapter 5–7 and points ≥ 32 → chapter 8; chapter 9–12 and points ≥ 54 → 13;
+- chapter 14 / 16 / 18 / 20 move on to 15 / 17 / 19 / 21 only when byte `0x8004B67D` = 10 / 7 / 4 / 2
+  (main-arena rank `?`);
+- at chapter 5 that byte is capped at 30, at chapter 14 at 15 (both also clear `0x8004B686`);
+- arena lock `0x8004B686` = 0 from chapter 5, 4 at chapters 8, 13, 15, 17, 19, 21.
+
+So chapter-timed (kind 0) mails depend on mission wins **and** arena ranks.
+
+### What this means for per-group mail (mission source picker)
+
+- "Mail after mission N" already exists: **kind 1** (completed) / **kind 2** (played). It is a data
+  change in MIS.T 386, no code needed, for MoA's own slots 0–19.
+- Saves carry their own table: a mod that changes triggers must also rewrite S+0x20 … +0x5F after
+  `0x800A2020` on load (leaving the flags and +0x60 alone), or old saves keep the stock timing.
+- There are **32 mail slots, 20 used**: 12 free without enlarging the saved block.
+- Phantasma missions all run as slot 20, so T+20 can't tell them apart: a plugin should give their
+  mail a kind the game never delivers (4 … 0x7F) and deliver it itself (set bit 0 | (+0x60 << 2),
+  then +0x60 += 1), with its text and pictures from the Phantasma MIS.T copy (entry 410+k).
+
 ## Open
 - What `0x8003EA29` (from T+1160) does in the engine; what T+8 counts.
 - Mission 0's three type handlers (`0x800A1680`, `0x800A1EA8`, `0x800A1F50`): what they set up.
@@ -395,4 +509,5 @@ Next: compare this list with the converter's function and data maps in the repo 
 - Map header fields (80, 19, 4 × 19) and the blocks after it.
 - Objectives, win/lose checks, timer, results and rewards; enemy list; script reader
   `0x80091FFC` (stepped at `0x80092E4C`; writes AC +0x6D/+0x7C/+0x7E/+0x84).
-- MIS.T per-slot layout and the mail table.
+- Mail: mission mode T+4 = 0 (what it is; it hands out every mail of kinds 0–3 at once); what
+  the second delivery call (`0x800AC2D4`) belongs to; Phantasma's own mail table.

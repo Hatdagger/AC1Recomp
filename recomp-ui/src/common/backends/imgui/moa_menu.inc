@@ -30,7 +30,7 @@ enum Page {
     PAGE_MAIN = 0, PAGE_SETTINGS, PAGE_MODS,
     PAGE_NET_MODE, PAGE_NET_ROOMS, PAGE_LOBBY, PAGE_AI, PAGE_EXTRAS, PAGE_UPDATES,
     PAGE_AI_CARDS, PAGE_AI_EDIT, PAGE_AI_ADV, PAGE_AI_BUILD, PAGE_AI_PICK, PAGE_AI_OPTS,
-    PAGE_AI_PAINT, PAGE_AI_EMBLEM, PAGE_RUN, PAGE__COUNT
+    PAGE_AI_PAINT, PAGE_AI_EMBLEM, PAGE_RUN, PAGE_START, PAGE_START_LOAD, PAGE__COUNT
 };
 
 struct State {
@@ -1047,6 +1047,7 @@ static void draw_updates_page(const Gfx& g, const Input& in) {
 /* ---- main page ------------------------------------------------------------- */
 
 #include "moa_menu_garage.inc"
+#include "moa_menu_start.inc"
 
 enum MainEntry { MAIN_START = 0, MAIN_RUN, MAIN_NETWORK, MAIN_GARAGE, MAIN_EXTRAS, MAIN_SETTINGS, MAIN_MODS, MAIN_UPDATES, MAIN_EXIT };
 
@@ -1073,6 +1074,9 @@ static void start_game(LauncherModel* m) {
      * session in this process left behind (moa_arena_run_boot.c). */
     static unsigned s_session = 0;
     set_env("PSX_MOA_RUN_SESSION", std::to_string(++s_session).c_str());
+    /* START GAME's choice (moa_menu_start.inc); empty for every other start. */
+    set_env("PSX_MOA_START", g_quick_start.c_str());
+    g_quick_start.clear();
     /* The stock PLAY button's decisions, in the same order. */
     if (launcher_model_bios_blocks_play(m)) {
         launcher_model_bios_play_prompt(m);
@@ -1208,8 +1212,9 @@ static void draw_main(LauncherModel* m, const Gfx& g, const Input& in) {
     if (activate < 0) return;
     cur = activate;
     switch (entries[activate].id) {
-        case MAIN_START:    if (!m->in_session) { set_ai_battle(false); set_arena_run(false, ""); }
-                            start_game(m); break;
+        case MAIN_START:    if (m->in_session) start_game(m);
+                            else open_start_page(m);
+                            break;
         case MAIN_GARAGE:   open_garage_page(m); break;
         case MAIN_EXTRAS:   open_extras_page(m); break;
         case MAIN_RUN:      open_run_page(m); break;
@@ -1607,7 +1612,7 @@ static void draw_mods_page(LauncherModel* m, const Gfx& g, const Input& in) {
 
 /* True when this menu, not the stock page, draws the current view. */
 static bool owns_view(const LauncherModel* m) {
-    if (m->view != LNG_VIEW_DASHBOARD) g_state.ai_page = g_state.extras_page = g_state.updates_page = g_state.garage_page = g_state.run_page = false;
+    if (m->view != LNG_VIEW_DASHBOARD) { g_state.ai_page = g_state.extras_page = g_state.updates_page = g_state.garage_page = g_state.run_page = false; g_start_page = false; }
     if (m->view == LNG_VIEW_DASHBOARD) {
         g_state.classic_settings = false;
         g_state.classic_mods = false;
@@ -1665,6 +1670,7 @@ static void draw(LauncherModel* m, const LauncherTheme& th) {
             else if (g_state.extras_page && !m->in_session) draw_extras_page(m, g, in);
             else if (g_state.run_page && !m->in_session) draw_run_page(m, g, in);
             else if (g_state.updates_page && !m->in_session) draw_updates_page(g, in);
+            else if (g_start_page && !m->in_session) draw_start_page(m, g, in);
             else draw_main(m, g, in);
             break;
         }

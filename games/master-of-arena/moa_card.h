@@ -150,6 +150,10 @@ struct moa_story_save {
 /* The story saves on a memory card image, up to `max`. -1 = unreadable. */
 int moa_memcard_list_story(const char *path, struct moa_story_save *out, int max);
 
+/* The 8 KB save block of the story save in directory slot `slot` (1..15), as
+ * the game's LOAD reads it (the launcher's LOAD GAME). 1 on success. */
+int moa_memcard_read_story(const char *path, int slot, uint8_t out[8192]);
+
 /* Owned-parts index the game uses for record byte `byte` holding `id`
  * (menu 0x800996AC; blades follow the 26 hand weapons), or -1. Option bit
  * `byte` 10 / 11 is given as option number 0..11 in `id`. */

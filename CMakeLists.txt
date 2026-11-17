@@ -153,6 +153,8 @@ if(TARGET psx-master-of-arena)
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_parts.c"
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_arena_run.c"
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_arena_run_boot.c"
+        # START GAME > LOAD GAME / NEW GAME / LAUNCH GAME (launcher).
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_quick_start.c"
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_run_record.c"
         # Assembly: the 3D AC preview, from the optional model install
         # (acr/: the Armored-CoreR importer and model code).

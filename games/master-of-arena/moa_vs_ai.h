@@ -35,4 +35,8 @@ enum { VS_PRESET_BALANCED, VS_PRESET_AGGRESSOR, VS_PRESET_SNIPER,
 extern const struct moa_vs_profile moa_vs_presets[VS_PRESETS];
 extern const char *const moa_vs_preset_names[VS_PRESETS];
 
+/* The VS AI is on (PSX_MOA_VS_AI) and this is the session's first title:
+ * boot straight to the versus menu (PSX_MOA_VS_AI_BOOT=0 keeps the title). */
+int moa_vs_ai_menu_boot(void);
+
 #endif

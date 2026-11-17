@@ -49,6 +49,9 @@
 #define VS_STEPS          0x80097EB2u   /* steps elapsed */
 #define VS_REPLAY_FLAG    0x8003EA92u
 #define VS_STEPS_PER_MIN  1320u         /* about 22 steps a second */
+#define VS_TIME_LEFT      0x80097EB4u   /* match clock, in steps */
+#define VS_TITLE_FLAG     0x8003EA7Au   /* 1 until the session's first title opens */
+#define VS_PRESSURE_MAX   256
 
 /* Player block (928 bytes each, P2 follows P1) */
 #define PB_P1             0x80045198u
@@ -157,6 +160,8 @@ struct vs_ai_side {
     uint8_t  area_full;                 /* area bits at the start (inside everything) */
     uint8_t  returning;                 /* steps left heading back to the middle */
     uint8_t  lunge;                     /* steps left of a boost in to blade reach */
+    uint8_t  half_pressed;
+    uint8_t  pressure;                  /* last pressure / 2, for the debug byte */
     uint32_t seen_missiles[8];          /* pool records already judged (bitset) */
 };
 static struct vs_ai_side vs_side[2];
@@ -169,6 +174,47 @@ static struct vs_ai_side vs_side[2];
 static int vs_ai_debug = -1;
 
 static unsigned vs_bits(unsigned v) { return (v & 1u) + ((v >> 1) & 1u) + ((v >> 2) & 1u); }
+
+/* Pressure (0 … 256) makes every pilot push harder as the match runs long
+ * or the ammo runs out, so a fight is likely over in about 2 - 3 minutes:
+ * the wanted distance closes in, the trigger is held more, missiles go with
+ * fewer locks, the booster is used more and the energy floor drops, blade
+ * lunges open up to every pilot with a blade, and strafing and dodging give
+ * way to attacking. Aim: before the game's own time limit if one is set,
+ * else PSX_MOA_VS_AI_ROUND seconds (default 150). */
+static unsigned vs_round_steps;         /* the length aimed for this match */
+
+static int vs_lerp(int a, int b, unsigned t) { return a + (b - a) * (int)t / VS_PRESSURE_MAX; }
+
+static unsigned vs_pressure(uint32_t me, uint32_t steps)
+{
+    unsigned tp = 0, ap = 0;
+    if (vs_round_steps) {
+        /* none until 40% of the aimed length, all of it at 100% */
+        const uint32_t start = vs_round_steps * 2u / 5u;
+        if (steps > start)
+            tp = (steps - start) * VS_PRESSURE_MAX / (vs_round_steps - start);
+    }
+    uint32_t cur = 0, max = 0;
+    const unsigned usable = psx_mod_read_byte(me + PB_USABLE);
+    for (unsigned i = 0; i < usable && i < 3u; i++) {
+        const uint32_t slot = me + PB_SLOTS + PB_SLOT_BYTES * i;
+        cur += psx_mod_read_half(slot + SLOT_AMMO);
+        max += psx_mod_read_half(slot + SLOT_AMMO - 2u);
+    }
+    if (max && cur * 2u < max)                       /* past half the ammo */
+        ap = (max - 2u * cur) * VS_PRESSURE_MAX / max;
+    const unsigned p = tp > ap ? tp : ap;
+    return p > VS_PRESSURE_MAX ? VS_PRESSURE_MAX : p;
+}
+
+int moa_vs_ai_menu_boot(void)
+{
+    const char *on = getenv("PSX_MOA_VS_AI");
+    const char *boot = getenv("PSX_MOA_VS_AI_BOOT");
+    if (!on || on[0] < '1' || on[0] > '3' || (boot && boot[0] == '0')) return 0;
+    return psx_mod_read_byte(VS_TITLE_FLAG) == 1u;
+}
 
 static int vs_ai_on(void)
 {
@@ -295,10 +341,28 @@ static int vs_best_slot(const struct vs_ai_side *s, uint32_t me, unsigned band, 
 static uint16_t vs_ai_think(unsigned side, uint32_t me, uint32_t foe)
 {
     struct vs_ai_side *s = &vs_side[side];
-    const struct moa_vs_profile *p = &s->p;
     const uint32_t my = vs_object(me), en = vs_object(foe);
     if (!my || !en) return 0;
     if (psx_mod_read_byte(my + AC_ALIVE) != 0xFFu) return 0;   /* wrecked */
+
+    /* The profile as pressure bends it this step. */
+    const unsigned pr = vs_pressure(me, psx_mod_read_half(VS_STEPS));
+    struct moa_vs_profile q = s->p;
+    const int close = q.dist < 800 ? q.dist : 800;
+    q.dist = (uint16_t)vs_lerp(q.dist, close, pr);
+    q.spread = (uint16_t)vs_lerp(q.spread, q.spread / 3, pr);
+    q.fire = (uint8_t)vs_lerp(q.fire, 100, pr);
+    q.strafe = (uint8_t)vs_lerp(q.strafe, q.strafe / 2, pr);
+    q.gboost = (uint8_t)vs_lerp(q.gboost, q.gboost > 80 ? q.gboost : 80, pr);
+    q.efloor = (uint8_t)vs_lerp(q.efloor, q.efloor < 20 ? q.efloor : 20, pr);
+    q.blade = (uint8_t)vs_lerp(q.blade, q.blade > 60 ? q.blade : 60, pr);
+    q.evade = (uint8_t)vs_lerp(q.evade, q.evade / 2, pr);
+    if (pr > VS_PRESSURE_MAX / 2) q.locks = 1;
+    const struct moa_vs_profile *p = &q;
+    if (pr >= VS_PRESSURE_MAX / 2 && !s->half_pressed) {
+        s->half_pressed = 1;
+        psx_mod_counter_add(side ? "moa.vsai.p2.pressure_half" : "moa.vsai.p1.pressure_half", 1);
+    }
 
     const uint16_t m_fwd = psx_mod_read_half(me + PB_M_FWD);
     const uint16_t m_back = psx_mod_read_half(me + PB_M_BACK);
@@ -392,7 +456,8 @@ static uint16_t vs_ai_think(unsigned side, uint32_t me, uint32_t foe)
         const int spread = p->spread ? (int)(vs_rand(s) % (2u * p->spread + 1u)) - p->spread : 0;
         s->want_dist = blade_only ? AI_BLADE_REACH - 150 : p->dist + spread;
         if (s->want_dist < 300) s->want_dist = 300;
-        s->dist_timer = (uint16_t)(66 + vs_rand(s) % 110u);      /* 3 - 8 s */
+        s->dist_timer = (uint16_t)(pr > VS_PRESSURE_MAX / 4 ? 22 + vs_rand(s) % 22u
+                                                           : 66 + vs_rand(s) % 110u);   /* 1-2 s / 3-8 s */
     }
     if (blade_only) s->want_dist = AI_BLADE_REACH - 150;
 
@@ -545,7 +610,9 @@ static uint16_t vs_ai_think(unsigned side, uint32_t me, uint32_t foe)
         const char *e = getenv("PSX_MOA_VS_AI_DEBUG");
         vs_ai_debug = e && e[0] == '1';
     }
+    s->pressure = (uint8_t)(pr / 2u);
     if (vs_ai_debug) {
+        psx_mod_write_byte(me + 0x255u, s->pressure);
         psx_mod_write_byte(me + PB_DBG_RETURN, s->returning);
         psx_mod_write_byte(me + PB_DBG_FLAGS, (uint8_t)(s->area_full | (s->evade ? 8 : 0) |
             (s->jump ? 16 : 0) | (s->strafe_on ? 32 : 0) | (s->boosting ? 64 : 0) |
@@ -560,6 +627,13 @@ static uint16_t vs_ai_think(unsigned side, uint32_t me, uint32_t foe)
  * (Replays still match: the game records the buttons, not the dice.) */
 static void vs_reset(void)
 {
+    const char *e = getenv("PSX_MOA_VS_AI_ROUND");
+    unsigned secs = e ? (unsigned)atoi(e) : 150u;
+    if (secs < 30u) secs = 150u;
+    vs_round_steps = secs * 22u;
+    /* A game time limit wins: finish a little before it. */
+    const unsigned left = psx_mod_read_half(VS_TIME_LEFT);
+    if (left > 100u && left * 9u / 10u < vs_round_steps) vs_round_steps = left * 9u / 10u;
     static uint32_t matches;
     const uint32_t seed = (uint32_t)time(NULL) * 2654435761u ^ (uint32_t)clock() ^ (++matches * 0x9E3779B9u);
     for (unsigned i = 0; i < 2; i++) {

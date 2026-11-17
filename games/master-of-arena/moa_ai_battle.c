@@ -35,6 +35,7 @@
 #include "moa_card.h"
 #include "moa_screen.h"
 #include "moa_vs_direct.h"
+#include "moa_vs_ai.h"
 
 #define MOA_MODE_BYTE     0x8003EA2Au  /* engine the exe launches next */
 #define MOA_MODE_ARENA    3u
@@ -1198,8 +1199,9 @@ static void moa_menu_entry(struct CPUState *cpu, uint32_t address)
     moa_ai_enabled = -1;
     if (!moa_ai_battle_on() || psx_mod_read_word(address) != MOA_SIG_MENU_ENTRY) {
         /* Not an AI Battle boot: a direct boot left armed must not turn
-         * this game's title into the versus menu. */
-        if (!moa_ai_battle_on()) moa_vs_direct_arm_boot(0);
+         * this game's title into the versus menu (unless the VS AI asks for
+         * it: its session starts on the versus menu). */
+        if (!moa_ai_battle_on()) moa_vs_direct_arm_boot(moa_vs_ai_menu_boot());
         return;
     }
     moa_session_check();

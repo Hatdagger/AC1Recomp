@@ -179,6 +179,24 @@ Boot chat → Rogue Arena work:
   A fix that replays the finish is on branch **`rogue-direct-hub-gfx`** (`moa_arena_run_boot.c`,
   one commit, not built or merged). Still to check: whether the hub background has the same cause.
 
+Boot chat → Rogue Arena work (2026-11-17, after reading `rogue-arena-49` up to 476a989):
+- `0x800544A0(n, 1)` is the title's **intro movie** routine (queues MENU_TIM 2, plays movie n
+  with `0x80054B54`, then `0x800B6A80`). It is only reached on the logos/intro road, so dropping
+  it from the direct boot was right.
+- Boot trace labels (`moa_boot_trace.c`): `0x80057ED4` is not the model loader (it runs once
+  at every menu start with (0, 0)); the models load through **`0x80057F74(slot, MENU_TMD entry)`**.
+  `0x80056DBC` is the hub ring task (sound bank MENU_VAB 2/3, MENU_TIM 1 and 4 queued, model slots
+  15/16 = MENU_TMD 1/2, then the AC part models into slots 3–14). Worth adding to the trace:
+  `0x80057F74`, `0x800822B0` (AC textures), `0x8005CE68` (card screen's finish), `0x80058700`
+  (sound bank). See `boot-loads.md`.
+- 0x8003EA7A: in the code only the link-return check (`0x800A6BB0`) sets it to 1, and the menu
+  entry clears it right after its title call (`0x800A6EA4`), even when a filter takes that call.
+  If it was really still 1 after a fight, something else wrote it; the trace's RAM snapshots would
+  show when. Clearing it in the direct boot is harmless either way.
+- The launcher's new START GAME > LOAD GAME (branch `launcher-start-menu`,
+  `moa_quick_start.c`) runs the same direct load as the Rogue Arena boot, card screen's finish
+  included; once both work, one shared routine could serve both.
+
 Launch chat → data chat:
 - Stage (compiled +0x05 = player block +0x255) at VS START = byte `0x800D5800[map − 1]`,
   map = 0x8003EA81 (1–10), written by `0x800B348C`. VS START compiles P1 then P2 in

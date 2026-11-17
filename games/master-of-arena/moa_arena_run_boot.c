@@ -249,14 +249,14 @@ enum { KIND_BUILDS = 0, KIND_NAMES, KIND_REWARDS, KIND_AI };
  * screen stays up until the Arena list opens. Any check failing falls back
  * to the menu presses. */
 #define RUN_D_SCORE          0x8003EA94u  /* byte: 255 on SCENARIO */
-/* What the title does that the direct boot must do too (it never opens):
- * 0x8003EA7A "go to the title" (1 in the exe's data) and 0x8003EA7F "no
- * logos" are cleared when the title opens. Left at 1, the menu entry takes
- * the title branch after a fight instead of the arena results and the hub
- * (mode-launch.md section 3): the hang of the first direct-boot test.
- * (The title's screen setup 0x800544A0 is not replayed: the title reaches it
- * only with a non-zero mode byte 0x800D5698; a call with 0 is not something
- * the game does there. Tried 2026-11-17, removed.) */
+/* The title flags: 0x8003EA7A "go to the title" (1 in the exe's data) and
+ * 0x8003EA7F "no logos". The menu entry already clears 0x8003EA7A right after
+ * its title call (0x800A6EA4), even when this filter takes that call, so the
+ * direct boot clearing it is harmless but not what fixed the after-fight hang
+ * of the first test (boot chat, boot-loads.md section 2). Only the link-return
+ * check 0x800A6BB0 sets it to 1 again; if it is 1 after a fight, the trace's
+ * RAM snapshots show it. 0x800544A0 is the title's intro movie (logos road
+ * only), so the direct boot doesn't replay it. */
 #define RUN_D_TITLE_FLAG     0x8003EA7Au
 #define RUN_D_NO_LOGOS       0x8003EA7Fu
 #define RUN_D_MODE           0x8003EA2Au  /* engine mode byte: 0 */

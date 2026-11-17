@@ -48,21 +48,24 @@ static const struct { uint32_t a, sig; const char *name; } k_bt[] = {
     { 0x800A69C8u, 0x27BDFEB0u, "menu_entry" },
     { 0x800AAE94u, 0x27BDFFE0u, "title_open" },
     { 0x800AB500u, 0x27BDFFC8u, "title_scenario_row" },
-    { 0x800544A0u, 0x27BDFFC8u, "screen_setup" },
-    /* loaders: pictures, MENU_TIM entries, models, hub backdrop */
+    { 0x800544A0u, 0x27BDFFC8u, "intro_movie" },
+    /* loaders: pictures, MENU_TIM entries, models, sound banks, hub ring (boot-loads.md) */
     { 0x80057CB0u, 0x27BDFFE8u, "menu_pictures" },
     { 0x800586A0u, 0x27BDFFD8u, "menu_tim_load" },
-    { 0x80057ED4u, 0x27BDFFD8u, "model_load" },
+    { 0x80057ED4u, 0x27BDFFD8u, "menu_start_setup" },
+    { 0x80057F74u, 0x27BDFFD0u, "model_load" },        /* (slot, MENU_TMD entry) */
+    { 0x80058700u, 0x27BDFFC8u, "sound_bank" },        /* MENU_VAB n, n+1 */
     { 0x80057B28u, 0x2484FFFEu, "tasks_clear" },
     { 0x80057554u, 0x3C02801Bu, "fn_80057554" },
-    { 0x80056DBCu, 0x27BDFFE8u, "hub_backdrop" },
-    { 0x80056564u, 0x27BDFFD0u, "hub_backdrop_object" },
+    { 0x80056DBCu, 0x27BDFFE8u, "hub_ring_task" },
+    { 0x80056564u, 0x27BDFFD0u, "hub_open_layer" },
     { 0x800552C0u, 0x27BDFFB8u, "hub_open" },
     { 0x80056528u, 0x27BDFFE8u, "hub_back" },
     /* LOAD GAME and the card screen */
     { 0x800AC8E8u, 0x27BDFFE8u, "load_game" },
     { 0x80059554u, 0x27BDFFC8u, "card_screen" },
     { 0x800AC93Cu, 0x27BDFFD0u, "load_callback" },
+    { 0x8005CE68u, 0x27BDFFB8u, "card_finish" },       /* after a good LOAD */
     { 0x80072E54u, 0x27BDFDE0u, "import_unpack" },
     /* after-load calls and the Scenario row's calls (both replayed by the direct boot) */
     { 0x800B6A80u, 0x27BDFFD8u, "after_load_1" },
@@ -82,7 +85,7 @@ static const struct { uint32_t a, sig; const char *name; } k_bt[] = {
     { 0x800633A4u, 0x00002821u, "garage_default" },
     { 0x800BA64Cu, 0x27BDFFE8u, "arena_open" },
     { 0x800C0E7Cu, 0x27BDFFC0u, "arena_return_vram" },
-    { 0x800822B0u, 0x27BDFFE0u, "arena_return_2" },
+    { 0x800822B0u, 0x27BDFFE0u, "ac_textures" },
     /* Boot exe routines (LoadImage 0x8002C75C, MoveImage 0x8002C81C ...) are
      * not traced: the exe's C is generated ahead and committed, so a new hook
      * there needs that code regenerated. The VRAM snapshots cover them. */

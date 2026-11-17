@@ -22,6 +22,11 @@ menus and UI flow, sound/music, stage data.
 
 ## Handed over
 
+From battle chat to data chat:
+- Damage reads player block **+0x272 / +0x273** (compiled +0x22 / +0x23) as the shell / energy damage factors (×/64); default AC = 27 / 32. Confirms Armored-CoreR's note. Code `0x80079500` (VS engine).
+- Player block **+0x284 bit 0**: when clear, hit stagger is halved (`0x800796A4`). Meaning still unknown.
+
+
 Battle chat → data chat: if you find a write into player block +0x250 … +0x393 (the stat
 block), note it here instead of mapping it.
 

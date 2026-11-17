@@ -80,7 +80,17 @@ with the same layout shifted (+0x64 save data, +0x60 battle data).
 | Offset | Size | Meaning | Proven by | Engine |
 |---|---|---|---|---|
 | +0x45 | u8 | State: 0 standing, 1 walking, 64 jump take-off, 65 rising, 75 falling, 97 landing | Armored-CoreR (measured) | VS |
-| ? | u16 | AP | codes: 0x801D8D70 player / 0x801D8EE8 opponent; base address of the object still to find | arena |
+| +0x08 / +0x0A / +0x0C | s16 | Position x / y / z (y = height; start: P1 (-3000,-1251,-3000), P2 (5000,-1251,-3000)) | moved with the pad, teleport test | VS |
+| +0x12 | u16 | Facing, 4096 = full turn (Left/Right change it) | pad test | VS |
+| +0x20 / +0x24 | s16 | Last step's x / z | pad test | VS |
+| +0x3A | u16 | Hit stagger, set on hits with flag 0x40 (from the hit's +2, halved unless player block +0x284 bit 0) | damage code 0x800796E0 | VS |
+| +0x3C / +0x3E | u16 | Hit flash: +0x3C = 100, +0x3E = damage/4, on hits with flag 0x80 | damage code 0x800796F8 | VS |
+| +0x64 | u32 | On-hit callback, called after the AP write | damage code 0x80079748 | VS |
+| +0x168 | u16 | **AP × 4** (default AC 33,536 = 8,384 AP) | write trace on a hit | VS |
+| +0x16A | u16 | Max AP × 4 | read | VS |
+
+VS engine objects: P1 0x801D4BC0, P2 0x801D4D38 (player block +0x398 points to them).
+Arena engine (codes): P1 AP at 0x801D8D70 = an object at 0x801D8C08 if the layout matches.
 
 ## Player block fields (0x80045198)
 
@@ -91,7 +101,40 @@ with the same layout shifted (+0x64 save data, +0x60 battle data).
 | +0x250 … +0x393 | 324 bytes | Compiled stat block (weapon slots, ammo, range, lock values…) — **data chat's lane, see `stat-block.md`**; writes found here get handed over in README.md | — |
 | +0x398 | u32 | Pointer to AC object | repo |
 
+## Damage (VS engine, measured 2026-11-17)
+
+Hit handler `0x800795DC(target object, hit record, a2, a3)`:
+
+1. Target is P1's or P2's AC object → sets the "current player block" pointer
+   `0x8003EAA0` to that player's block and calls `0x80079500(hit)`. Any other object
+   (non-AC targets) → `0x80079580(armour class, hit)`.
+2. `0x80079500`: `raw = hit+2` (attack). Shell hits (hit byte 0 & 0x30 = 0x10) use
+   `raw × player block +0x272 >> 6`; energy hits (0x20) use `+0x273`. Then
+   **damage = raw × 2 / 3**.
+3. AP (object +0x168, in quarters) −= damage × 4, floored at 0 (`0x80079704…0x80079720`).
+4. Hit flags: 0x40 → stagger (+0x3A), 0x80 → flash (+0x3C/+0x3E); then the object's
+   +0x64 callback.
+
+Non-AC targets (`0x80079580`): energy hits scale by `(8 − class) / 8 + 1`, the class from
+bits 8–11 of a value on the target's model; shell hits do full damage.
+
+Check: WG-RF35 (attack 218) on the default AC (shell factor 27): 218 × 27 >> 6 = 91,
+× 2 / 3 = **60 AP per hit** — matches the HUD (8,384 → 8,324 → …).
+
+Hit record (`0x801D6F88` for P2's rifle): byte 0 flags (= weapon detail +0x12, 0x17),
++2 attack (218), +4 impact (3) — the weapon detail table values.
+
+## Test harness (this chat)
+
+Debug-tools Linux build from branch `mapping-debug` (draft release, not for players),
+run headless with the debug server on port 4370. Pad input via `press` (port 1/2),
+RAM via `read_ram`/`write_ram`, writers via `wtrace_add` + `wtrace_dump`. VS from the
+title screen: Start, Start, Down, Cross, Cross. Cross confirms; Square fires; Circle
+boosts; L1/R1 strafe; L2/R2 look; Left/Right turn.
+
 ## Open questions
+
+- Match timer address in VS (to freeze it for unlimited time).
 
 - Blade damage mismatch (683 expected vs 492 seen in Armored-CoreR): data chat says blade record +0x30 is attack and +0x2C charge drain (swapped in the old notes). Re-measure a blade hit in VS.
 

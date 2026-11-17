@@ -122,7 +122,8 @@ distinct engine routines per mission; most used: `0x8007C290`, `0x80015138`, `0x
 |---|---|---|
 | +0x00 | `0x80091390` ← main loop `0x80052608` | **every frame** (mission logic) |
 | +0x04 | `0x80052590` | **once at start** (mission init) |
-| +0x08 | `0x80090B28`, arg = event number | mission-specific event from the event dispatcher around `0x80090A30` `?` |
+| +0x08 | `0x80090B28`, arg = event number | mission-specific event: event kind 9 of the dispatcher `0x80090934` (see "Event points") |
+| +0xA0 … | `0x80078EF4`: `*(module + 0xA0 + 4 × point+0x06)` | **handler per event-point type** (see "Event points") |
 | +0x0C | not found yet | — |
 | +0x10 | `0x8007EE6C`, arg = object | per-object callback `?` |
 | +0x14 | `0x80055AF4` | after the map blocks are loaded (map setup) |
@@ -385,6 +386,73 @@ PP layout for those maps: type table `0x801DFC60` (44-byte entries, MoA `0x801E6
 
 Next: compare this list with the converter's function and data maps in the repo (needs GitHub).
 
+## Event points and hidden parts (2026-11-17, static)
+
+**Map file block 9 = 128 event points** (16,384 bytes = 128 × 32). The loader `0x80078DE8` turns
+each 32-byte record into a 52-byte point at **`0x801E49D8 + 52n`** (the same records the spawn rule
+uses as trigger zones):
+
+| Point offset | From file | Meaning |
+|---|---|---|
+| +0x00 … +0x05 | +0 … +5 | position x / y / z |
+| +0x06 | +6 | **point type** (−1 = none / removed); picks the handler module +0xA0 + 4 × type |
+| +0x08 … +0x0F | +8 … +15 | ? |
+| +0x14 | — | controller (allocated by the handler, `0x8007927C`) |
+| +0x1C … +0x21 | — | from block 8's 24-byte record for this type (`0x801E46D8 + 24 × type`); +0x1C = 0xC000 when the type is −1 |
+| **+0x22 … +0x27** | +16 … +21 | **event 1**: kind, arg byte, arg u16 (+0x24), arg byte, arg byte |
+| +0x28 | +22 | 0 = repeatable, else one-shot; 2 = event 2 is used too `?` |
+| **+0x2A … +0x2F** | +24 … +29 | **event 2**, same layout |
+
+**Event dispatcher `0x80090934(kind, a, b, c, d)`** (called only from mission code; a = byte +0x23,
+b = u16 +0x24, c = byte +0x26, d = byte +0x27):
+
+| Kind | Does |
+|---|---|
+| 1 | show message *c*, then unlock *a* map sections from *b* (clears their parameter byte +6) |
+| 2 | run script `0x80093844(a)` |
+| 3 | show message *a* |
+| 4 | show message *a*, then `0x80090FD8` (camera / view? `?`) |
+| 5 | show message *a*, **give part *b***, end the mission **complete** (0x80) |
+| 6 | show message *a*, **give part *b***, end the mission with 0x100 |
+| **7** | show message *a*, **give part *b*** (the hidden-part pickup) |
+| 8 | "quit?" dialog (message 149); yes → `0x8003EA95` = 1, end with 0x100 |
+| 9 | call the mission's hook +0x08 with *b* |
+| 10 | show message *c*, send command 0x8200 + *d* to *a* sections from *b* |
+
+**Give part = `0x8009090C(index)`**: inventory byte `0x80036FEC`[index] += 1 (index 0 = nothing).
+Index = the global inventory index (heads 0–17, cores 18–28, arms 29–52, legs 53–92, generators
+93–107, FCS 108–123, options 124–142, boosters 143–156, back 157–216, hand 217–242, blades 243–248;
+see `parts-tables.md`).
+
+**Hidden parts (MoA, all found in the maps):** every map's block 9 searched for kinds 5/6/7 with a part:
+
+| Mission (slot) | Point | Type | Part | Message |
+|---|---|---|---|---|
+| Destroy Berserk MTs (2) | 4 | 3 | **HD-HELM** (12) | 165 |
+| Cavern Invasion (8) | 6 | 0 | **WX-ED2** (212) | 164 |
+| Assist MTs (12) | 0 | 4 | **P/CV** (118) | 166 |
+
+These match the GameFAQs part guide (Vesperas) exactly. Missions 9 and 18 carry the same item code but
+place no part.
+
+**A hidden part only appears if you don't have it and the shop doesn't sell it.** The item point's
+setup (mission 2: type handler `0x800A326C` → check `0x800A3228`, same code in 8, 9, 12, 18) removes
+the point (+0x06 = −1) if either event is kind 7 and **owned `0x80036FEC`[part] ≠ 0 or shop stock
+`0x800370EC`[part] ≠ 0** (save +640 / +896). So a part added to the shop can no longer be found in its
+mission. Otherwise the handler sets the point's message handler (mission 2: `0x800A30E8`): message 0
+(touched / used `?`) fires event 1, then removes the point if +0x28 ≠ 0.
+
+**Other games, from the GameFAQs guides (Vesperas), to check when their missions are in:**
+- Armored Core: hidden in missions WM-S60/4 (Secret Factory Recon), QX-AF (Exterminate Organisms),
+  HD-X1487 (Guard Freight Train), WG-1-KARASAWA (Destroy Fuel Depot), GBG-XR (Destroy Plus Escapee),
+  WG-FG99 (Destroy Intruders), WR-L24 (Eliminate Strikers), RZT-333 (Guard Wharf Warehouse; taking it
+  ends the contract), WX-S800-GF (Retake Air Cleaner), LS-99-MOONLIGHT (Kill "Struggle" leader), B-T001
+  (Guard Factory Entrance); mission rewards LN-SSVT (Remove Gun Emplacement), SP-SAP (Prototype MT Test
+  2), SP-AXL (Stop Gang "Dark Soul"); shop line-up upgrades add LN-D-8000R, LN-3001, LFH-X5X,
+  LC-MOS4545, then WM-L201, WC-LN350, WC-XC8000. In MoA all of these are in the shop from the start,
+  which (rule above) would hide them in their missions.
+- Project Phantasma: the guide lists no hidden mission parts; its extra parts are arena prizes.
+
 ## Mail (2026-11-17, static)
 
 Mail code is in the menu module (FDAT 206), `0x800A1F00` … `0x800A5100`. Hub entry 4 opens it
@@ -509,8 +577,6 @@ So chapter-timed (kind 0) mails depend on mission wins **and** arena ranks.
 - Map header fields (80, 19, 4 × 19) and the blocks after it.
 - Objectives, win/lose checks, timer, results and rewards; enemy list; script reader
   `0x80091FFC` (stepped at `0x80092E4C`; writes AC +0x6D/+0x7C/+0x7E/+0x84).
-- **Items found in missions**: how a mission hands out a part (pickup object? mission code at the
-  end?), so earned parts can come out of the shop later (design: project doc
-  `mail-folders-design.md`).
+- Event points: the other point types (0–2, 4, 5) and the block 8 per-type records.
 - Mail: mission mode T+4 = 0 (what it is; it hands out every mail of kinds 0–3 at once); what
   the second delivery call (`0x800AC2D4`) belongs to; Phantasma's own mail table.

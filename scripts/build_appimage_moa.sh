@@ -108,6 +108,20 @@ if [ ! -d "\$RUNTIME" ]; then
                 cp -a "\$PREVIOUS/games/master-of-arena/\$file" "\$TEMP_RUNTIME/games/master-of-arena/\$file"
             fi
         done
+        # game.toml mixes the player's choices with the build's own [recompiler]
+        # tables (the hook address lists the mods need, the code seeds). Keep the
+        # player's file, but its [recompiler] tables come from the new build, or a
+        # hook added in this build never runs.
+        NEW_TOML="\$PAYLOAD/games/master-of-arena/game.toml"
+        OLD_TOML="\$TEMP_RUNTIME/games/master-of-arena/game.toml"
+        if [ -s "\$NEW_TOML" ] && [ -s "\$OLD_TOML" ]; then
+            if awk 'FNR == 1 { f++ } /^\[/ { b = (\$0 ~ /^\[\[?recompiler[].]/) } (f == 1 && !b) || (f == 2 && b)' \
+                "\$OLD_TOML" "\$NEW_TOML" > "\$OLD_TOML.new"; then
+                mv -f "\$OLD_TOML.new" "\$OLD_TOML"
+            else
+                cp -a "\$NEW_TOML" "\$OLD_TOML"
+            fi
+        fi
         for file in launcher.ini launcher-window.ini config.ini settings.toml keybinds.ini input.ini disc.cfg bios.cfg; do
             if [ -f "\$PREVIOUS/\$file" ]; then cp -a "\$PREVIOUS/\$file" "\$TEMP_RUNTIME/\$file"; fi
         done

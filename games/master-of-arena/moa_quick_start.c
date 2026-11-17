@@ -65,6 +65,11 @@
 
 #define QS_LOAD_IMAGE      0x8002C75Cu  /* boot exe */
 #define QS_MOVE_IMAGE      0x8002C81Cu
+#define QS_STORE_IMAGE     0x8002C7BCu  /* (rect, dst) */
+#define QS_HUB_CLUT_RECT   0x800D460Cu  /* (416,0,16,64): MENU_TIM 0 colours */
+#define QS_HUB_CLUT_SAVE   0x8004ACA8u
+#define QS_HUB_ROW_RECT    0x800D4614u  /* (368,225,16,1) */
+#define QS_HUB_ROW_SAVE    0x8004B6F0u
 #define QS_DRAW_SYNC       0x8002C4B0u
 #define QS_EMBLEM_RECT     0x800CC070u
 #define QS_CLUT_RECT       0x800CC078u
@@ -90,6 +95,7 @@ static const struct { uint32_t at, word; } k_code[] = {
     { 0x800ACA0Cu,       0x27BDFFE8u }, { QS_LOAD_N,        0x2402004Eu },
     { QS_DISC_BUSY,      0x27BDFFE8u }, { QS_MENU_ALLOC,     0x27BDFFE0u },
     { QS_MENU_FREE,      0x27BDFFE8u },
+    { QS_HUB_CLUT_RECT,  0x000001A0u }, { QS_HUB_ROW_RECT,   0x00E10170u },  /* RECT x,y */
     { QS_LOAD_COPY,      0x244C6FB0u },
 };
 
@@ -205,6 +211,14 @@ static int qs_load(struct CPUState *cpu)
     static uint8_t save[SAVE_BYTES];
     if (!qs_read_save(save)) { qs_log("moa.start.load_bad_save"); return 0; }
     qs_scenario(cpu);
+    /* The title branch of the menu entry keeps two strips of MENU_TIM 0's
+     * colours (StoreImage at 0x800A6EB4 / 0x800A6EC8) and the hub open puts
+     * them back (LoadImage at 0x800553AC / 0x800553BC). On a fresh boot the
+     * hub opened here before that store, so it put back zeros: black hub
+     * background. Store them now, from the MENU_TIM 0 just loaded. */
+    call(cpu, QS_STORE_IMAGE, QS_HUB_CLUT_RECT, QS_HUB_CLUT_SAVE, 0);
+    call(cpu, QS_STORE_IMAGE, QS_HUB_ROW_RECT, QS_HUB_ROW_SAVE, 0);
+    call(cpu, QS_DRAW_SYNC, 0, 0, 0);
     /* LOAD ('N' path), after its card read */
     for (size_t k = 0; k < sizeof k_unpack / sizeof k_unpack[0]; k++)
         for (uint32_t i = 0; i < k_unpack[k].bytes; i++)

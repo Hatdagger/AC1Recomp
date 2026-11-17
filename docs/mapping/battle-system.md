@@ -484,6 +484,28 @@ AC +0x28 / +0x2A come from a 44-byte object-type record (pointer AC +0x04, set b
 | While locked: refill ÷ 2, **even below the red zone** (no ÷ 4), no boosting; lock clears only at full | ✔ | +63 moving, +105 standing ✔ |
 | Refill adds before it checks the cap, so the bar overshoots by up to one refill for a step, then snaps back to the capacity | ✔ | +210 then −57 ✔ |
 
+**Test AC and where each energy number comes from.** The AC is the default build, loadout `0x80036FB0` = 0,0,5,1,0,1,0,40,0,0,–,3. The stats below are read from the menu module's part tables (FDAT 206). For the part list itself, see `parts-tables.md`.
+
+| Part | Name | Stats used |
+|---|---|---|
+| Generator 0 | GPS-VVA | output +0x2A = 6,000, capacity +0x2C = 28,000, red zone +0x2E = 7,800 |
+| Booster 0 | B-P320 | drain +0x2E = 4,360 |
+| Core 0 | XCA-00 | drain +0x2A = 1,046 |
+| Head 5 | HD-GRY-NX | drain +0x2A = 218 |
+| Arms 1 | AN-201 | drain +0x2A = 877 |
+| FCS 0 | COMDEX-C7 | drain +0x2A = 24 |
+| Legs 3 | LN-1001-PX-0 | moving drain +0x2A = 1,844, standing drain +0x34 = 541 |
+
+| Number | From the parts | Compiled | Measured |
+|---|---|---|---|
+| Capacity | generator +0x2C | 28,000 | 28,000 |
+| Red zone | generator +0x2E | 7,800 | quarter rates start below 7,800 |
+| Rise cost / step | 4,360 ÷ 10 | 436 | −436 (ground boost −218) |
+| Refill standing | (6,000 − (1,046 + 218 + 877 + 24 + 541 = 2,706)) × 64 ÷ 1,000 = 210.8 | 210 | +210 |
+| Refill moving | (6,000 − (1,046 + 218 + 877 + 24 + 1,844 = 4,009)) × 64 ÷ 1,000 = 127.4 | 127 | +127 |
+
+So the drain sums use core, head, arms, FCS and legs only. The weapon, blade and booster drain fields don't enter. All 5 numbers match the parts exactly, with fractions rounded down. Other builds are not measured yet.
+
 Also in `0x80082D90`: △ cycles the weapon (+0x296 mask → player block +0x11), which re-runs `0x80082834`
 and drops the locks (`0x80080084`).
 

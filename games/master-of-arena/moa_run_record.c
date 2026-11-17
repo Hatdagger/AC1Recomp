@@ -25,11 +25,12 @@
 #define O_COOL   0x48u
 #define O_AP     0x168u               /* AP x 4 */
 #define O_AP_MAX 0x16Au
-#define REC_EVERY 3u                  /* a row every 3rd sampler call */
+#define REC_VALUES 21                 /* buttons, then 10 per AC */
 
 static FILE *rec_f;
 static int rec_on, rec_layout_ok;
 static unsigned rec_fight, rec_calls, rec_rows;
+static int32_t rec_last[REC_VALUES];
 static uint32_t rec_obj[2];
 static struct {
     unsigned frames, air, swings, shots, boost, locked, landed, taken, ranged;
@@ -69,6 +70,7 @@ static void rec_begin(const char *run_file, unsigned attempt, unsigned wins, uns
     rec_on = 1;
     rec_fight++;
     rec_calls = rec_rows = 0;
+    memset(rec_last, 0x80, sizeof rec_last);       /* nothing written yet: the first row always is */
     memset(&rec_st, 0, sizeof rec_st);
     rec_st.range_min = 1 << 30;
     rec_layout_ok = 1;
@@ -130,18 +132,31 @@ void moa_rec_sample(const char *run_file, unsigned attempt, unsigned wins, unsig
         if (r < rec_st.range_min) rec_st.range_min = r;
         if (r > rec_st.range_max) rec_st.range_max = r;
     }
-    if (t % REC_EVERY) return;
-    fprintf(rec_f, "%u,%04X", t, psx_mod_read_half(b1 + REC_PAD));
+    /* A row only when something changed since the last one: every sample is
+     * looked at, nothing is lost, and still stretches cost nothing. t is the
+     * sampler call, so the gaps show how long things stayed the same. */
+    int32_t v[REC_VALUES];
+    v[0] = psx_mod_read_half(b1 + REC_PAD);
     for (int s = 0; s < 2; s++) {
         const uint32_t b = s ? b2 : b1, o = rec_obj[s];
-        if (rec_layout_ok)
-            fprintf(rec_f, ",%d,%d,%d,%u,%u,%u,%u", rd_s16(o + O_X), rd_s16(o + O_Y), rd_s16(o + O_Z),
-                    psx_mod_read_half(o + O_FACE), psx_mod_read_byte(o + O_STATE), psx_mod_read_byte(o + O_MOVE),
-                    psx_mod_read_half(o + O_AP) / 4u);
-        else
-            fprintf(rec_f, ",,,,,,,");
-        fprintf(rec_f, ",%u,%u,%u", psx_mod_read_half(b + REC_ENERGY), psx_mod_read_word(b + REC_LOCK) ? 1u : 0u,
-                rec_layout_ok ? psx_mod_read_byte(o + O_COOL) : 0u);
+        int32_t *q = v + 1 + 10 * s;
+        if (rec_layout_ok) {
+            q[0] = rd_s16(o + O_X); q[1] = rd_s16(o + O_Y); q[2] = rd_s16(o + O_Z);
+            q[3] = psx_mod_read_half(o + O_FACE); q[4] = psx_mod_read_byte(o + O_STATE);
+            q[5] = psx_mod_read_byte(o + O_MOVE); q[6] = psx_mod_read_half(o + O_AP) / 4;
+            q[9] = psx_mod_read_byte(o + O_COOL);
+        } else {
+            q[0] = q[1] = q[2] = q[3] = q[4] = q[5] = q[6] = q[9] = 0;
+        }
+        q[7] = psx_mod_read_half(b + REC_ENERGY);
+        q[8] = psx_mod_read_word(b + REC_LOCK) ? 1 : 0;
+    }
+    if (!memcmp(v, rec_last, sizeof v)) return;
+    memcpy(rec_last, v, sizeof v);
+    fprintf(rec_f, "%u,%04X", t, (unsigned)v[0]);
+    for (int i = 1; i < REC_VALUES; i++) {
+        if (!rec_layout_ok && ((i - 1) % 10 < 7 || (i - 1) % 10 == 9)) fputc(',', rec_f);
+        else fprintf(rec_f, ",%d", (int)v[i]);
     }
     fputc('\n', rec_f);
     if (++rec_rows % 60u == 0) fflush(rec_f);

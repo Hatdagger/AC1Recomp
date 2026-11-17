@@ -2,7 +2,8 @@
  *
  * Logs every Rogue Arena fight to "<run file>.rec.csv": the player's buttons
  * and both ACs' position, facing, state, AP, energy, lock and refire timer,
- * sampled from the arena engine's controller sampler, plus a per-fight summary
+ * looked at on every call of the arena engine's controller sampler and written
+ * whenever any of them changed (nothing lost, nothing repeated), plus a per-fight summary
  * (time in the air, blade swings, shots, boosting, time locked on, range,
  * hits). The data is for mapping now and, later, for shaping a ghost's AI from
  * how the player fought. Each fight starts with a check of the AC layout

@@ -21,6 +21,16 @@ Both load from disc over the same address range, so every finding must say which
 
 See `ram-map-gameshark.md` for the full code-derived list.
 
+## Test setup
+
+Plain 2-player **VS** (split screen), time limit set to unlimited. Both units are under
+direct control (no AI, no clock), so one action at a time can be repeated and logged: one
+shot, one boost, one hit. VS runs on the arena engine, so the arena addresses apply.
+Use AI Battle only later, to check that AI-driven units behave the same.
+
+Before trusting any address, confirm the disc is NTSC-U **v1.0**: a v1.1 code set exists
+with the same layout shifted (+0x64 save data, +0x60 battle data).
+
 ## Method
 
 1. **Watch a value change, then name the code that changed it.** The runtime's debug tools

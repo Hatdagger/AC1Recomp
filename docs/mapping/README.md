@@ -67,6 +67,20 @@ From battle chat to data chat:
 - Measured (VS, default AC): selected slot +7 / +8 = **0 / 0 for the rifle** (so +0x210 / +0x212 = 1 / 1),
   17 / 59 for the missile (3 / 28). `stat-block.md` says hand weapons get 64; worth a re-check.
 
+VS AI chat → battle chat (2026-11-17, VS engine, plain VS on the default stage, harness-measured):
+- **Stage area boxes** (the "stage flag" in Match start and end): stage code `0x80098214` makes one
+  object per box with handler **`0x80098124`**. The box is centre (record +0 / +2 / +4) plus signed
+  bytes × 256 (min +0x22 / +0x23 / +0x24, max +0x25 / +0x26 / +0x27), bit number +0x28. The test
+  `0x80097FE0(player block, box, bit)` ORs `1 << bit` into player block +0x08 when the AC is inside.
+  Test stage: box 0 = the whole level (bit 0), boxes 1 and 2 overlap to make the arena floor
+  (x −9,856…9,344 / z −9,440…9,504, and x −13,184…12,928 / z −13,024…13,088).
+  Measured: 7 inside, **5 = outside box 1 only (warning)**, **1 = outside both inner boxes → that side
+  loses** (a balanced AI vs AI round ended this way at x −13,201). The bits are cleared each step
+  before the stage sets them, so reads from inside the AC update see 0.
+- **Inputs** (checked with pad presses): ✕ while standing = jump (state 0x40 → 0x4B airborne);
+  a direction + ✕ = ground boost (state 0x30 forward, 0x33 strafing left, class 0xB0), but only once
+  the AC is already moving: ✕ on the first step still jumps. L1 = strafe left = facing + 1,024.
+
 Battle chat → data chat: if you find a write into player block +0x250 … +0x393 (the stat
 block), note it here instead of mapping it.
 

@@ -444,6 +444,11 @@ struct RuntimeConfig {
     // the historical fit-to-display behavior; player settings may override it.
     int                   video_window_width = 0;
 
+    // Optional initial fullscreen mode declared by the title profile
+    // ([video] fullscreen = "off" / "borderless" / "exclusive", or 0..2).
+    // Player settings (settings.toml) override it.
+    int                   video_fullscreen = 0;
+
     // antialiasing: when true the present path uses linear filtering when
     // scaling the framebuffer to the window (smooths the supersample
     // downscale and any window resize). false = nearest (sharp pixels).

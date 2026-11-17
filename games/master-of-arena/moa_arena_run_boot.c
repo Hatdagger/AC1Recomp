@@ -340,6 +340,8 @@ static int run_state_ok;
 enum { STAGE_TITLE = 0, STAGE_LOADGAME, STAGE_LOADING, STAGE_BACK, STAGE_DIRECT };
 static int run_direct;                     /* this session booted directly */
 static int run_direct_press;               /* X still to press at the hub */
+static int run_direct_failed;              /* wanted, but could not start: menu presses */
+static int run_quiet(void);
 static int run_direct_hub_due;             /* the hub still to open (queue draining) */
 static uint32_t run_direct_hub_wait;
 static uint32_t run_direct_buf;            /* guest buffer for the save */
@@ -349,7 +351,8 @@ static uint32_t run_direct_buf;            /* guest buffer for the save */
 #define RUN_PAD_CIRCLE       0x2000u
 /* Direct boot: the Arena list loads its names from the disc after it opens;
  * this short hold at normal speed covers that before the hand-over. */
-#define RUN_DIRECT_HOLD      45u
+#define RUN_DIRECT_HOLD      12u          /* frames at normal speed after the hub opens */
+#define RUN_DIRECT_TIMEOUT   (60u * 20u)  /* direct road: the hub opens by frame ~110 */
 static uint32_t run_back_start;
 static int run_stage;
 static uint32_t run_newgame_seen;          /* run_frames when that menu last ran */
@@ -381,6 +384,20 @@ static void run_log(const char *fmt, ...)
 static uint32_t run_loss_wait;             /* frames until the launcher reopens */
 static int run_sent, run_told;
 static int run_fixes;
+
+/* Hang watch state (see "hang watch" below). */
+#define RUN_WATCH_FRAMES     (60u * 45u)   /* the replay and result screens fit well inside */
+static int run_watch_phase;               /* 0 off, 1 loading a fight, 2 after a fight */
+static uint32_t run_watch_count;
+static unsigned run_watch_dumps;
+
+static void run_watch(int phase)
+{
+    if (run_watch_phase == phase) return;
+    run_watch_phase = phase;
+    run_watch_count = 0;
+}
+
 static uint8_t run_arena_at_builds = 0xFF, run_arena_at_ai = 0xFF;
 
 static void run_prize_reset(void);
@@ -416,6 +433,9 @@ static void run_check_session(void)
     run_fixes = 0;
     run_arena_at_builds = run_arena_at_ai = 0xFF;
     run_direct = run_direct_press = 0;
+    run_watch_phase = 0;
+    run_watch_count = 0;
+    run_direct_failed = 0;
     run_direct_hub_due = 0;
     run_direct_hub_wait = 0;
     run_prize_paid = 0;
@@ -457,7 +477,10 @@ static void run_finish_handover(void)
     run_autopilot = 0;
     run_at_hub = 1;
     run_apply_state();
-    run_fade = RUN_FADE_FRAMES;
+    if (run_quiet()) {
+        run_fade = 0;
+        psx_mod_set_loading_screen(NULL, 0);
+    } else run_fade = RUN_FADE_FRAMES;
     psx_mod_counter_add("moa.run.handover", 1);
     run_log("handover: run file loaded %d, P %u", run_state_ok,
             run_state_ok ? (unsigned)run_state.run.points : 0u);
@@ -498,6 +521,14 @@ static int run_direct_wanted(void)
 {
     const char *e = getenv("PSX_MOA_RUN_DIRECT");
     return !(e && e[0] == '0');
+}
+
+/* The direct road is quick, so it shows the game itself, no loading screen.
+ * The menu-press road (FAST BOOT off, or a direct boot that could not
+ * start) keeps the screen over the menus it drives. */
+static int run_quiet(void)
+{
+    return run_direct_wanted() && !run_direct_failed;
 }
 
 /* The run's save as LOAD would read it: the session card's block 1, first
@@ -624,9 +655,12 @@ static void run_direct_hub_frame(struct CPUState *cpu)
     }
     const uint32_t hub = psx_mod_call_guest(cpu, RUN_D_HUB_OPEN, cpu->gpr[31], 0, 0, 0, 0);
     if (hub >= 0x80000000u && hub < 0x80200000u) psx_mod_write_byte(hub + RUN_HUB_ENTRY, RUN_HUB_ARENA);
-    run_direct_press = 1;
     run_log("direct: hub opened on Arena (frame %u, waited %u frames for the disc queue%s)",
             (unsigned)run_frames, (unsigned)run_direct_hub_wait, empty ? "" : ", gave up");
+    /* The player takes over right here, on the hub (Arena highlighted). The
+     * old X press on Arena often never landed (4 of 5 sessions in the
+     * 2026-11-17 test) and the boot then sat out the 90 s hub timeout. */
+    run_reach_hub("moa.run.direct_hub");
 }
 
 static int run_title_open_filter(struct CPUState *cpu, uint32_t address)
@@ -639,7 +673,13 @@ static int run_title_open_filter(struct CPUState *cpu, uint32_t address)
         return 0;
     }
     if (!run_autopilot) return 0;
-    if (!run_direct && run_direct_wanted() && run_direct_boot(cpu)) return 1;
+    if (!run_direct && run_direct_wanted()) {
+        if (run_direct_boot(cpu)) return 1;
+        if (!run_direct_failed) {
+            run_direct_failed = 1;                /* the menu presses, behind the loading screen */
+            run_log("direct: could not start, the menu presses take over");
+        }
+    }
     cpu->gpr[4] = 1;
     return 0;
 }
@@ -1363,6 +1403,7 @@ static void run_hub_entry(struct CPUState *cpu, uint32_t address)
 {
     (void)cpu;
     if (!run_on() || psx_mod_read_word(address) != RUN_SIG_HUB_RESUME) return;
+    if (run_watch_phase == 2) run_watch(0);       /* back at the hub */
     if (run_state_ok && run_state.run.over) { run_loss_wait = 0; run_maybe_return(); return; }
     run_reach_hub("moa.run.hub_reached");
     run_prize_where = 1;
@@ -1480,6 +1521,7 @@ static int run_book_win(uint8_t who, const char *where)
 static void run_result_entry(struct CPUState *cpu, uint32_t address)
 {
     if (!run_on() || psx_mod_read_word(address) != RUN_SIG_RESULT) return;
+    if (run_watch_phase == 2) run_watch(0);       /* back at the arena screen */
     run_maybe_return();
     if (!run_at_hub || !run_state_ok) {
         if (psx_mod_read_byte(RUN_FIGHT_DONE) && !run_told) {
@@ -1911,6 +1953,7 @@ static void run_apply_fix(int kind, uint32_t buf, uint32_t bytes)
         psx_mod_write_word(buf + i, (uint32_t)out[i] | (uint32_t)out[i + 1] << 8 |
                                     (uint32_t)out[i + 2] << 16 | (uint32_t)out[i + 3] << 24);
     psx_mod_counter_add("moa.run.data_applied", 1);
+    if (kind == KIND_AI) run_watch(1);                   /* the fight's data: it loads next */
     run_log("data kind %d: applied (%d records missing, %u ghosts)", kind, missing,
             (unsigned)run_state.lineup.ghosts);
 }
@@ -2039,6 +2082,7 @@ static void run_sampler_entry(struct CPUState *cpu, uint32_t address)
             if (done && !won && !lost) run_log_fighters();
         }
         if (!won && !lost) run_result_seen = 0;   /* a new fight: its result is not booked yet */
+        run_watch(won || lost ? 2 : 0);           /* running: fine; over: the arena screen is next */
         if (done && !won && lost) run_book_loss("in fight");
         if (done && won && !lost) (void)run_book_win(psx_mod_read_byte(RUN_FIGHT_OPPONENT), "in fight");
         /* The fight recorder (moa_run_record.c): samples while it runs, the
@@ -2172,11 +2216,59 @@ static void run_ghost_save(uint8_t who)
             have_art ? "" : " (no 3D model install: emblem only)", rec_ok ? ", fight saved" : "");
 }
 
+/* ---- hang watch ----------------------------------------------------------------
+ *
+ * Two hangs in the 2026-11-17 test came after a won fight (the arena screen
+ * never came back; the game idled in VSync) and one while a fight loaded.
+ * The logs could not say what the game waited for, so: from the fight's
+ * data being applied until the fight runs (phase 1), and from the fight's
+ * result until the hub or arena screen (phase 2), a long wait logs the disc
+ * queue, the fight flags, the title flags and the last menu routines called,
+ * and writes RAM + VRAM beside the run file (<run>.hang-<phase>.ram/.vram). */
+extern const uint16_t *gpu_get_vram(void);
+
+static void run_watch_dump(void)
+{
+    static const char *const k_phase[3] = { "", "loading a fight", "after a fight" };
+    char calls[1024];
+    moa_btrace_recent(calls, sizeof calls);
+    run_log("hang watch: %s for %u s: disc queue write %u read %u, fight done %u won %u lost %u, "
+            "title flags %u/%u, prize where %d, data fixes queued %d",
+            k_phase[run_watch_phase], (unsigned)(RUN_WATCH_FRAMES / 60u),
+            (unsigned)psx_mod_read_word(RUN_D_CDQ_WRITE), (unsigned)psx_mod_read_word(RUN_D_CDQ_READ),
+            (unsigned)psx_mod_read_byte(RUN_FIGHT_DONE), (unsigned)psx_mod_read_half(RUN_FIGHT_WON),
+            (unsigned)psx_mod_read_half(RUN_FIGHT_WON + 2u),
+            (unsigned)psx_mod_read_byte(RUN_D_TITLE_FLAG), (unsigned)psx_mod_read_byte(RUN_D_TITLE_FLAG + 5u),
+            run_prize_where, run_fixes);
+    run_log("hang watch: last menu calls (frame:routine): %s", calls[0] ? calls : "none");
+    psx_mod_counter_add("moa.run.hang_watch", 1);
+    if (run_watch_dumps >= 3u || !run_file_path()) return;   /* 2 MB + 1 MB each: a few at most */
+    run_watch_dumps++;
+    char p[1100];
+    static uint8_t ram[2u * 1024u * 1024u];
+    for (uint32_t i = 0; i < sizeof ram; i += 4u) {
+        const uint32_t w = psx_mod_read_word(0x80000000u + i);
+        ram[i] = (uint8_t)w; ram[i + 1] = (uint8_t)(w >> 8);
+        ram[i + 2] = (uint8_t)(w >> 16); ram[i + 3] = (uint8_t)(w >> 24);
+    }
+    snprintf(p, sizeof p, "%s.hang-%d.ram", run_file_path(), run_watch_phase);
+    FILE *f = fopen(p, "wb");
+    if (f) { fwrite(ram, 1, sizeof ram, f); fclose(f); }
+    const uint16_t *v = gpu_get_vram();
+    if (v) {
+        snprintf(p, sizeof p, "%s.hang-%d.vram", run_file_path(), run_watch_phase);
+        f = fopen(p, "wb");
+        if (f) { fwrite(v, 2, 1024u * 512u, f); fclose(f); }
+    }
+    run_log("hang watch: RAM%s written beside the run file (.hang-%d)", v ? " and VRAM" : "", run_watch_phase);
+}
+
 static void run_frame_hook(void)
 {
     run_check_session();
     if (!run_on()) return;
     run_apply_fixes();
+    if (run_watch_phase && run_at_hub && ++run_watch_count == RUN_WATCH_FRAMES) run_watch_dump();
     if (run_at_hub && psx_mod_read_byte(RUN_ARENA_LOCK)) {
         psx_mod_write_byte(RUN_ARENA_LOCK, 0);
         psx_mod_counter_add("moa.run.arena_unlocked", 1);
@@ -2189,7 +2281,7 @@ static void run_frame_hook(void)
     if (run_autopilot && run_stage == STAGE_BACK) {
         if (++run_frames - run_back_start >= (run_direct ? RUN_DIRECT_HOLD : RUN_BACK_FRAMES))
             run_finish_handover();
-        else psx_mod_set_loading_screen("ROGUE ARENA  Preparing your run", 98);
+        else if (!run_quiet()) psx_mod_set_loading_screen("ROGUE ARENA  Preparing your run", 98);
         return;
     }
     if (run_autopilot) {
@@ -2197,8 +2289,8 @@ static void run_frame_hook(void)
         const uint32_t f = run_frames++;
         int permille = (int)(f * 1000u / (RUN_HUB_TIMEOUT / 3u));
         if (permille > 950) permille = 950;
-        psx_mod_set_loading_screen("ROGUE ARENA  Preparing your run", permille / 10);
-        if (f >= RUN_HUB_TIMEOUT) run_reach_hub("moa.run.hub_timeout");
+        if (!run_quiet()) psx_mod_set_loading_screen("ROGUE ARENA  Preparing your run", permille / 10);
+        if (f >= (run_direct ? RUN_DIRECT_TIMEOUT : RUN_HUB_TIMEOUT)) run_reach_hub("moa.run.hub_timeout");
         return;
     }
     if (run_fade) {                            /* a short hold at 100%, then away */

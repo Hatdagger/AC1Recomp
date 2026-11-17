@@ -7,4 +7,8 @@
  * title-open filter) can't hide the call from the trace. */
 void moa_btrace_register(void);
 
+/* The last menu routines called (all session), oldest first, as
+ * "frame:name frame:name ..." (the run's hang watch logs it). */
+void moa_btrace_recent(char *out, unsigned size);
+
 #endif

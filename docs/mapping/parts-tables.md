@@ -154,10 +154,9 @@ or one read of the code that uses it.
   launcher. Armored-CoreR's `gen1-weapons.md` ("attack 2,050") and `gen1-movement.md`
   (compiled +28 "blade power") have these swapped. That may also explain its blade damage
   mismatch (683 vs 492). Confirm with the garage's ATTACK figure for the LS-2001.
-- **Which engine runs plain VS?** `battle-system.md` says split-screen VS uses the arena
-  engine (FDAT 210). Armored-CoreR's research reads shot speeds and damage from a separate VS
-  engine (FDAT 209, `0x8008342C`, `0x80079500`). If both are right, addresses differ between
-  VS and arena fights, so each finding needs to say which engine it came from.
+- **Blade damage:** `battle-system.md` now treats split-screen VS as its own engine (FDAT 209),
+  where Armored-CoreR's damage maths came from. The blade's damage there should be rechecked
+  with +0x30 as attack.
 - Does Project Phantasma's disc use the same layout? (Needed if its parts ever get imported.)
 
 ## Settled against the GameShark map (`ram-map-gameshark.md`)

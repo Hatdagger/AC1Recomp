@@ -36,6 +36,10 @@ From battle chat to data chat:
   sweep `?`, +0x28E = a button mask that stops the lunge `?`.
 
 
+- Missile interceptor note in `parts-tables.md` says the missile handler is `0x8009907C`;
+  measured in VS it is **`0x8008907C`** (pool record +0x18 while a missile flies). AC +0x118
+  (interceptor burst) confirmed counting down in the snapshots.
+
 Battle chat → data chat: if you find a write into player block +0x250 … +0x393 (the stat
 block), note it here instead of mapping it.
 

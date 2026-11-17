@@ -69,8 +69,8 @@ with the same layout shifted (+0x64 save data, +0x60 battle data).
    animation records, +0x118, the two extra callbacks. Everything else in combat reads these.
 2. **Damage path** — what lowers AP: hit test → damage formula (weapon attack vs shell/energy
    defence) → AP write. Ties the part tables' defence numbers to combat.
-3. **Weapons and projectiles** — fire routine, the projectile list (likely another fixed array),
-   reload/ammo, missile lock-on using the FCS lock box.
+3. **Weapons and projectiles** — fire routines, pool layout and update routines done
+   2026-11-17 ("Weapons in flight"). Open: missile steering, lock-on build-up.
 4. **Movement** — ground speed cap (Armored-CoreR uses 75 per axis), boost, jump, turning,
    leg type differences. This is the "feel" Armored-CoreR keeps chasing.
 5. **Match start / end** — the call that sets up both ACs from the build and part tables
@@ -99,7 +99,7 @@ at a time (stand, walk, turn, strafe, boost, fire, get hit), then naming fields 
 | +0x43 | u8 | 5 from match start `?` | data chat |
 | +0x45 | u8 | **State** (list below) | snap + code |
 | +0x46 | u8 | **Movement class**: 0 still, 2 turning on the spot, 0x10 moving on the ground, **0xC0 airborne**, 0x80 staggered | snap |
-| +0x48 | u8 | Firing recoil / animation counter (0 → 5 on a shot) `?` | snap |
+| +0x48 | u8 | **Refire cooldown**: the gun fire routine only fires at 0, otherwise counts it down (5 after a rifle shot) | `0x80081034` + snap |
 | +0x49 | u8 | 255 during the fight (the match timer only runs while P1's is 255) | timer code |
 | +0x4A | u8 | State when the current animation started (the state setter writes both +0x45 and +0x4A) | `0x80080060` |
 | +0x58 | u32 | **Animation-finished callback**, called with (object, +0x4A); picks the next state. ACs: `0x8008389C` | `0x8007F088` |
@@ -113,7 +113,7 @@ at a time (stand, walk, turn, strafe, boost, fire, get hit), then naming fields 
 | +0x76 | s16 | **Frame counter of the current state** (resets to 0 on every state change; blade hit window = 7–11) | snap + blade code |
 | +0x8C … +0xCA | | Animation channel records (start / end frame pairs, e.g. 50/51, 9888/9889) `?` | snap |
 | +0xD4 / +0xD6 / +0xD8 | s16 | **Velocity x / y / z** in 1/64 units per step (walk ≈ 960 x; jump −3264 y up, +5056 falling; knock-back from a rifle hit −448 / −64). Not cleared when the AC stops | snap |
-| +0x118 | s16 | Counts down by about 13 a second from 0 (set 0 at match start) `?` | snap |
+| +0x118 | s16 | **Missile interceptor burst counter** (15 at a burst start, keeps counting down below 0; see `parts-tables.md`, "Missile interceptor") | snap + data chat |
 | +0x150 | u16 | 15 while rising on the booster; cleared at swing start `?` | snap |
 | +0x152 … +0x158 | | Two (id, value) pairs, e.g. (0xA0B4, 140), changed by firing and boost-dashing: sound / effect handles `?` | snap |
 | +0x164 | u32 | 6 while rising on the booster; cleared at swing start `?` | snap |
@@ -258,6 +258,57 @@ place by the previous swing.)
 
 **Hit dispatcher side note:** when one AC hits the other, the attacker's player block
 **+0x24C = 40**; it counts down each frame and drives the HUD "HIT" blink (`0x8005699C`).
+
+## Weapons in flight (VS engine, 2026-11-17)
+
+**Fire routines by weapon kind** (slot +0 = kind, slot record = player block +0x2D8 + slot × 62,
+selected slot = player block +0x10; picked in the AC update at `0x80083160`):
+0 gun → **`0x80080DF4`**, 1 missile → **`0x80081888`**, 2 cannon → **`0x80081B18`** (the cannon one
+sets the AC states 0x22 / 0x23, the stop-to-fire stance `?`).
+
+Gun fire `0x80080DF4`: needs AC +0x6D = 255 and **refire cooldown AC +0x48 = 0**, the fire
+button (player block +0x29A) or AC +0x47 set, and ammo (slot +16) > 0. Slot +9 bits 0–1 =
+shots per trigger. The **model ID (slot +1)** picks the family, its shot table (data chat's
+shot-speed tables) and its spawner; every spawner installs a per-frame **update routine**:
+
+| Model ID | Spawner | Update routine (record +0x18) |
+|---|---|---|
+| 0–19 (bullets; rifle = 0) | `0x8008AC30` (loops for multi-shot; ID 8 = 5 shots, −4 ammo) | **`0x80088674`** (measured on the rifle) |
+| 0–19, other branch `?` | `0x8008DEC0` | `0x8008DB18` |
+| 20–39 | `0x8008E664` (blade waves use it too) | `0x8008E1B0` |
+| 40–69 | `0x8008D8CC` | `0x8008D584` |
+| 70–89 | `0x8008CBCC` | `0x8008C948` |
+| 90+ | `0x8008D38C` | `0x8008D0A4` |
+| missiles (kind 1) | `0x8008B070` | **`0x8008907C`** (measured) |
+
+Every update routine reaches the hit dispatcher `0x8008821C` except the 90+ one (`0x8008D0A4`, not traced).
+
+### The object pool (256 × 228 bytes at 0x801D6F6C)
+
+Shared by shots, missiles and effects (smoke, sparks, explosions have their own update
+routines, e.g. `0x80089F6C`, `0x8008A000`). Cleared at match start by `0x800881D0`
+(+0x06 = −1 in every record). Measured by dumping the pool while a rifle shot and a missile
+were in flight:
+
+| Offset | Size | Meaning |
+|---|---|---|
+| +0x00 / +0x02 / +0x04 | s16 | Position x / y / z |
+| +0x06 | s16 | **−1 = free**, 0 = in use |
+| +0x08 | u32 | Owner (the firing AC object) |
+| +0x0E | u16 | 83–84 `?` |
+| +0x10 / +0x12 | u16 | 1 (2 for some effects) / 255 `?` |
+| +0x16 | u16 | **Life left**, counts down each step (rifle 13, missile 60) |
+| +0x18 | u32 | **Update routine** (table above) |
+| +0x1C … +0x22 | | **Hit record** passed to the dispatcher: +0x1C flags (0x17 for both), +0x1E attack (rifle 218, missile 830), +0x20 impact (3 / 12), +0x22 2 / 94 `?`. This is the 0x801D6F88 record seen in the damage test |
+| +0x24 | s16 | Rifle: **speed per step (701)** |
+| +0x2A / +0x2C / +0x2E | s16 | Missile: **target position** (P2's x, y − 106, z) |
+| +0x38 | u32 | Missile: **target object** (P2's 0x801D4D38) |
+| +0xBC / +0xBE / +0xC0 | s16 | Rifle: **position one step earlier** (the hit test runs along this line) |
+| +0xC4 … +0xCA | | Rifle: 25850, 250, 4, 30 `?` |
+
+Not done yet: the missile steering maths in `0x8008907C`, lock-on build-up (player block
++0x86 / +0x9A count up while locked), and the families 20+ in play (needs a build with
+those weapons).
 
 ## Match timer (VS engine, measured)
 

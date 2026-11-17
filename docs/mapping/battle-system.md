@@ -74,8 +74,8 @@ with the same layout shifted (+0x64 save data, +0x60 battle data).
    (static). Open: run-test the missile notes; the second missile spawn call `0x8007BED4`.
 4. **Movement** — done for the default AC 2026-11-17 ("Movement and energy"): the 75 cap is ¾ of
    the AC's width, handlers, energy rules all measured. Open: landing recovery, other leg types.
-5. **Match start / end** — the call that sets up both ACs from the build and part tables
-   (unblocks direct launching from the launcher) and the result record.
+5. **Match start / end** — done 2026-11-17 ("Match start and end"): entry chain, end rules,
+   result counters, CONTINUE? choices. Open: the stage's +0x08 flag, START → replay test.
 
 ## AC object fields
 
@@ -511,6 +511,67 @@ and drops the locks (`0x80080084`).
 
 Not done: landing recovery after long falls; air-boost release rate; other leg types and heavy builds.
 
+## Match start and end (VS engine, code + tested 2026-11-17)
+
+**Engine entry `0x80051F4C`** (FDAT 209). In order:
+
+1. **Backs up both player blocks** (928 bytes each) to `0x80093750` (P1) and `0x80093AF0` (P2).
+   **On exit it copies them back.** So anything written into a player block during the fight
+   (results, stat-block changes) is lost when the engine returns, unless it was copied out first.
+   This answers the open "copy or live?" question: live during the fight, restored afterwards.
+2. `0x800558C0` = VS load: stage and models, then for P1 and P2 in turn:
+   - set the current player block `0x8003EAA0`;
+   - `0x80055214`;
+   - `0x8007D23C` (AC object setup);
+   - **`0x8008342C` (per-AC match start, see `stat-block.md`)**.
+3. `0x800881D0` (clear the object pool), `0x80087658` × 2 (cameras), stage init (match struct +0x04 → its +4),
+   `0x8007D7B4` × 2 (records at `0x801D6ED0` / +0x10), `0x800527EC`.
+4. **Main loop** from `0x80052124`, one game step per pass:
+   - clear player block +0x08 bits 0–2 on both;
+   - update objects, ACs, HUD and the stage (match struct +0x04 → +0);
+   - run the end checks below;
+   - draw both views;
+   - steps elapsed +0x12 += 1.
+
+**Match struct `0x80097EA0`:**
+
+| Off | Meaning |
+|---|---|
+| +0x04 | Stage code table (+0 per step, +4 init); the stage code sits around `0x80098000` |
+| +0x0C | Flags: 0x40 = time up, 0x80 = draw, 0x30 = result shown |
+| +0x10 | **End countdown** (0 = fighting). Set to 30 at time up, then +90 when a result is decided. It waits at 30 for the CONTINUE? answer |
+| +0x12 | Steps elapsed (capped 0x4000). The clock only runs once this is ≥ 16 |
+| +0x14 | Time left in steps (the `0x80097EB4` timer) |
+
+**How a round ends** (checked every step while +0x10 = 0):
+
+| Way | Check | Tested |
+|---|---|---|
+| Time up | time left reaches 1 → +0x10 = 30, flag 0x40. Then **the higher AC +0x168 (AP × 4) wins**; equal AP is a draw | ✔ (P2 AP set lower → "TIME UP", P1 counted the win) |
+| Knock-out | AC **+0x49** (255 while fighting) drops when AP hits 0 (on-hit `0x80079774`, then the wreck sequence in the AC update `0x800828BC` → `0x80079828`), ending at **0xFE** = wrecked (0 also counts as out). After 12 steps: one out → the other wins; both out → draw | ✔ (P2 AP → 1, one rifle shot: P2 +0x49 = 0xFE, "WIN" / "LOSE") |
+| Stage flag | player block +0x08 bits 0–2 = exactly 1 → that player loses (both → draw). The stage code at `0x80098074` writes 1, 3, 7 there every step `?` | code only |
+
+**What a result writes**, the winner P1 shown (P2 mirrors it):
+- player block +0x08: winner |= 0x10, loser |= 0x20 (both |= 0x30 at the CONTINUE? screen);
+- the winner's player block **+0x394 |= 1 << round** (round history, lost on exit by step 1);
+- **win/loss counters** (u16, capped 999), shown on the VS menu as the 1P / 2P WIN / LOSE table:
+  - `0x8003EAB0` = 1P wins
+  - `0x8003EAB2` = 1P losses
+  - `0x8003EAB4` = 2P wins
+  - `0x8003EAB6` = 2P losses
+- **round number `0x8003EA94`** += 1 per decided round. It survives rematches, and VS START resets it to 0.
+- A draw changes no counters.
+
+**CONTINUE? screen** (+0x10 = 30; either player answers; raw pad bits as in `stat-block.md`):
+
+| Button | Result | Return value | Tested |
+|---|---|---|---|
+| ✕ YES (0x4000) | rematch: the exe reloads the VS engine with the same setup | 2, replay flag `0x8003EA92` = 0 | ✔ new 2:00 round straight away |
+| START (0x0008) | replay | 2, `0x8003EA92` = 1 → FDAT 211 (see `mode-launch.md`) | code only |
+| ○ NO (0x2000) | countdown runs out, back to the VS menu | 0 | ✔ VS menu showed 1P WIN 1 / 2P LOSE 1 |
+
+Exit (`0x800526C0`): stops sound and vibration, restores both player blocks, returns the value above.
+
 ## Match timer (VS engine, measured)
 
 - Time left = **game steps** at `0x80097EB4` (u16, timer struct `0x80097EA0` +0x14).
@@ -534,6 +595,6 @@ Triangle changes weapon; L1/R1 strafe; L2/R2 look; Left/Right turn.
   Open: whether other blades (longer reach, Moonlight) can reach 3+ hits.
 
 - Base address of the AC object array in the arena engine, and AP's offset in it.
-- Is the player block a copy made at match start, or live? (Test: poke range mid-fight.)
+- Player block copy or live? Answered: live during the fight; the engine backs both up at entry and restores them at exit (see Match start and end).
 - Mission engine AC object (0x801E73B0 is player AP there): same layout?
 - Where the enemy list lives in missions (non-AC enemies).

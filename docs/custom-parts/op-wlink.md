@@ -1,6 +1,8 @@
 # OP-WLINK — custom option part (weapon link)
 
-Status: **spec agreed 2026-11-17, not built yet.** First custom option part for Master of Arena.
+Status: **first test build written 2026-11-17 (branch `op-wlink`), not yet tested in game.**
+First custom option part for Master of Arena. Code: `psxrecomp/runtime/src/mod_builtin_moa_wlink.c`,
+turned on by the preloaded mod `acrecomp.moa.op-wlink` (launcher Mods, "OP-WLINK option part").
 
 ## What it does
 
@@ -25,7 +27,7 @@ experiment.
 | HUD | One line per linked weapon, stacked in the **game's own HUD font**: the **weapon type** the game already shows (DUAL MISSILE, MULTI MISSILE…, compiled slot +42), **not** the part name, plus its ammo. When more than one weapon is linked, each line also shows its **slot**: `ARM`, `BACK L` or `BACK R` |
 | Running dry | An empty weapon **drops out** of the group. Selection moves to a member that still has ammo (e.g. arms empty → back missiles selectable), and the rest keep firing together |
 | Back cannons | Keep their own rules: two-legged ACs still crouch to fire them |
-| First build | **Split-screen VS only** (VS engine, FDAT 209). That also covers netplay and AI Battle. Arena, missions and replays come later |
+| First build | **Split-screen VS only** (VS engine, FDAT 209). Correction: netplay runs the link versus engine (FDAT 208) and AI Battle the arena engine (FDAT 210), so they are **not** covered yet; the fire code there is the same at other addresses, so they're next. Missions and replays later |
 
 ## How families are told apart
 
@@ -50,31 +52,53 @@ blocks when it exits, so nothing leaks back into the save):
   rounded down, kept within the game's limits (lock value 1–255, locks at once ≥ 1)
 - slot +35 fire interval: mean of the group, rounded down
 
-## Build plan
+## How the test build does it
 
-1. **Get the overlay code.** FDAT 206 (menu) and 209 (VS) from the user's disc 1
-   (`tools/disc_entry.py "Disc 1.bin" GG/COM/FDAT.T 206 menu206.bin`, same for 209). They're
-   needed to read the fire dispatch, the refire cooldown and the HUD weapon text routine.
-2. **Menu (FDAT 206).** The table at `0x800D1AA0` has only 13 records, and ID 13 would read the
-   weapon-arms table. Put a 14-record copy in plugin memory and point the option-list reads
-   (`0x80091A5C`, around `0x80091DF0`, `0x8009241C`) at it. Set inventory option byte 13 to
-   owned. Add the description text.
-3. **Match start** (after `0x8008342C`, once per AC). If mask bit 13 is set, find the groups
-   and write the averaged values.
-4. **Fire.** After the selected weapon's fire routine (gun `0x80080DF4`, missile
-   `0x80081888`, cannon `0x80081B18`), run each partner's routine on the same lock records,
-   holding the refire cooldown so the first shot doesn't block the others. Skip members with
-   no ammo.
-5. **△ cycle** (`0x80082D90`, mask +0x296 → player block +0x11). Skip partners. When the
-   selected member is empty, move to one with ammo.
-6. **HUD.** Draw an extra line per linked member in the game's font: weapon type (slot +42) +
-   ammo, with `ARM` / `BACK L` / `BACK R` added when the group has more than one member.
-7. Test build on a branch, which the user reviews before it's merged.
+**Menu (FDAT 206)**
 
-## Open points
+- Option ID 13 is one of six `DUMMY` records already in the table (`0x800D1CDC`); the menus
+  already loop over IDs 0–18. The plugin writes OP-WLINK there (name `OP-WLINK`, type
+  `WEAPON LINKER`, 24,000 credits, 1 slot) and sets bit 13 of the owned-options word
+  `0x8004B558`, whenever the menu module is loaded. No relocation was needed.
+- Description: the 13-entry pointer table `0x800CDE8C` is read at `0x80092004`; for ID 13 the
+  read is pointed at "Fires same-type weapons together."
+- After `compile(player)` (`0x800A7BB4`) the plugin marks each weapon slot in its spare bytes:
+  +59 family (0 = not linked), +60 `0xA0` + slot (0 ARM, 1 HAND, 2 BACK L, 3 BACK R) when
+  OP-WLINK is fitted, +61 group size. +58 stays 0 because it ends the HUD name. Slot order
+  follows compile: weapon arms or hand weapon, back L, back R (radars, M118-TD and P77-ST
+  skipped). Linked slots get the averages of slot +20, +24…+30, +32, +34, +35, and +9 for
+  missiles. These marks travel inside the compiled block, so other engines can use them later.
 
-- Where the refire cooldown lives for guns and missiles (cannons use AC +0x48).
-- Which firing animation plays when arms and back fire together (each fire routine writes
-  AC +0x84; the last one wins).
-- Whether the option list shows a picture for options, and so what the placeholder texture
-  replaces.
+**VS engine (FDAT 209)**
+
+- Fire: the game calls the selected slot's fire routine (a0 = AC, a1 = slot). The plugin runs it,
+  then each partner's routine with that partner's own burst (AC +0x47) and cooldown (AC +0x48)
+  swapped in and the post-shot hold cleared. Afterwards the whole AC object and the lock state
+  (player block +0x1A…+0x2F, +0x78…+0x1FB) are put back, so partner shots don't move the AC,
+  play animations or speed up the lock. A partner missile salvo keeps its own copy of the locks
+  it started with until it has fired. Partner state is kept in plugin guest memory (works with
+  save states and rollback).
+- △: at `0x80083030` the pick skips the selected weapon's partners (and empty weapons, as the
+  game already does). If the selected weapon is empty, the pick moves to a partner with ammo.
+- HUD: the game already lists every usable weapon with its own ammo (picked weapon on top, the
+  rest below). For linked weapons the name line becomes "<type> ARM / BACK L / BACK R", moved
+  left so it ends where the game's name ended.
+
+## Things to check in the first test
+
+- OP-WLINK shows in OPTIONAL PARTS, with its description, and fits for 1 slot.
+- Missile arms + back missile(s), rockets, and two back cannons fire together; a hand weapon
+  and solid guns don't link.
+- △ skips partners; an empty weapon drops out and the selection moves on.
+- HUD names and slot tags fit and line up in split screen.
+- Linked missiles lock together and fire at the same targets.
+
+## Still open
+
+- Placeholder picture: the option list draws text only (name from the record), so for now
+  OP-WLINK looks like any other option apart from its name. If a picture shows elsewhere
+  (shop or AC SETUP), it will show whatever ID 13's DUMMY slot points to.
+- Which VS AC SETUP list uses the owned word `0x8004B558` (the scenario garage does).
+- Cannons with a post-shot hold (WC-GN230, WC-IR24): the partner ignores the hold, so it may
+  fire slightly out of step.
+- Netplay (FDAT 208) and AI Battle (FDAT 210) engines.

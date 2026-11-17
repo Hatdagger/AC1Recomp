@@ -509,6 +509,28 @@ So the drain sums use core, head, arms, FCS and legs only. The weapon, blade and
 Also in `0x80082D90`: △ cycles the weapon (+0x296 mask → player block +0x11), which re-runs `0x80082834`
 and drops the locks (`0x80080084`).
 
+**Weapon switch, fire dispatch and weapon HUD (VS engine, read statically 2026-11-17 for OP-WLINK):**
+
+- Player block **+0x10 = weapon in use, +0x11 = weapon picked**. △ (`0x80082F84`) steps +0x11
+  forward, wrapping at +0x2D7, and **skips slots with no ammo** (slot +16); then switch sound
+  (`0x80083030`, `jal 0x800530D8`, a0 = 45) and lock drop. The pick is applied at `0x80083044`
+  only when AC +0x48 (cooldown) is 0: +0x10 = +0x11, `0x80082834`, locks dropped.
+- **Fire dispatch** `0x80083114`: unless AC state is 32/33, there are usable weapons and
+  `0x80097EAC` bit 0x400 is clear, it calls the fire routine for slot +0x10's kind with
+  **a0 = AC object, a1 = slot pointer** (gun `0x80080DF4`, missile `0x80081888`, cannon
+  `0x80081B18`), every step.
+- Per-AC firing state shared by all slots: **AC +0x47** burst/salvo counter, **AC +0x48** refire
+  cooldown (counts down 1 per step inside the fire routine; set to slot +35 after a shot or
+  salvo), AC +0x6D post-shot hold, AC +0x84 firing animation. Missile salvo: on a new fire press
+  (player block +0x04 & +0x29A) with locks, +0x47 = Σ lock counts × 4, then one missile pair
+  every 4 steps via `0x800815A4`, each using a lock record's count (+0x26).
+- **Weapon HUD** `0x80056D64`: picked weapon (+0x11) name at (54, 163) with font 128 and
+  "ammo/max" below; the other usable weapons are listed under it from y = 181 (name x = 66,
+  ammo right-aligned at x = 150, font 56). Text routine `0x800572B4(x, y, 15, font, colour,
+  string)`; proportional glyphs (map `0x8008FDE8` + char, widths at `0x80091A28` + glyph × 12 +
+  6, plus 1); about 6 px per character in font 128 and 4 px in font 56. The name is slot +42,
+  ended by the 0 at slot +58.
+
 Not done: landing recovery after long falls; air-boost release rate; other leg types and heavy builds.
 
 ## Match start and end (VS engine, code + tested 2026-11-17)

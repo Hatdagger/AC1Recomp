@@ -8,7 +8,7 @@ compiled stat block, battle system), but designs and build plans for new parts l
 
 | Part | Type | File | Status |
 |---|---|---|---|
-| OP-WLINK | Option part (ID 13) | `op-wlink.md` | Spec agreed 2026-11-17; needs FDAT 206/209 to build |
+| OP-WLINK | Option part (ID 13) | `op-wlink.md` | First test build 2026-11-17 (branch `op-wlink`), split-screen VS only |
 
 ## Mapping notes these parts rely on
 

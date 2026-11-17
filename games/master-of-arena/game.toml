@@ -70,6 +70,9 @@ mod_function_entry_funcs = [
     "0x800AC4B4", "0x800BBEA8", "0x80056414", "0x800BC420",
     # Arena Run: the run's opponents (per-opponent loaders, CD queue check)
     "0x800BDE88", "0x800586A0", "0x800589DC",
+    # OP-WLINK (mod_builtin_moa_wlink.c): menu compile; VS gun/missile/cannon
+    # fire and per-AC match start
+    "0x800A7BB4", "0x80080DF4", "0x80081888", "0x80081B18", "0x8008342C",
 ]
 
 # Instruction hooks of the game's plugins (psxrecomp/runtime/src/
@@ -92,6 +95,8 @@ mod_instruction_sites = [
     "0x800BBA98", "0x800BBFB4", "0x800BBFE0", "0x800BC110", "0x800BC274",
     # Arena Run: arena 0's whole-arena reads (names, rewards, builds, AI)
     "0x800BBB3C", "0x800BBCFC", "0x800C0250", "0x800C04FC", "0x800C01FC", "0x800C04A8",
+    # OP-WLINK: option description (menu); weapon switch, HUD name lines (VS)
+    "0x80092004", "0x80083030", "0x80056DC8", "0x80056EC4",
 ]
 
 [runtime]

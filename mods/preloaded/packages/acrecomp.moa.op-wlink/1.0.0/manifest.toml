@@ -1,0 +1,22 @@
+format_version = 5
+id = "acrecomp.moa.op-wlink"
+version = "1.0.0"
+name = "Master of Arena: OP-WLINK"
+author = "AC1Recomp"
+description = "Adds the custom option part OP-WLINK (owned from the start, 1 slot). With it fitted, missiles, rockets and back cannons of the same family fire together from one press. Weapon arms link with back weapons; hand weapons never link. Test build: split-screen VS only."
+resolver = "declarative"
+save_compatibility = "shared"
+
+[[target]]
+game_id = "SLUS-01030"
+
+[[feature]]
+id = "op-wlink"
+name = "OP-WLINK option part"
+description = "Custom option part that fires linked weapons together. Split-screen VS only for now."
+group = "Custom Parts"
+default_enabled = true
+
+[[plugin]]
+feature = "op-wlink"
+id = "moa.op-wlink"

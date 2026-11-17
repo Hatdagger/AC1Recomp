@@ -43,7 +43,7 @@ index is the part's ID in cards, the garage struct and arena opponent records.
 | Booster | `0x800D0F30` | 48 | 14 |
 | FCS | `0x800D11D0` | 96 | 16 |
 | Generator | `0x800D17D0` | 48 | 15 |
-| Optional parts | `0x800D1AA0` | 44 | 13 (12 sold + SP-ABS_Re, never sold) |
+| Optional parts | `0x800D1AA0` | 44 | 19 (12 sold + SP-ABS_Re, never sold, + 6 DUMMY) |
 
 ### Fields shared by every category
 
@@ -191,9 +191,15 @@ Checked 2026-11-17 (menu module, FDAT 206), with custom options in mind:
   also around `0x80091DF0`, `0x8009241C`) run IDs 0–18, reading the record at
   `0x800D1AA0 + ID × 44` and shifting the owned/fitted mask one bit per ID. Inventory also has
   19 option bytes (13 + 6 spare, see below).
-- **The table itself has only 13 records.** `0x800D1AA0 + 13 × 44 = 0x800D1DE4`, which is where
-  the weapon-arms detail table starts, so IDs 13–18 would read weapon data as a name. New
-  records need a new home (a recomp hook can point the reads elsewhere).
+- **The table has 19 records: 13 real ones and 6 `DUMMY` slots** (corrected 2026-11-17 from the
+  disc; an earlier note here said 13 records and got the arithmetic wrong). IDs 13–18 sit at
+  `0x800D1CDC`–`0x800D1DB8`, each a copy of SP-E+'s numbers ("ENERGY AMPLIFIER", 45,000, 1 slot)
+  named `DUMMY`. The weapon-arms detail table starts after ID 18 (`0x800D1AA0 + 19 × 44 =
+  0x800D1DE4`). So a new option can simply be written over a DUMMY record.
+- **Owned options** for the option list are the word at **`0x8004B558`**, one bit per ID
+  (list builder `0x800919F8`; slots-left sum `0x80091DE8`).
+- **Descriptions** come from a 13-entry pointer table at **`0x800CDE8C`** (read at
+  `0x80092004`); the words after it are other data, so IDs 13+ need their own text.
 - **The fitted mask `0x8003EA70` is 16 bits** (only `lh`/`lhu`/`sh` at +0, 27 stores and 55
   loads in the menus; the engines never read it, they get the compiled block). Bits 0–12 are
   used, so **3 free bits (IDs 13–15)** without changing the game. IDs 16–18 need the mask widened.

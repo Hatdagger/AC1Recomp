@@ -928,17 +928,17 @@ static void run_reconcile(void)
 
 /* ---- prize picks ---------------------------------------------------------------
  *
- * After wins 1, 3, 6, 9, 12, 18 and 24: three boxes to pick one from, drawn
+ * After wins 1, 3, 6, 9, 12, 18 and 24: four boxes to pick one from, drawn
  * over the live game (dimmed) where the renderer can (psx_mod_set_overlay_image),
  * else as the loading picture. A box is a frame/internal category (HEAD, CORE,
  * ARMS, LEGS, BOOSTER, FCS, GENERATOR) or a weapon type (the part's type text:
  * GRENADE LAUNCHER, SMALL MISSILE, LASERBLADE, weapon arms by theirs), each with
  * at least one part the player can get: a real part, not owned, not on sale and
- * not in any of this attempt's restocks (so a restock stays 8 new parts). About
- * half the rolls swap one box for P (+2 up to win 9, +3 after). Taking a box
+ * not in any of this attempt's restocks (so a restock stays 8 new parts), three
+ * of those and a fourth, last box of P (+2 up to win 9, +3 after). Taking a box
  * gives a random part of it (back weapons: a pair, as the game does), then a
  * picture of the part until a button. The options come from the seed, the
- * attempt and the milestone, so a reopen shows the same three. Shown at the
+ * attempt and the milestone, so a reopen shows the same four. Shown at the
  * arena screen or the hub, never in a fight; after the restock picture. */
 #define RUN_PAD_UP    0x0010u
 #define RUN_PAD_DOWN  0x0040u
@@ -952,7 +952,7 @@ static const struct { uint8_t tab; int8_t arm_unit; const char *label; } k_prize
 #define RUN_TYPE_AT 0x12u
 
 struct run_prize_opt { char label[17]; int8_t group; char type[19]; uint8_t p; };
-static struct run_prize_opt run_prize_opt[3];
+static struct run_prize_opt run_prize_opt[4];
 static int run_prize_n;
 static int run_prize_stage;               /* 0 none, 1 choosing, 2 the prize shown */
 static int run_prize_m;                   /* the milestone up */
@@ -1030,7 +1030,7 @@ static uint64_t run_prize_rng(unsigned m, uint64_t salt)
            (0x9E3779B97F4A7C15ull * (uint64_t)(run_state.run.attempt + 1u));
 }
 
-/* The three boxes of milestone m. */
+/* The four boxes of milestone m: three part boxes, then P. */
 static void run_prize_roll(unsigned m)
 {
     static struct run_prize_part pool[256];
@@ -1066,14 +1066,13 @@ static void run_prize_roll(unsigned m)
         }
         run_prize_n++;
     }
+    /* The P box: always there, always last. */
     const uint8_t pay = k_prize_wins[m] <= 9u ? 2u : 3u;
-    if (run_prize_n < 3 || moa_run_below(&rng, 2) == 0) {
-        const int at = run_prize_n < 3 ? run_prize_n++ : (int)moa_run_below(&rng, 3);
-        memset(&run_prize_opt[at], 0, sizeof run_prize_opt[at]);
-        run_prize_opt[at].group = -1;
-        run_prize_opt[at].p = pay;
-        snprintf(run_prize_opt[at].label, sizeof run_prize_opt[at].label, "+%u P", pay);
-    }
+    struct run_prize_opt *o = &run_prize_opt[run_prize_n++];
+    memset(o, 0, sizeof *o);
+    o->group = -1;
+    o->p = pay;
+    snprintf(o->label, sizeof o->label, "+%u P", pay);
 }
 
 static void run_prize_hide(void)
@@ -1091,7 +1090,7 @@ static int run_prize_present(int choosing, const char *title, const char *line,
     psx_mod_window_size(&ww, &wh);
     for (int pass = 0; pass < 2; pass++) {
         const int see = pass == 0;
-        const char *labels[3];
+        const char *labels[4];
         for (int i = 0; i < run_prize_n; i++) labels[i] = run_prize_opt[i].label;
         const uint32_t *px = choosing
             ? moa_screen_render_choice(ww, wh, title, line, labels, run_prize_n, run_prize_cur,
@@ -1138,9 +1137,14 @@ static void run_prize_open(int m)
     run_prize_held = 0xFFFFu;
     run_prize_draw_choice();
     if (run_prize_stage)
-        run_log("prize %d (win %u): %s / %s / %s%s", m, k_prize_wins[m], run_prize_opt[0].label,
-                run_prize_n > 1 ? run_prize_opt[1].label : "-", run_prize_n > 2 ? run_prize_opt[2].label : "-",
-                run_prize_overlay ? "" : " (loading picture)");
+    {
+        char all[80] = "";
+        for (int i = 0; i < run_prize_n; i++)
+            snprintf(all + strlen(all), sizeof all - strlen(all), "%s%s", i ? " / " : "", run_prize_opt[i].label);
+        if (run_prize_stage)
+            run_log("prize %d (win %u): %s%s", m, k_prize_wins[m], all,
+                    run_prize_overlay ? "" : " (loading picture)");
+    }
 }
 
 /* The box taken: the part or P, booked in the run file at once. */

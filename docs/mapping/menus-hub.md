@@ -91,7 +91,7 @@ same 96 × 48 picture its title banner shows. All eight are 96 × 48, 8-bit TIMs
 | 3 System | (368, 48) | #4, 0x05080 |
 | 4 Mail | (320, 0) | #1, 0x01420 |
 | 5 Arena | (320, 192) | #3, 0x03C60 |
-| 6 Ex Arena | (368, 0) | #13, 0x1FDBC |
+| 6 Ex Arena | (368, 0) | #13, 0x1FDFC |
 | 7 Arena Maker | (384, 192), page `0x00A6` | #14, 0x2121C |
 
 **Captions** (the 128 × 24 name under the ring): one 4-bit sheet, page `0x0027` (VRAM 448, 0),

@@ -93,6 +93,10 @@ Data chat → battle chat:
 - Gun slot +9 bits: 0–1 shots per trigger (1 → 2, 2 → 4), 3 + bits 4–5 → alternate sides
   (AC +0x47 bit 0), bit 2 = fixed-direction path (dispensers), bit 3 = weapon-arm aim
   (passed to `0x800800E4`, changes AC +0x7E–0x82 when locked). Slot +12 bit 2 = no aim (rockets).
+- Lock-on read for SP-AXL (`stat-block.md`, "Lock-on"): lock records 8 × 48 bytes at player
+  block +0x7C; guns/cannons lock in `0x800800E4` (counter vs distance × slot +32), missiles in
+  `0x80080638` (cursor at player block +0x20/+0x22, then counter vs slot +9). Slot +12 bits 0/1
+  = draw lock box / aiming guide in the HUD sight routine `0x800576E0`.
 
 Launch chat → battle chat:
 - FDAT **211 is a fifth engine, the VS replay** (entry 0x80051FA4). When replay is picked the

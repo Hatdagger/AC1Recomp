@@ -94,7 +94,7 @@ index is the part's ID in cards, the garage struct and arena opponent records.
 | FCS | +0x2C | u8 | Max targets locked at once | weapons doc |
 | FCS | +0x2D | u8 | **Lock-on area label** in the garage, a pointer table at `0x800D29BC` (`0x80085ED0`): 0 STANDARD, 1 SIDEWAY, 2 LENGTHWAY, 3 WIDE & SHALLOW, 4 NARROW & DEEP. Text only: the compile routine doesn't copy it, so fights never see it | menu code |
 | FCS | +0x5E | u16 | Padding (always 0) | disc |
-| FCS | +0x2E + 12k | 6×u16 | Lock class k (0–3): range, box w, box h, inner w, inner h, lock time | in-game lock tests |
+| FCS | +0x2E + 12k | 6×u16 | Lock class k (0–3): range, box w, box h, inner w, inner h, lock value. The lock value is a **time** for gun and cannon classes (bigger = slower, scaled by distance) but a **speed** for missiles (bigger = faster); see `stat-block.md`, "Lock-on" | in-game lock tests, VS code |
 | Option | +0x24 / +0x28 | u32 / u16 | Price / slot cost | VS START check |
 
 Hand weapons and boosters/generators use every byte of their records; their combat stats live
@@ -112,7 +112,7 @@ Hand `0x800D1F64` (by hand ID), back `0x800D21D4` (by back ID), weapon arms `0x8
 | +0x02 | u8 | Kind-dependent, lands in slot +9. **Guns**: firing pattern, bits 0–1 = shots per trigger (0 → 1, 1 → 2, 2 → 4, 3 → one at a time, alternating sides when bits 4–5 are set), bit 2 = always take the fixed-direction path in the fire routine, ignoring the lock (set only on the dispensers WM-X5-AA / WM-X10), bit 3 = weapon-arm aiming (set on every weapon arm). **Cannons**: base recoil, scaled by stability and weight. **Missiles**: ignored (slot +9 comes from the lock time). The whole byte also sets player block +0x214 for the selected weapon |
 | +0x03 | u8 | **Firing animation ID** (slot +10): written to AC +0x84 when the weapon fires (guns `0x80080FE4`, missiles `0x800818D0`, cannons `0x80081BC4`); the cannon code compares it with the playing animation's ID. Right back slot gets +1. 0 hand guns, 1/2 missiles, 3/4 cannons, 5/6 rockets, 7 dual weapon arms; 255 = none |
 | +0x04 | u8 | Copied to slot +11 (right back slot +1 unless 255); **no reader found** in VS, arena, replay, menus or the main executable. 2/3 on radars and two-slot units, 1/2 on WC-GN230 and WC-IR24, 255 elsewhere; looks like an unused second animation ID |
-| +0x05 | u8 | **Aim flags** (slot +12): bit 2 = fire straight ahead, no aiming and no lock box drawn (rockets; fire `0x80080F8C`, HUD `0x80066BEC`). Bits 0–1 have no reader. 1 most, 6 rockets, 3 energy cannons, 0 dispensers / radars. SP-M/AUTO adds bit 0x80 on missiles |
+| +0x05 | u8 | **Sight flags** (slot +12), read by the HUD sight routine `0x800576E0`: 0 = no sight at all; bit 0 = draw the lock box; bit 1 = draw an aiming guide along the shot's path; bit 2 = fire straight ahead with no aiming (fire `0x80080F8C`, HUD `0x80066BEC`). 1 most weapons (box), 3 energy cannons (box + guide), 6 rockets (guide, straight), 0 dispensers / radars. SP-M/AUTO adds bit 0x80 on missiles |
 | +0x06 | u8 | Lock class (FCS group; 4 = no lock) |
 | +0x07 | u8 | Type name index |
 | +0x08 | u16 | Ammo |
@@ -146,8 +146,8 @@ main executable):
 |---|---|---|---|
 | Weapon detail | +0x04 | 2 radars and two-slot units, 1 WC-GN230 / WC-IR24, 255 elsewhere | Compiled into slot +11 with the same left/right +1 as the firing animation ID (+0x03), so probably a second animation ID that the fight code never uses |
 
-Small leftovers inside named fields: blade +0x2E bits 0x07, weapon detail +0x05 bits 0–1, and
-radar type bit 0x10 have no reader either. Everything is kept in `raw` by acr-import.
+Small leftovers inside named fields: blade +0x2E bits 0x07 and radar type bit 0x10 have no
+reader either. Everything is kept in `raw` by acr-import.
 
 ## Missile interceptor (core +0x34 / +0x35)
 

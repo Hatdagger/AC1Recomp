@@ -176,14 +176,14 @@ the hand weapon (weapon arms empty the hands), then the usable back weapons. The
 | +9 | u8 | By kind (see "Options in the slot code"): guns detail +2; missiles from the FCS lock time; cannons recoil from stability and weight, 1–64. Bits 0–1 = fire mode in the fire routine `0x80080DF4` (1 → 2, 2 → 4, 3 → checks bits 4–5); the whole byte also sets player block +0x214 = +9 × 75 ÷ 32 + 1 for the selected weapon | detail |
 | +10 | u8 | **Firing animation ID** (detail +3, right back slot +1): written to AC +0x84 by all three fire routines | detail |
 | +11 | u8 | Detail +4 (right back slot +1 unless 255). No reader found in any engine | detail |
-| +12 | u8 | Aim flags (detail +5): bit 2 = fire straight ahead, no lock box (rockets); bit 0x80 = **SP-M/AUTO** on a missile (`0x8008197C`). Bits 0–1 unread | detail |
+| +12 | u8 | Sight flags (detail +5), HUD `0x800576E0`: 0 = no sight, bit 0 = lock box, bit 1 = aiming guide, bit 2 = fire straight ahead with no aiming (rockets); bit 0x80 = **SP-M/AUTO** on a missile (`0x8008197C`) | detail |
 | +14 | u16 | Ammo (max) | detail +8 |
 | +16 | u16 | Ammo (current, starts full; match start copies +14 into it again for every usable slot) | detail +8 |
 | +18 | u16 | Solid weapons: ammo price (detail +0xC). Others: energy per shot (detail +0xA), × 3 ÷ 4 with **SP-DEtq** | detail +0xA / +0xC |
 | +20 | u16 | Lock range: the smaller of the FCS class range and the weapon range | FCS, detail +0xE |
 | +22 | u16 | Weapon range | detail +0xE |
 | +24 – +30 | 4×u16 | Lock box: outer w, h, inner w, h (0 for no-lock weapons) | FCS |
-| +32 | u16 | Lock time: FCS class lock time; with **SP-AXL** × 1.15 for solid weapons, × 0.85 for the rest, 1–255; 1 for no-lock weapons | FCS |
+| +32 | u16 | **Lock value** (FCS class field 6); with **SP-AXL** × 1.15 for solid weapons, × 0.85 for the rest, 1–255; 1 for no-lock weapons. Works opposite ways by kind (see "Lock-on" below): guns and cannons, a **time** (bigger = slower); missiles, a **speed** (bigger = faster) | FCS |
 | +34 | u8 | Locks at once: the smaller of FCS max and the weapon's salvo | FCS, detail +0x10 |
 | +35 | u8 | Fire interval (energy weapons with SP-EH get faster) | detail +0x11 |
 | +36 | u8 | Damage flags (0x10 solid, 0x20 energy) | detail +0x12 |
@@ -205,7 +205,7 @@ one tail). Option bits are the option IDs in the mask `0x8003EA70`: 0 SP-MAW, 1 
 
 | Option | Slot field | Maths |
 |---|---|---|
-| SP-AXL (bit 6) | +32 lock time | FCS class lock time × 115 ÷ 100 for **solid** weapons, × 85 ÷ 100 for all others, clamped 1–255. Without it: the FCS value as is. Lock class 4 (no lock) always gets 1. Note the trade-off: solid weapons lock *slower* with SP-AXL if lower = faster; **check in game** |
+| SP-AXL (bit 6) | +32 lock value | FCS class value × 115 ÷ 100 for **solid** weapons, × 85 ÷ 100 for all others, clamped 1–255. Without it: the FCS value as is. Lock class 4 (no lock) always gets 1. **Settled from the lock code (2026-11-17):** missiles (solid) and energy guns lock **faster**; solid guns and cannons (rifles, machine guns, bazookas, grenade launcher…) lock **slower**, about 15%. The in-game text says "Accelerates lock-on time.", so the solid-gun slowdown is likely a side effect of splitting by solid/energy instead of by kind |
 | SP-M/AUTO (bit 2) | +12 | Missiles (kind 1) get bit 0x80 |
 | SP-SAP (bit 4) | +9 (cannons) | Recoil = detail +2 × ⌊4,169,728 ÷ S⌋ × ⌊32,768,000 ÷ W⌋ ÷ 2²⁴, clamped 1–64 (about detail +2 × 8,144,000 ÷ (S × W)). S = legs stability (+0x40), **+800 with SP-SAP**; W = carried weight. So SP-SAP and heavier ACs both cut recoil |
 | SP-DEtq (bit 11) | +18 | Non-solid weapons: energy per shot × 3 ÷ 4 |
@@ -236,6 +236,22 @@ Writes into the block during the fight (outside match start), found by a code sc
 +0x02 bit 0 (see header); radar range +0x1E is set to 5,000 for one draw call and then to 0 at
 `0x800571BC` when player 1's block +0x08 bit 0 is set (purpose unknown, looks like a display
 mode).
+
+## Lock-on (VS engine, static read 2026-11-17)
+
+The selected weapon's fire routine runs every frame and handles its lock. Lock records: 8 × 48
+bytes at player block +0x7C (+0x08 counter, +0x16 flags, bit 1 = in the box, 0x18 = locked).
+
+- **Guns and cannons** (`0x800800E4`, from gun fire `0x80080DF4` and cannon fire `0x80081B18`):
+  while the target is in the lock box, record +0x08 counts up 1 per frame. Locked when it
+  reaches **N = distance × slot +32 ÷ 256 × record +0x04 ÷ 32,768** (`0x80080378`). So a bigger
+  slot +32 means a longer lock, and far targets take longer.
+- **Missiles** (`0x80080638`, from missile fire `0x80081888`): the missile cursor (player block
+  +0x20 / +0x22) turns toward the target by **slot +32 × 3 ÷ 16** per frame (`0x80080AF0`, step
+  helper `0x800136E0`, 4,096 = 360°). Once it sits on the target, record +0x08 counts up; the
+  target is locked when it passes slot +9 = (256 − FCS value) ÷ 8 (`0x80080C48`). A bigger
+  value is faster on both counts. Slot +9 is built from the plain FCS value, so SP-AXL only
+  changes the cursor speed.
 
 ## Camera setup (VS `0x8007DC24` → `0x800876C4`; arena copy `0x8008DFE0`)
 
@@ -272,5 +288,4 @@ camera where it is; it stays put but keeps turning to follow the AC (a screensho
 
 ## Next steps
 
-1. Check in game which way SP-AXL moves lock time for solid weapons.
-2. The tests above (needs the user's PC).
+1. The tests above (needs a way to run the game; the user can't test right now).

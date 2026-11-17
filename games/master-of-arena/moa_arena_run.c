@@ -76,6 +76,13 @@ int moa_run_sources_mark(const char *disc, const struct moa_parts *p,
         if (src[i].arena != 10) start += cnt;
         const unsigned k = first + 4u * cnt;      /* the builds entry, 64 B each */
         src[i].karasawa = 0;
+        if (src[i].arena == 10) {
+            /* Phantasma's builds are in its package, not on the player's
+             * Master of Arena disc. Its KARASAWA users, from the US disc:
+             * Shadow (rank 6) and Dill (rank 16). */
+            src[i].karasawa = (1ull << 5) | (1ull << 15);
+            continue;
+        }
         if (k + 1 >= nent || 2u + 2u * (k + 1) + 1u >= 2048u) { ok = 0; continue; }
         const uint32_t a = (uint32_t)(head[2 + 2 * k] | head[3 + 2 * k] << 8);
         const uint32_t b = (uint32_t)(head[4 + 2 * k] | head[5 + 2 * k] << 8);
@@ -217,7 +224,6 @@ int moa_run_lineup(const struct moa_run_source *src, int nsrc, int phantasma,
         taken[pick] = 1;
         chosen[b] = rest[pick];
     }
-    free(taken);
     qsort(chosen, (size_t)need, sizeof *chosen, cand_cmp);
     /* Loose order below the top: a strict sort put the lowest-scored pick at
      * rank 49 every time, so the first opponent was nearly always one of
@@ -241,19 +247,29 @@ int moa_run_lineup(const struct moa_run_source *src, int nsrc, int phantasma,
             chosen[k + 1] = x;
         }
     }
-    /* KARASAWA users stay in the top 25: each one below swaps with the
-     * lowest non-KARASAWA pick inside the top 25 (a near neighbour). */
+    /* KARASAWA users stay in the top 25. One drawn lower is replaced, in its
+     * place, by the unused non-KARASAWA candidate closest in score (the
+     * easier one on a tie); the KARASAWA user sits this run out. (It used to
+     * swap with the weakest top-25 pick, which put a rank-25-strength
+     * opponent at the bottom: ACE / Teifwald, Champion rank 12, at rank 49
+     * after Libra was drawn there; about 1 run in 10 had such a rank 49.) */
     {
         const int top = need > KARASAWA_TOP ? need - KARASAWA_TOP : 0;   /* chosen[top..] = ranks 25-1 */
         for (int b = 0; b < top && b < need; ++b) {
             if (!cand_karasawa(src, nsrc, &chosen[b])) continue;
-            for (int t = top; t < need; ++t)
-                if (!cand_karasawa(src, nsrc, &chosen[t])) {
-                    struct cand x = chosen[b]; chosen[b] = chosen[t]; chosen[t] = x;
-                    break;
-                }
+            int best = -1, gap = 0;
+            for (int i = 0; i < nrest; ++i) {
+                if (taken[i] || cand_karasawa(src, nsrc, &rest[i])) continue;
+                const int d = rest[i].score - chosen[b].score;
+                const int g = d < 0 ? -2 * d + 1 : 2 * d;            /* ties: the easier one */
+                if (best < 0 || g < gap) { best = i; gap = g; }
+            }
+            if (best < 0) continue;
+            taken[best] = 1;
+            chosen[b] = rest[best];
         }
     }
+    free(taken);
     /* Sub picks go to random slots among the lowest 16. */
     uint8_t is_sub[MOA_RUN_SLOTS] = {0};
     const int low = SUB_LOWEST < need + take_sub ? SUB_LOWEST : need + take_sub;

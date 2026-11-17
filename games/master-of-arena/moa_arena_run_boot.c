@@ -248,6 +248,19 @@ enum { KIND_BUILDS = 0, KIND_NAMES, KIND_REWARDS, KIND_AI };
  * screen stays up until the Arena list opens. Any check failing falls back
  * to the menu presses. */
 #define RUN_D_SCORE          0x8003EA94u  /* byte: 255 on SCENARIO */
+/* What the title does that the direct boot must do too (it never opens):
+ * - 0x8003EA7A "go to the title" (1 in the exe's data) and 0x8003EA7F "no
+ *   logos" are cleared when the title opens. Left at 1, the menu entry takes
+ *   the title branch after a fight instead of the arena results and the hub
+ *   (mode-launch.md section 3): the hang of the first direct-boot test.
+ * - The title's first state sets up the menu screen: 0x800544A0(0x800D5698,
+ *   1), with 0x800D5698 cleared by the title-open routine (display mode, draw
+ *   and display buffers, sound mode). */
+#define RUN_D_TITLE_FLAG     0x8003EA7Au
+#define RUN_D_NO_LOGOS       0x8003EA7Fu
+#define RUN_D_SCREEN_SETUP   0x800544A0u
+#define RUN_D_SIG_SCREEN     0x27BDFFC8u  /* addiu sp,sp,-56 */
+#define RUN_D_SCREEN_MODE    0x800D5698u  /* byte the title clears, then passes */
 #define RUN_D_MODE           0x8003EA2Au  /* engine mode byte: 0 */
 #define RUN_D_PLUS           0x8003EAC8u  /* 8 bytes cleared on SCENARIO */
 #define RUN_D_MAIL_SHOWN     0x8003EA82u  /* "You have new mail." already shown */
@@ -474,6 +487,7 @@ static int run_direct_read_save(uint8_t out[RUN_D_SAVE_BYTES])
 static int run_direct_code_ok(void)
 {
     return psx_mod_read_word(RUN_D_PICTURES) == RUN_D_SIG_PICTURES &&
+           psx_mod_read_word(RUN_D_SCREEN_SETUP) == RUN_D_SIG_SCREEN &&
            psx_mod_read_word(RUN_D_LOAD_N) == RUN_D_SIG_LOAD_N &&
            psx_mod_read_word(RUN_D_LOAD_COPY) == RUN_D_SIG_LOAD_COPY &&
            psx_mod_read_word(RUN_D_HUB_OPEN) == RUN_D_SIG_HUB_OPEN &&
@@ -505,6 +519,11 @@ static int run_direct_boot(struct CPUState *cpu)
         psx_mod_write_word(run_direct_buf + i, (uint32_t)save[i] | (uint32_t)save[i + 1] << 8 |
                                                (uint32_t)save[i + 2] << 16 | (uint32_t)save[i + 3] << 24);
     const uint32_t ra = cpu->gpr[31], buf = run_direct_buf;
+    /* 0. What the title itself would have done (see RUN_D_TITLE_FLAG). */
+    psx_mod_write_byte(RUN_D_TITLE_FLAG, 0);
+    psx_mod_write_byte(RUN_D_NO_LOGOS, 0);
+    psx_mod_write_byte(RUN_D_SCREEN_MODE, 0);
+    (void)psx_mod_call_guest(cpu, RUN_D_SCREEN_SETUP, ra, 0, 1, 0, 0);
     /* 1. SCENARIO MODE */
     psx_mod_write_byte(RUN_D_SCORE, 255);
     psx_mod_write_byte(RUN_D_MODE, 0);
@@ -539,7 +558,8 @@ static int run_direct_boot(struct CPUState *cpu)
     run_direct_press = 1;
     run_stage = STAGE_DIRECT;
     psx_mod_counter_add("moa.run.direct_boot", 1);
-    run_log("direct: save loaded, hub opened on Arena (frame %u)", (unsigned)run_frames);
+    run_log("direct: title flags cleared, screen set up (0x800544A0(0, 1)), save loaded, "
+            "hub opened on Arena (frame %u)", (unsigned)run_frames);
     return 1;
 }
 
@@ -548,6 +568,7 @@ static int run_title_open_filter(struct CPUState *cpu, uint32_t address)
     if (!run_on() || psx_mod_read_word(address) != RUN_SIG_TITLE_OPEN) return 0;
     if (run_at_hub && !run_autopilot) {       /* the player quit to the title */
         psx_mod_counter_add("moa.run.return_from_title", 1);
+        run_log("title: opened while at the hub (quit to the title), back to the launcher");
         psx_mod_request_return_to_launcher();
         return 0;
     }

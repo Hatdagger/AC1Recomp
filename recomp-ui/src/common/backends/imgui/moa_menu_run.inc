@@ -13,7 +13,11 @@ static bool g_run_over = false;       /* the last run was lost: Retry */
 static std::string g_run_status;
 static char g_run_pilot[17] = "";
 static char g_run_ac[17] = "";             /* optional: blank is fine */
-enum { R_NEW = 0, R_CONTINUE, R_PILOT, R_AC, R_SEED, R_ROWS };
+enum { R_NEW = 0, R_CONTINUE, R_PILOT, R_AC, R_SEED, R_FAST, R_ROWS };
+/* FAST BOOT (TEST): the game's direct boot (no title, LOAD GAME or card
+ * screens; moa_arena_run_boot.c) instead of the menu presses. Off by default
+ * and not kept between launcher sessions while it is being tested. */
+static bool g_run_fast = false;
 
 /* The one-time notice before the first run (kept from the demo for a feature
  * to come): once OK is pressed a marker file beside memory card 1 keeps it
@@ -67,6 +71,7 @@ static bool g_run_reread = false;
 static void set_arena_run(bool on, const std::string& path, const std::string& card = std::string()) {
     set_env("PSX_MOA_ARENA_RUN", on ? "1" : "0");
     set_env("PSX_MOA_RUN_FILE", on ? path.c_str() : "");
+    set_env("PSX_MOA_RUN_DIRECT", on && g_run_fast ? "1" : "0");
     set_env("PSX_MEMCARD1_SESSION", on ? card.c_str() : "");
     /* The garage's part models: the run draws its restock pictures from them. */
     set_env("PSX_MOA_MODELS_DIR", on ? asset("acmodels").c_str() : "");
@@ -182,7 +187,7 @@ static void draw_run_page(LauncherModel* m, const Gfx& g, const Input& in) {
     if (!g_name_edit) move_cursor(PAGE_RUN, R_ROWS, in, R_ROWS);
     int& cur = g_state.cursor[PAGE_RUN];
     header(g, "ROGUE ARENA", "49 OPPONENTS  ONE LIFE");
-    panel(g, 24.0f, 76.0f, 592.0f, 166.0f, "SELECT");
+    panel(g, 24.0f, 76.0f, 592.0f, 194.0f, "SELECT");
     char seed[17];
     moa_run_seed_text(g_run_seed, seed);
     char cont[48] = "";
@@ -198,6 +203,7 @@ static void draw_run_page(LauncherModel* m, const Gfx& g, const Input& in) {
         { "PILOT NAME", g_name_edit == 2 ? pilot : (g_run_pilot[0] ? upper(g_run_pilot) : "REQUIRED"), true },
         { "AC NAME", g_name_edit == 1 ? ac : (g_run_ac[0] ? upper(g_run_ac) : "OPTIONAL"), true },
         { "SEED", seed, true },
+        { "FAST BOOT (TEST)", g_run_fast ? "ON" : "OFF", true },
     };
     int activate = -1;
     for (int i = 0; i < R_ROWS; ++i) {
@@ -208,20 +214,23 @@ static void draw_run_page(LauncherModel* m, const Gfx& g, const Input& in) {
         if (hovered && !g_name_edit && g_run_notice_for < 0) cur = i;
     }
 
-    panel(g, 24.0f, 248.0f, 592.0f, 168.0f, "RULES");
-    text(g, 38.0f, 264.0f, 11.0f, kText,
+    panel(g, 24.0f, 276.0f, 592.0f, 160.0f, "RULES");
+    text(g, 38.0f, 292.0f, 11.0f, kText,
          "A random legal AC and 49 opponents from every arena, easiest first; you "
          "start at the bottom. Each win pays 1 P for the shop, and wins 1, 3, 6, 9, "
          "12, 18 and 24 give a prize pick. No leaving a fight; one loss ends the "
          "run. It plays from its own memory card; your saves are not touched.", 560.0f);
-    text(g, 38.0f, 308.0f, 9.0f, kDim, kRunNotice, 560.0f);
-    text(g, 38.0f, 340.0f, 11.0f, kDim, "PROJECT PHANTASMA");
-    text(g, 220.0f, 340.0f, 11.0f, phantasma_installed(m) ? kOn : kDim,
+    text(g, 38.0f, 336.0f, 9.0f, kDim, kRunNotice, 560.0f);
+    text(g, 38.0f, 368.0f, 11.0f, kDim, "PROJECT PHANTASMA");
+    text(g, 220.0f, 368.0f, 11.0f, phantasma_installed(m) ? kOn : kDim,
          phantasma_installed(m) ? "ITS OPPONENTS ARE IN THE DRAW" : "NOT INSTALLED (SEE EXTRAS)");
     if (!g_name_edit && cur == R_SEED)
-        text(g, 38.0f, 362.0f, 10.0f, kDim,
+        text(g, 38.0f, 390.0f, 10.0f, kDim,
              "Select for a new random seed. The same seed always makes the same AC and lineup.", 560.0f);
-    if (!g_run_status.empty()) text(g, 38.0f, 384.0f, 11.0f, kWarn, g_run_status.c_str(), 560.0f);
+    if (!g_name_edit && cur == R_FAST)
+        text(g, 38.0f, 390.0f, 10.0f, kDim,
+             "Test: skip the title and load screens and go straight to the Arena list.", 560.0f);
+    if (!g_run_status.empty()) text(g, 38.0f, 412.0f, 11.0f, kWarn, g_run_status.c_str(), 560.0f);
     if (g_run_notice_for >= 0) {
         panel(g, 120.0f, 150.0f, 400.0f, 130.0f, "ROGUE ARENA");
         text(g, 134.0f, 168.0f, 11.0f, kText, kRunNotice, 372.0f);
@@ -258,6 +267,9 @@ static void draw_run_page(LauncherModel* m, const Gfx& g, const Input& in) {
     case R_SEED:
         g_run_seed = moa_run_next(&g_run_seed);
         g_run_seed_set = true;
+        break;
+    case R_FAST:
+        g_run_fast = !g_run_fast;
         break;
     }
 }

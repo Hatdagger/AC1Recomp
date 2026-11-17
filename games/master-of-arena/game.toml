@@ -68,6 +68,13 @@ mod_function_entry_funcs = [
     "0x800AC4B4", "0x800BBEA8", "0x80056414", "0x800BC420",
     # Arena Run: the run's opponents (per-opponent loaders, CD queue check)
     "0x800BDE88", "0x800586A0", "0x800589DC",
+    # Rogue Arena boot trace (moa_boot_trace.c, diagnostic): menu routines
+    "0x800544A0", "0x80057CB0", "0x80057ED4", "0x80057B28", "0x80057554",
+    "0x80056DBC", "0x80056564", "0x800552C0", "0x800AC8E8", "0x80059554",
+    "0x800AC93C", "0x80072E54", "0x800B6A80", "0x80099098", "0x800941F4",
+    "0x80093BC4", "0x800A2318", "0x800A2020", "0x800631FC", "0x800BA854",
+    "0x800C566C", "0x800B69F8", "0x8007C6B0", "0x80090FD8", "0x80074DC0",
+    "0x800633A4", "0x800BA64C", "0x800C0E7C", "0x800822B0",
 ]
 
 # Instruction hooks of the game's plugins (psxrecomp/runtime/src/

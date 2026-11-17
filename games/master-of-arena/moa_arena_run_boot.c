@@ -42,6 +42,7 @@
 #include "moa_ac_view.h"
 #include "moa_screen.h"
 #include "moa_run_record.h"
+#include "moa_boot_trace.h"
 #include "moa_card.h"
 
 #include <time.h>
@@ -341,6 +342,8 @@ static void run_log(const char *fmt, ...)
     snprintf(name, sizeof name, "%s.log", path);
     FILE *f = fopen(name, "a");
     if (!f) return;
+    extern uint64_t s_frame_count;
+    fprintf(f, "[%llu] ", (unsigned long long)s_frame_count);   /* host frame: shows delays */
     va_list ap;
     va_start(ap, fmt);
     vfprintf(f, fmt, ap);
@@ -1246,10 +1249,23 @@ static void run_prize_take(void)
 static void run_prize_frame(void)
 {
     if (!run_prize_stage) {
-        if (!run_at_hub || run_autopilot || run_fade || !run_state_ok || run_state.run.over ||
-            run_show_on || run_show_rank || !run_prize_where || psx_mod_read_byte(RUN_FIGHT_DONE) ||
-            psx_mod_read_word(k_run_tables[0].addr) != 0x302D4448u)
+        /* While a prize is due, log what it waits for (once per change), so
+         * a late prize screen shows which condition held it back. */
+        static const char *waits;
+        const char *why =
+            !run_state_ok || run_state.run.over ? NULL :
+            !run_at_hub ? "not at the hub" : run_autopilot ? "boot autopilot" :
+            run_fade ? "loading screen fade" : run_show_on || run_show_rank ? "restock screen" :
+            !run_prize_where ? "not at the arena screen or hub" :
+            psx_mod_read_byte(RUN_FIGHT_DONE) ? "fight result not applied" :
+            psx_mod_read_word(k_run_tables[0].addr) != 0x302D4448u ? "part tables not in memory" : "";
+        if (!why || (why[0] && run_prize_due() < 0)) { waits = NULL; return; }
+        if (why[0]) {
+            if (why != waits) run_log("prize: due, waiting (%s)", why);
+            waits = why;
             return;
+        }
+        waits = NULL;
         const int m = run_prize_due();
         if (m >= 0) run_prize_open(m);
         return;
@@ -2034,6 +2050,7 @@ static void run_frame_hook(void)
 
 PSX_MOD_CONSTRUCTOR(moa_arena_run_boot_register)
 {
+    moa_btrace_register();                   /* first: see moa_boot_trace.h */
     (void)psx_game_register_offline_function_entry(RUN_MENU_ENTRY, run_menu_entry);
     (void)psx_game_register_offline_function_entry(RUN_MENU_INPUT_A, run_menu_input_entry);
     (void)psx_game_register_offline_function_entry(RUN_MENU_INPUT_B, run_menu_input_entry);

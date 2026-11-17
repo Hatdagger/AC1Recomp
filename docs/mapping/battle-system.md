@@ -65,8 +65,8 @@ with the same layout shifted (+0x64 save data, +0x60 battle data).
 
 ## Order of work
 
-1. **AC object (376 bytes)** — AP first (anchored), then position, velocity, facing, heat/energy,
-   on-ground/boosting state, lock target. Everything else in combat reads these.
+1. **AC object (376 bytes)** — first pass done 2026-11-17 (table below). Open: heat, the
+   animation records, +0x118, the two extra callbacks. Everything else in combat reads these.
 2. **Damage path** — what lowers AP: hit test → damage formula (weapon attack vs shell/energy
    defence) → AP write. Ties the part tables' defence numbers to combat.
 3. **Weapons and projectiles** — fire routine, the projectile list (likely another fixed array),
@@ -78,17 +78,71 @@ with the same layout shifted (+0x64 save data, +0x60 battle data).
 
 ## AC object fields
 
-| Offset | Size | Meaning | Proven by | Engine |
-|---|---|---|---|---|
-| +0x45 | u8 | State: 0 standing, 1 walking, 64 jump take-off, 65 rising, 75 falling, 97 landing | Armored-CoreR (measured) | VS |
-| +0x08 / +0x0A / +0x0C | s16 | Position x / y / z (y = height; start: P1 (-3000,-1251,-3000), P2 (5000,-1251,-3000)) | moved with the pad, teleport test | VS |
-| +0x12 | u16 | Facing, 4096 = full turn (Left/Right change it) | pad test | VS |
-| +0x20 / +0x24 | s16 | Last step's x / z | pad test | VS |
-| +0x3A | u16 | Hit stagger, set on hits with flag 0x40 (from the hit's +2, halved unless player block +0x284 bit 0) | damage code 0x800796E0 | VS |
-| +0x3C / +0x3E | u16 | Hit flash: +0x3C = 100, +0x3E = damage/4, on hits with flag 0x80 | damage code 0x800796F8 | VS |
-| +0x64 | u32 | On-hit callback, called after the AP write | damage code 0x80079748 | VS |
-| +0x168 | u16 | **AP × 4** (default AC 33,536 = 8,384 AP) | write trace on a hit | VS |
-| +0x16A | u16 | Max AP × 4 | read | VS |
+Measured 2026-11-17 in VS (FDAT 209) by snapshotting both objects while doing one thing
+at a time (stand, walk, turn, strafe, boost, fire, get hit), then naming fields from the code.
+"snap" = seen changing in the snapshots; `?` = unproven.
+
+| Offset | Size | Meaning | Proven by |
+|---|---|---|---|
+| +0x00 / +0x04 | u32 | List links (previous / next object; P1: 0x801D4B68 / 0x801D4B10) `?` | read |
+| +0x08 / +0x0A / +0x0C | s16 | Position x / y / z (y = height, **negative = up**; start P1 (−3000, −1251, −3000), P2 (5000, −1251, −3000)) | pad + teleport |
+| +0x12 | u16 | Facing, 4096 = full turn (0 = +z, 3072 ≈ +x) | pad test |
+| +0x20 / +0x22 / +0x24 | s16 | Last step's x / y / z | snap |
+| +0x28 / +0x2A | u16 | 100 / 212 (+0x2A = body height, same value as +0x74) `?` | read, `0x8007D2D8` |
+| +0x2C | s16 | **Floor height below the AC** (−1250 on the ground; 32767 when nothing found below) | snap (high jump) |
+| +0x30 | u16 | Floor polygon / material under the AC (87 on the VS floor, −1 = none) `?` | snap |
+| +0x32 | u16 | Bit 2: can't be hit by the blade line test (set at creation from the model) | code `0x80078A38` |
+| +0x36 | u16 | Flags. Starts 1. **Bit 0x10 = busy** (set during a blade swing and during hit stagger; blocks a new swing) | code + snap |
+| +0x38 | u16 | Stat flags from match start (SP-JAM bit 3) | data chat |
+| +0x3A | u16 | Hit stagger, set on hits with flag 0x40 (from the hit's +2, halved unless player block +0x284 bit 0) | `0x800796E0` |
+| +0x3C / +0x3E | u16 | Hit flash: +0x3C = 100, +0x3E = damage/4, on hits with flag 0x80 | `0x800796F8` |
+| +0x43 | u8 | 5 from match start `?` | data chat |
+| +0x45 | u8 | **State** (list below) | snap + code |
+| +0x46 | u8 | **Movement class**: 0 still, 2 turning on the spot, 0x10 moving on the ground, **0xC0 airborne**, 0x80 staggered | snap |
+| +0x48 | u8 | Firing recoil / animation counter (0 → 5 on a shot) `?` | snap |
+| +0x49 | u8 | 255 during the fight (the match timer only runs while P1's is 255) | timer code |
+| +0x4A | u8 | State when the current animation started (the state setter writes both +0x45 and +0x4A) | `0x80080060` |
+| +0x58 | u32 | **Animation-finished callback**, called with (object, +0x4A); picks the next state. ACs: `0x8008389C` | `0x8007F088` |
+| +0x5C / +0x60 | u32 | Two more callbacks (ACs: `0x80085180`, `0x80085668`) `?` | read |
+| +0x64 | u32 | On-hit callback after the AP write. ACs: `0x80082430` (sets the stagger states 0x80 / 0x81) | `0x80079748` |
+| +0x68 | u32 | Pointer, 0x801A2E10 for P1 (model data `?`) | read |
+| +0x6C … +0x6F | | Animation player (`0x80053F50(obj + 0x6C, obj + 0xD4)` each state change) | `0x8008000C` |
+| +0x70 | u8 | 2 from match start `?` | data chat |
+| +0x72 | u16 | **Hit cylinder radius** (75) | `0x80078A50` |
+| +0x74 | u16 | **Hit cylinder height** (212); centre = y − height/2 | `0x80078A5C`, `0x800832E0` |
+| +0x76 | s16 | **Frame counter of the current state** (resets to 0 on every state change; blade hit window = 7–11) | snap + blade code |
+| +0x8C … +0xCA | | Animation channel records (start / end frame pairs, e.g. 50/51, 9888/9889) `?` | snap |
+| +0xD4 / +0xD6 / +0xD8 | s16 | **Velocity x / y / z** in 1/64 units per step (walk ≈ 960 x; jump −3264 y up, +5056 falling; knock-back from a rifle hit −448 / −64). Not cleared when the AC stops | snap |
+| +0x118 | s16 | Counts down by about 13 a second from 0 (set 0 at match start) `?` | snap |
+| +0x150 | u16 | 15 while rising on the booster; cleared at swing start `?` | snap |
+| +0x152 … +0x158 | | Two (id, value) pairs, e.g. (0xA0B4, 140), changed by firing and boost-dashing: sound / effect handles `?` | snap |
+| +0x164 | u32 | 6 while rising on the booster; cleared at swing start `?` | snap |
+| +0x168 | u16 | **AP × 4** (default AC 33,536 = 8,384 AP) | write trace on a hit |
+| +0x16A | u16 | Max AP × 4 | read |
+| +0x16C | u16 | Stability × 25 ÷ 4 (default AC 237) | data chat + read |
+| +0x16E | u16 | Stealth | data chat |
+
+**States (+0x45)** — seen in snapshots or written by the code:
+
+| Value | State | Source |
+|---|---|---|
+| 0 | standing | snap |
+| 1 | walking | snap |
+| 5 | strafing (R1) | snap |
+| 9 | turning on the spot (Left) | snap |
+| 1 … 8 | ground movement group (jump table at `0x80085730`) | code |
+| 0x20 / 0x21 | blade swing, ground / airborne (+0x46 = 0xC0) | blade code |
+| 0x22 / 0x23 | blade / action states set by `0x80081B18` and `0x800828BC` `?` | code |
+| 0x30 … 0x37 | set by the animation-finished handler `0x8008389C` from the animation byte +0x6C, likely landing / recovery variants `?` | code |
+| 64 (0x40) | jump take-off (Cross on the ground) | snap |
+| 65 (0x41) | rising on the booster | snap |
+| 0x41 … 0x48 | airborne group (jump table at `0x8007FCD8`) | code |
+| 74 / 75 (0x4A / 0x4B) | falling | snap + code |
+| 96 / 97 (0x60 / 0x61) | landing | code, Armored-CoreR |
+| 0x80 / 0x81 | **hit stagger** (set by the on-hit callback `0x80082430`) | snap + code |
+
+State setter: **`0x8007FFF0(object, animation, state)`**: starts the animation, scales the
+velocity ×64, writes +0x45 and +0x4A.
 
 VS engine objects: P1 0x801D4BC0, P2 0x801D4D38 (player block +0x398 points to them).
 Arena engine (codes): P1 AP at 0x801D8D70 = an object at 0x801D8C08 if the layout matches.
@@ -97,8 +151,15 @@ Arena engine (codes): P1 AP at 0x801D8D70 = an object at 0x801D8C08 if the layou
 
 | Offset | Size | Meaning | Proven by |
 |---|---|---|---|
+| +0x000 / +0x002 | u16 | Button word copies (match +0x04 / +0x06 in the snapshots) `?` | snap |
 | +0x004 / +0x006 | u16 | Button word / previous (read by the AC code) | repo |
-| +0x016 | u16 | Booster / energy reserve | code (infinite booster) |
+| +0x00A | u16 | 5 after the first jump / landing (set in `0x8008389C`) `?` | snap + code |
+| +0x016 | u16 | Booster / energy reserve (28,000 full; 18,844 → 6,963 while boosting) | code + snap |
+| +0x030 … +0x03F | | Blade line from the previous swing frame | blade code |
+| +0x07C | u32 | **Lock target**: pointer to the locked AC object (P2's 0x801D4D38 when P2 is in front; 0 when lost). Also the blade lunge target | snap + blade code |
+| +0x080 … +0x0A2 | | Lock data: +0x86 / +0x9A count up while locked (lock timer `?`), +0xA2 = 1 − that, +0x8C / +0x9C = target x | snap |
+| +0x24C | u16 | "HIT" HUD blink: 40 on landing a hit on the other AC, counts down | code `0x8008821C`, `0x8005699C` |
+| +0x24E | u16 | Set (37) when this AC is hit, counts down (damage indicator `?`) | snap |
 | +0x250 … +0x393 | 324 bytes | Compiled stat block (weapon slots, ammo, range, lock values…) — **data chat's lane, see `stat-block.md`**; writes found here get handed over in README.md | — |
 | +0x398 | u32 | Pointer to AC object | repo |
 

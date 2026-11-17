@@ -42,6 +42,13 @@
 #include "moa_ac_view.h"
 #include "moa_screen.h"
 #include "moa_run_record.h"
+#include "moa_card.h"
+
+#include <time.h>
+#include <sys/stat.h>
+#if defined(_WIN32)
+#include <direct.h>
+#endif
 
 /* Shared with AI Battle (see moa_ai_battle.c for how each was found). */
 #define RUN_MENU_ENTRY       0x800A69C8u  /* menu module entry */
@@ -335,6 +342,9 @@ static uint8_t run_arena_at_builds = 0xFF, run_arena_at_ai = 0xFF;
 
 static void run_prize_reset(void);
 static void run_reconcile(void);
+/* Ghosts beaten in a fight, saved as cards once the arena screen is back. */
+static uint8_t run_ghost_beaten[8];
+static unsigned run_ghost_beaten_n;
 
 /* Sessions run in one process, so nothing may carry over from the last one
  * (a stale "at the hub" kept a Retry from booting). The launcher numbers each
@@ -365,6 +375,7 @@ static void run_check_session(void)
     run_direct = run_direct_press = 0;
     run_prize_reset();
     moa_rec_reset();
+    run_ghost_beaten_n = 0;
 }
 static const char *run_file_path(void) { return getenv("PSX_MOA_RUN_FILE"); }
 
@@ -1342,6 +1353,12 @@ static int run_book_win(uint8_t who, const char *where)
     if (!moa_run_win(&run_state)) return 0;
     *word |= bit;
     run_win_screen++;
+    {   /* a ghost: its card is saved at the arena screen (run_ghost_save) */
+        const struct moa_run_pick p = run_state.lineup.slot[MOA_RUN_SLOTS - 1u - who];
+        if (p.arena == MOA_RUN_GHOST && p.rank < MOA_RUN_SLOTS &&
+            run_ghost_beaten_n < sizeof run_ghost_beaten)
+            run_ghost_beaten[run_ghost_beaten_n++] = who;
+    }
     (void)moa_run_save(run_file_path(), &run_state);
     psx_mod_counter_add("moa.run.win", 1);
     run_log("win: entry %u booked (%s), wins %u, rank %u, P %u", who, where,
@@ -1839,6 +1856,96 @@ static void run_sampler_entry(struct CPUState *cpu, uint32_t address)
     }
 }
 
+/* ---- defeated ghosts ----------------------------------------------------------
+ *
+ * A ghost the player beats is saved as an AI card (the Raven card PNG that AI
+ * Battle loads: its build, names, the run's paint and the AI it flew) in
+ * "Rogue Arena Ghosts/Defeated" beside the memory card, one card per ghost
+ * (seed + the attempt it came from), and every defeat is one line of
+ * defeated.csv there: when, by which attempt, at which rank. Kept for a
+ * later look back at the ghosts beaten (planned for reaching rank 1). */
+static void run_mkdir(const char *dir)
+{
+#if defined(_WIN32)
+    (void)_mkdir(dir);
+#else
+    (void)mkdir(dir, 0755);
+#endif
+}
+
+static void run_ghost_save(uint8_t who)
+{
+    const char *run = run_file_path();
+    if (!run || !run[0]) return;
+    const struct moa_run_pick p = run_state.lineup.slot[MOA_RUN_SLOTS - 1u - who];
+    if (p.arena != MOA_RUN_GHOST || p.rank >= MOA_RUN_SLOTS) return;
+    const struct moa_run_ghost *g = &run_state.lineup.ghost[p.rank];
+    static struct moa_card c;
+    memset(&c, 0, sizeof c);
+    c.format = 4;
+    memcpy(c.rec, g->rec, sizeof c.rec);
+    snprintf(c.pilot, sizeof c.pilot, "%s", g->pilot);
+    snprintf(c.ac, sizeof c.ac, "%s", g->ac[0] ? g->ac : "NEW AC");
+    moa_run_paint(run_state.lineup.seed, g->attempt, c.paint);
+    uint8_t ai[36];
+    const uint32_t ix = run_index();
+    if (ix && g->ai_from.arena != MOA_RUN_PLAYER && g->ai_from.arena != MOA_RUN_GHOST &&
+        run_record(ix, g->ai_from, KIND_AI, sizeof ai, ai)) {
+        c.has_ai = 1;
+        c.ai_preset = MOA_AI_PRESET_CUSTOM;
+        for (int i = 0; i < 36; i++) { c.ai_set[i] = 1; c.ai_raw[i] = ai[i]; }
+    }
+    /* <folder of the run file>/Rogue Arena Ghosts/Defeated/ */
+    char dir[1100], card[1300], csv[1300], name[18], seed[17];
+    snprintf(dir, sizeof dir, "%s", run);
+    char *cut = NULL;
+    for (char *q = dir; *q; q++) if (*q == '/' || *q == '\\') cut = q;
+    if (cut) cut[1] = '\0'; else dir[0] = '\0';
+    strncat(dir, "Rogue Arena Ghosts", sizeof dir - strlen(dir) - 1);
+    run_mkdir(dir);
+    strncat(dir, "/Defeated", sizeof dir - strlen(dir) - 1);
+    run_mkdir(dir);
+    unsigned k = 0;
+    for (const char *q = c.pilot; *q && k + 1 < sizeof name; q++)
+        name[k++] = (*q >= 'a' && *q <= 'z') || (*q >= 'A' && *q <= 'Z') || (*q >= '0' && *q <= '9') ? *q : '_';
+    name[k] = 0;
+    moa_run_seed_text(run_state.lineup.seed, seed);
+    snprintf(card, sizeof card, "%s/%s-A%02u-%s.png", dir, seed, (unsigned)g->attempt + 1u, name[0] ? name : "GHOST");
+    const int ok = moa_card_write_png(&c, card);
+    snprintf(csv, sizeof csv, "%s/defeated.csv", dir);
+    FILE *t = fopen(csv, "r");
+    const int fresh = !t;
+    if (t) fclose(t);
+    FILE *f = fopen(csv, "a");
+    if (f) {
+        if (fresh) fputs("card,seed,ghost_attempt,pilot,ac,rank,defeated_by_attempt,date\n", f);
+        char when[32] = "";
+        const time_t now = time(NULL);
+        const struct tm *lt = localtime(&now);
+        if (lt) strftime(when, sizeof when, "%Y-%m-%d %H:%M", lt);
+        const char *base = card + strlen(dir) + 1;
+        char qp[40], qa[40];                    /* names quoted, '"' doubled */
+        const char *src[2] = { c.pilot, c.ac };
+        char *dst[2] = { qp, qa };
+        for (int n = 0; n < 2; n++) {
+            unsigned o = 0;
+            dst[n][o++] = '"';
+            for (const char *q = src[n]; *q && o + 3 < sizeof qp; q++) {
+                if (*q == '"') dst[n][o++] = '"';
+                dst[n][o++] = *q;
+            }
+            dst[n][o++] = '"';
+            dst[n][o] = 0;
+        }
+        fprintf(f, "%s,%s,%u,%s,%s,%u,%u,%s\n", base, seed, (unsigned)g->attempt + 1u, qp, qa,
+                (unsigned)who + 1u, (unsigned)run_state.run.attempt + 1u, when);
+        fclose(f);
+    }
+    psx_mod_counter_add(ok ? "moa.run.ghost_card" : "moa.run.ghost_card_fail", 1);
+    run_log("ghost beaten at rank %u: %s %s (attempt %u) -> %s%s", (unsigned)who + 1u, c.pilot, c.ac,
+            (unsigned)g->attempt + 1u, card, ok ? "" : " (not written)");
+}
+
 static void run_frame_hook(void)
 {
     run_check_session();
@@ -1849,6 +1956,8 @@ static void run_frame_hook(void)
         psx_mod_counter_add("moa.run.arena_unlocked", 1);
     }
     run_show_frame();
+    if (run_ghost_beaten_n && run_prize_where && !psx_mod_read_byte(RUN_FIGHT_DONE))
+        run_ghost_save(run_ghost_beaten[--run_ghost_beaten_n]);
     run_prize_frame();
     if (run_loss_wait) run_loss_wait--;      /* the return itself is made in a guest hook */
     if (run_autopilot && run_stage == STAGE_BACK) {

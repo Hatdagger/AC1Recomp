@@ -58,9 +58,13 @@ Data chat → battle chat:
 - **Camera record** (56 bytes; VS `0x801D6EF8` P1 / `0x801D6F30` P2, pointer player block
   +0x39C; arena `0x801E29C8`): +0x0A distance 650, +0x0C height 40, +0x0E smoothing shift 2,
   +0x2C / +0x2E angles, +0x01/+0x02 joints and +0x04 hidden-joint list for the alternate
-  camera (stat +0x02 bit 0, START + △ + □ while START is held, `0x8007CC70`). Chase camera
+  camera (stat +0x02 bit 0 = first-person cockpit view, START + △ + □, tested; `0x8007CC70`). Chase camera
   `0x800878FC`, alternate `0x80087B90`. START + ○ + ✕ sets camera +0x08 bit 0: tested, the
   camera stays in place and keeps following the AC (screenshot camera). Details in `stat-block.md`, "Camera setup".
+- Player block **+0x210 / +0x212** (from the selected slot +7 / +8) are a turn set that depends
+  on the weapon: hand weapons always give 11 / 31, back weapons give values from the legs'
+  second turn figure (legs +0x3C) and carried weight (formulas in `stat-block.md`, slot +7/+8).
+  Worth checking how the engine uses them next to +0x20C / +0x20E (normal turning).
 
 Launch chat → battle chat:
 - FDAT **211 is a fifth engine, the VS replay** (entry 0x80051FA4). When replay is picked the

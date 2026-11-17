@@ -65,8 +65,8 @@ index is the part's ID in cards, the garage struct and arena opponent records.
 | Back (radars) | +0x2C / +0x2E | u16 | Is a radar (1) / radar range | disc: set only on RXA/RZ units |
 | Back (radars) | +0x30 | 2×u8 | Small values 0–2, same pattern as heads' +0x32 | disc |
 | Back | +0x32 | u16 | Padding (always 0) | disc |
-| Legs | +0x3C | u16 | Turn acceleration, 2nd set: ×0.8 on two-legged, ×1.0 on four legs / caterpillars | disc |
-| Legs | +0x3E | u16 | Turn speed, 2nd set: 51 (two-legged) / 64 (four legs, caterpillars) | disc |
+| Legs | +0x3C | u16 | **Turning with a back weapon selected** (×0.8 of +0x38 on two-legged, ×1.0 on four legs / caterpillars). The compile routine turns it into back-weapon slots +7 and +8 (`0x800A95D4`, `0x800A964C`), same formulas as stat +0x0C / +0x0D; see `stat-block.md` | compile |
+| Legs | +0x3E | u16 | 51 (two-legged) / 64 (four legs, caterpillars). **Never read**: back slot +8 reads +0x3C a second time where the matching stat +0x0D reads +0x3A, so +0x3E was probably meant for it (a developer slip) | compile |
 | Legs | +0x42 | u16 | Can fit a booster (1); 0 on every caterpillar | disc |
 | Legs | +0x46 | u16 | Padding (always 0) | disc |
 | Core | +0x32 | u16 | Arm load limit (arms + hand + blade; weapon arms count alone) | VS START check |
@@ -137,8 +137,6 @@ or one read of the code that uses it.
 | Head | +0x32–0x35 | four bytes, each 0–3 | Head system features (AC1 heads list map, noise canceler, bio sensor…) |
 | Back radars | +0x30–0x31 | two bytes, 0–2, same style as the head bytes | Radar features (missile/AC display?) |
 | Core | +0x34–0x35 | two bytes: XCA-00 48/48, XCL-01 48/64, XCH-01 48/32, XXA-S0 50/50, XXL-D0 32/20 | Anti-missile / interceptor figures? |
-| Legs | +0x3C, +0x3E | second turn set (two-legged lose 20%) | Turning in the air or while boosting; four legs hover, caterpillars don't jump |
-| Legs | +0x3A | 64 on every leg | Code reads it as top turn speed; the real limit may come from +0x3E |
 | Blade | +0x2E, +0x32 | 39 always; 11–42 with attack | Reach or lunge figures |
 | FCS | +0x2D | 0–4 per FCS | Lock-on display or targeting style |
 | Weapon detail | +0x02 | rockets 64, missiles 4, cannons 0–64, weapon arms 9–10 | Recoil (SP-SAP "decreases cannon recoil" acts on weapon records) |

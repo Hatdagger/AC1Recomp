@@ -31,7 +31,7 @@ Part records named below are the menu tables in `parts-tables.md`. "Garage" = lo
 | Off | Size | Meaning | Source |
 |---|---|---|---|
 | +0x00 | u16 | **Match time limit in seconds**: 120 or 300 or 0 (no limit), from options record +0x34 (`0x8004B59C`: 0 → 120, 1 → 300, else 0). VS setup (`0x80055C48`) takes the larger of the two players' values × 22 as the time left in steps at `0x80097EB4` (120 → 2,640, matches the battle chat's measured timer); the clock only runs while it's ≥ 2 | options |
-| +0x02 | u8 | Flags: bit 0 cleared, bits 1 and 2 set, **bit 3 = legs can fit a booster** (legs +0x42). **Bit 0 = alternate camera** (likely a cockpit view): set at `0x8007CC70` while START is held when the pad reads exactly START + △ + □ (`0x9008`); cleared at `0x8007CA88` (START held), `0x80082920`, `0x8008FB68`. With it set the camera (`0x80087B90`) sits at model joints +0x5A / +0x5B and the joints in list +0x6E are hidden (see "Camera setup") — **confirm by test**. **Bit 5** comes from options record +0x35 (default 1; `0x800B6AE4`), meaning unknown. Bit 1 read at `0x80087760`, bit 4 at `0x80087EB8` | |
+| +0x02 | u8 | Flags: bit 0 cleared, bits 1 and 2 set, **bit 3 = legs can fit a booster** (legs +0x42). **Bit 0 = first-person (cockpit) camera**, tested in game: set at `0x8007CC70` while START is held when the pad reads exactly START + △ + □ (`0x9008`); cleared at `0x8007CA88` (START held), `0x80082920`, `0x8008FB68`. With it set the camera (`0x80087B90`) sits at model joints +0x5A / +0x5B and the joints in list +0x6E are hidden (see "Camera setup"). **Bit 5** comes from options record +0x35 (default 1; `0x800B6AE4`), meaning unknown. Bit 1 read at `0x80087760`, bit 4 at `0x80087EB8` | |
 | +0x03 | u8 | **Human PLUS level** (`0x8003EAC8`) | |
 | +0x04 | | no access found in the menus, VS or arena engines: padding | |
 | +0x05 | u8 | **Stage number** (confirmed by the launch chat: at VS START it is byte `0x800D5800[map − 1]`, map = `0x8003EA81` (1–10), written by `0x800B348C`). Set by the menus in both players' blocks (same value, e.g. `0x800C097C` from a table indexed by `0x8003EA78`; `0x8007E0DC` writes 29). At VS load `0x80055930` copies player 1's or player 2's (picked by bit 0 of `0x8003EA94`) to the global `0x80097EA0` | menus |
@@ -171,7 +171,7 @@ the hand weapon (weapon arms empty the hands), then the usable back weapons. The
 | +0 | u8 | Kind (0 gun, 1 missile, 2 cannon) | detail +0 |
 | +1 | u8 | Model ID (shot-speed table) | detail +1 |
 | +2 – +6 | u8 | Muzzle joints for this slot | layout bytes 18–33 |
-| +7, +8 | u8 | 64. For the **selected** weapon, `0x80082834` (match start and every weapon change) sets player block +0x210 = +7 × 5 ÷ 32 + 1 and +0x212 = +8 × 15 ÷ 32 + 1 | constant |
+| +7, +8 | u8 | Hand weapons and weapon arms: 64. **Back weapons**: from legs +0x3C (the "turning with a back weapon" figure), +7 = ⌊legs +0x3C × 1,228.8⌋ × 3,573 ÷ W ÷ 4,096 (about 1,072 × L ÷ W), +8 = legs +0x3C × 14,635,008 ÷ W ÷ 4,096 (about 3,573 × L ÷ W), both clamped 1–64, W = carried weight. These are the stat +0x0C / +0x0D formulas with legs +0x3C in place of +0x38 / +0x3A (`0x800A95D4`–`0x800A96AC`). For the **selected** weapon, `0x80082834` (match start and every weapon change) sets player block +0x210 = +7 × 5 ÷ 32 + 1 and +0x212 = +8 × 15 ÷ 32 + 1 | constant |
 | +9 | u8 | By kind (see "Options in the slot code"): guns detail +2; missiles from the FCS lock time; cannons recoil from stability and weight, 1–64. Bits 0–1 = fire mode in the fire routine `0x80080DF4` (1 → 2, 2 → 4, 3 → checks bits 4–5); the whole byte also sets player block +0x214 = +9 × 75 ÷ 32 + 1 for the selected weapon | detail |
 | +10, +11, +12 | u8 | Detail +3, +4, +5; +12 bit 0x80 = **SP-M/AUTO** on a missile | detail |
 | +14 | u16 | Ammo (max) | detail +8 |
@@ -261,10 +261,10 @@ Poke one, watch the effect, log the result here:
 +0x02 bit 5 (options +0x35), +0x0F/+0x10 (core bytes),
 +0x26, +0x2A (head bytes), +0x34 bits 0–1, body frame 3 (Human
 PLUS ≥ 4), slot +7/+8/+9 → player block +0x210–0x214, slot +10 to +12. Watch slot +58–61 and
-+0x04/+0x11 for any write to confirm they're padding. Hold START + △ + □ in a fight to
-confirm the alternate camera (+0x02 bit 0).
++0x04/+0x11 for any write to confirm they're padding. 
 
-Tested (user, 2026-11-17): **START + ○ + ✕** (`0x6008`, sets camera +0x08 bit 0) drops the
+Tested (user, 2026-11-17): **START + △ + □** = first-person cockpit camera (+0x02 bit 0).
+**START + ○ + ✕** (`0x6008`, sets camera +0x08 bit 0) drops the
 camera where it is; it stays put but keeps turning to follow the AC (a screenshot camera).
 
 ## Next steps

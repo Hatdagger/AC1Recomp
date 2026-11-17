@@ -13,7 +13,7 @@ experiment.
 | Topic | Decision |
 |---|---|
 | Name | `OP-WLINK` |
-| Option ID | **13**: the first free bit in the fitted mask `0x8003EA70` (bits 0–12 are used, 13–15 are free; see `parts-tables.md`, "Room for more optional parts") |
+| Option ID | **13**: the first free bit in the fitted mask `0x8003EA70` (bits 0–12 are used, 13–15 are free; see `../mapping/parts-tables.md`, "Room for more optional parts") |
 | Getting it | Owned from the start in every save, for testing. Costs **1 option slot** |
 | Look (placeholder) | Copy an existing option's record and display, with a different or wrong texture so it stands out. Replace it with real art later |
 | Families that link | **Missiles** (any missile type with any other), **rockets**, and **back cannons** (back L + back R only, because no arm or hand weapon is a cannon) |
@@ -29,8 +29,8 @@ experiment.
 
 ## How families are told apart
 
-From the weapon detail record (`parts-tables.md`) as copied into the compiled weapon slots
-(`stat-block.md`, slot +0 kind, slot +42 HUD type name from detail +7):
+From the weapon detail record (`../mapping/parts-tables.md`) as copied into the compiled weapon slots
+(`../mapping/stat-block.md`, slot +0 kind, slot +42 HUD type name from detail +7):
 
 | Family | Rule |
 |---|---|

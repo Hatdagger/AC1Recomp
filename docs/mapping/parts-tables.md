@@ -9,9 +9,9 @@ Disc: USA disc 1 (SLUS-01030) **v1.0**. Everything here is static data in the **
 (FDAT entry 206, loaded at `0x80050DD8`), except the shot-speed tables (VS engine, FDAT 209).
 File offset in entry 206 = address − `0x80050DD8`.
 
-Status: ~90%. Every table is located, and every byte has been checked against the real disc
-(2026-11-17, USA disc 1, MD5 `4d5774c4…`). Most fields are named and used by working code; a
-few small fields are still unnamed (see "Still unknown").
+Status: ~99%. Every table is located, and every byte has been checked against the real disc
+(2026-11-17, USA disc 1, MD5 `4d5774c4…`). Every field is now named from the code that reads
+it; one byte (weapon detail +0x04) has no reader in fights or menus (see "Still unknown").
 
 Re-run the check yourself: `python3 tools/moa_parts_dump.py "Disc 1.bin" [legs back …]`, or
 `… weapons` for the weapon detail records.
@@ -62,10 +62,11 @@ index is the part's ID in cards, the garage struct and arena opponent records.
 | Head | +0x34, +0x35 | u8 | When 1, clear stat +0x34 bit 0 / bit 1: an ignore mask for the collision sweep, so the AC's sweeps also see objects flagged with that bit | VS code |
 | Head | +0x36 | u16 | Has a radar (1) / none (0) | disc: range is 0 whenever this is 0 |
 | Head | +0x38 | u16 | Radar range (PERFORMANCE shows ÷10) | perf maths |
-| Head | +0x3A | u16 | Padding (always 0) | disc |
+| Head | +0x3A, +0x3B | u8 | Radar flags / radar display type, the same bytes as back radar +0x30 / +0x31 (compile copies them to stat +0x25 / +0x27). **0 on every head**, so head radars never show missiles and always use display 0 | compile, disc |
 | Arms | +0x32 | u16 | Padding (always 0) | disc |
 | Back (radars) | +0x2C / +0x2E | u16 | Is a radar (1) / radar range | disc: set only on RXA/RZ units |
-| Back (radars) | +0x30 | 2×u8 | Small values 0–2, same pattern as heads' +0x32 | disc |
+| Back (radars) | +0x30 | u8 | **Radar flags** (stat +0x25). Bit 0 = **missiles shown on the radar** (VS `0x8005713C` → `0x8005663C`, which scans the object list for missiles; arena `0x80057AB4`). The same bit SP-MAW sets. Set on RXA-77, RZT-333, RZ-BBP, RZ-Fw2 | VS, arena code |
+| Back (radars) | +0x31 | u8 | **Radar display type** (stat +0x27): low 4 bits pick the radar screen graphic, a 12-byte sprite entry at `0x8008FCDC` + type × 12 (VS `0x8005707C`; arena `0x800579F0`). 0 on most, 1 on RZ-A0 / RZ-A1 / RZ-BBP, 2 on RZT-333 / RZ-Fw2; 3 = Human PLUS built-in radar. Bit 0x10 would limit blips to a 90° cone ahead (`0x8005649C`), but no part sets it | VS, arena code |
 | Back | +0x32 | u16 | Padding (always 0) | disc |
 | Legs | +0x3C | u16 | **Turning with a back weapon selected** (×0.8 of +0x38 on two-legged, ×1.0 on four legs / caterpillars). The compile routine turns it into back-weapon slots +7 and +8 (`0x800A95D4`, `0x800A964C`), same formulas as stat +0x0C / +0x0D; see `stat-block.md` | compile |
 | Legs | +0x3E | u16 | 51 (two-legged) / 64 (four legs, caterpillars). **Never read**: back slot +8 reads +0x3C a second time where the matching stat +0x0D reads +0x3A, so +0x3E was probably meant for it (a developer slip) | compile |
@@ -87,11 +88,11 @@ index is the part's ID in cards, the garage struct and arena opponent records.
 | Generator | +0x2C | u16 | Energy capacity | compile |
 | Generator | +0x2E | u16 | Red zone | compile |
 | Blade | +0x2C | u16 | Most likely **charge drain** (energy per swing), copied to compiled +28 | disc, see open questions |
-| Blade | +0x2E | u16 | 39 on every blade | disc |
+| Blade | +0x2E | u16 | **Hit flags** of the blade's hit record (stat +0x66): 39 = 0x27, of which 0x20 = energy hit (picks the energy defence factor in the damage maths `0x80079500`), same flag byte as weapon detail +0x12. Bits 0x07 have no reader found | VS code |
 | Blade | +0x30 | u16 | **Attack** (LS-2001 738 … MOONLIGHT 2,801) | disc, perf maths |
-| Blade | +0x32 | u16 | 11–42, rises with attack (about attack ÷ 66) | disc |
+| Blade | +0x32 | u16 | **Impact** (stat +0x6A), 11–42. The hit record's +4, read by the AC hit callback `0x80082430`: 0 = no knockback; otherwise knockback level = impact × 256 ÷ (stability × 25 ÷ 4), capped 0–5 (`0x80079AA4`). Same as a gun's impact (slot +40) | VS code |
 | FCS | +0x2C | u8 | Max targets locked at once | weapons doc |
-| FCS | +0x2D | u8 | Small value 0–4 (unknown) | disc |
+| FCS | +0x2D | u8 | **Lock-on area label** in the garage, a pointer table at `0x800D29BC` (`0x80085ED0`): 0 STANDARD, 1 SIDEWAY, 2 LENGTHWAY, 3 WIDE & SHALLOW, 4 NARROW & DEEP. Text only: the compile routine doesn't copy it, so fights never see it | menu code |
 | FCS | +0x5E | u16 | Padding (always 0) | disc |
 | FCS | +0x2E + 12k | 6×u16 | Lock class k (0–3): range, box w, box h, inner w, inner h, lock time | in-game lock tests |
 | Option | +0x24 / +0x28 | u32 / u16 | Price / slot cost | VS START check |
@@ -108,6 +109,10 @@ Hand `0x800D1F64` (by hand ID), back `0x800D21D4` (by back ID), weapon arms `0x8
 |---|---|---|
 | +0x00 | u8 | Kind: 0 gun, 1 missile, 2 cannon |
 | +0x01 | u8 | Model ID (picks shot-speed / missile table entry) |
+| +0x02 | u8 | Kind-dependent, lands in slot +9. **Guns**: firing pattern, bits 0–1 = shots per trigger (0 → 1, 1 → 2, 2 → 4, 3 → one at a time, alternating sides when bits 4–5 are set), bit 2 = always take the fixed-direction path in the fire routine, ignoring the lock (set only on the dispensers WM-X5-AA / WM-X10), bit 3 = weapon-arm aiming (set on every weapon arm). **Cannons**: base recoil, scaled by stability and weight. **Missiles**: ignored (slot +9 comes from the lock time). The whole byte also sets player block +0x214 for the selected weapon |
+| +0x03 | u8 | **Firing animation ID** (slot +10): written to AC +0x84 when the weapon fires (guns `0x80080FE4`, missiles `0x800818D0`, cannons `0x80081BC4`); the cannon code compares it with the playing animation's ID. Right back slot gets +1. 0 hand guns, 1/2 missiles, 3/4 cannons, 5/6 rockets, 7 dual weapon arms; 255 = none |
+| +0x04 | u8 | Copied to slot +11 (right back slot +1 unless 255); **no reader found** in VS, arena, replay, menus or the main executable. 2/3 on radars and two-slot units, 1/2 on WC-GN230 and WC-IR24, 255 elsewhere; looks like an unused second animation ID |
+| +0x05 | u8 | **Aim flags** (slot +12): bit 2 = fire straight ahead, no aiming and no lock box drawn (rockets; fire `0x80080F8C`, HUD `0x80066BEC`). Bits 0–1 have no reader. 1 most, 6 rockets, 3 energy cannons, 0 dispensers / radars. SP-M/AUTO adds bit 0x80 on missiles |
 | +0x06 | u8 | Lock class (FCS group; 4 = no lock) |
 | +0x07 | u8 | Type name index |
 | +0x08 | u16 | Ammo |
@@ -121,7 +126,10 @@ Hand `0x800D1F64` (by hand ID), back `0x800D21D4` (by back ID), weapon arms `0x8
 | +0x16 | u8 | Impact |
 | +0x13, +0x17 | u8 | Padding (always 0) |
 
-Flag bits seen besides 0x10/0x20: 0x40 on WR-RS7 (special rocket), 0x80 on WG-FGI-00. Radars
+Flag bits seen besides 0x10/0x20, read by the damage routine (VS `0x800795DC`): 0x40 on WR-RS7
+(special rocket) copies the hit's attack into the target's AC +0x3A (the stagger the battle chat
+found halved at `0x800796A4`); 0x80 on WG-FGI-00 (FLAME SHELL) sets target AC +0x3E = damage ÷ 16
+and +0x3C = 100, likely a burn over time `?`. Blades use the same byte (blade +0x2E). Radars
 and P77-ST have an all-zero record apart from +0x03/+0x04.
 
 Shot speeds (VS engine): guns by model ID range — `0x80091198` (<0x14, 28 B, speed +8),
@@ -131,21 +139,15 @@ homing push, +0xE top speed). Cannons `0x80091310` (6 B, read from code, not tra
 
 ## Still unknown
 
-Bytes no code reads yet. They're kept in `raw` by acr-import, so nothing is lost.
+Only one byte is left without a reader (checked 2026-11-17: VS, arena, VS replay, menus and the
+main executable):
 
-Checked on the disc; these have values, but no code use found yet. Each needs one poke in VS
-or one read of the code that uses it.
-
-| Table | Bytes | What the disc shows | Best guess |
+| Table | Bytes | What the disc shows | Notes |
 |---|---|---|---|
-| Head | +0x34–0x35 | each 0–1 here | Which objects the head's flags let the AC's collision sweep see (battle chat) |
-| Back radars | +0x30–0x31 | two bytes, 0–2, same style as the head bytes | Radar features (missile/AC display?) |
-| Blade | +0x2E, +0x32 | 39 always; 11–42 with attack | Reach or lunge figures |
-| FCS | +0x2D | 0–4 per FCS | Lock-on display or targeting style |
-| Weapon detail | +0x02 | rockets 64, missiles 4, cannons 0–64, weapon arms 9–10 | Recoil (SP-SAP "decreases cannon recoil" acts on weapon records) |
-| Weapon detail | +0x03 | hand 0, missile 1, cannon 3, rocket 5, radar/two-slot 255, weapon arms 0/7 | Firing group / muzzle point |
-| Weapon detail | +0x04 | 255 most; 2 radars and two-slot units; 1 grenade launcher, WC-IR24 | Slot use (two-slot = 2)? |
-| Weapon detail | +0x05 | 1 most; rockets 6; energy cannons 3; dispensers, radars 0 | Aim mode (rockets fire straight, no lock) |
+| Weapon detail | +0x04 | 2 radars and two-slot units, 1 WC-GN230 / WC-IR24, 255 elsewhere | Compiled into slot +11 with the same left/right +1 as the firing animation ID (+0x03), so probably a second animation ID that the fight code never uses |
+
+Small leftovers inside named fields: blade +0x2E bits 0x07, weapon detail +0x05 bits 0–1, and
+radar type bit 0x10 have no reader either. Everything is kept in `raw` by acr-import.
 
 ## Missile interceptor (core +0x34 / +0x35)
 
@@ -154,7 +156,7 @@ VS `0x800829E4` (arena `0x80084694`), every frame for each AC:
 1. If `(rand & 127) <` reaction (stat +0x0F), or a burst is running (AC +0x118, odd frames):
    look for a missile.
 2. From the interceptor joints (layout bytes 0–1, stat +0x56/+0x57), scan the 256 objects at
-   `0x801D6F6C` (228 bytes each) for an enemy missile (handler `0x8009907C`, alive) within
+   `0x801D6F6C` (228 bytes each) for an enemy missile (handler `0x8008907C`, alive) within
    5,000 on every axis and 5,000 straight-line, and inside ±angle × 4 (stat +0x10) of the AC's
    facing, sideways and up/down. Take the nearest.
 3. Found: start a 15-frame burst (AC +0x118 = 15). Each shot has a **1 in 32** chance

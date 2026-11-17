@@ -14,7 +14,7 @@ Several chats map Master of Arena at the same time. To avoid double work:
 |---|---|---|---|---|
 | Battle system | `battle-system.md` | battle chat | Everything else that runs during a fight: player block (outside the stat block), AC object, damage, weapons in flight, movement, AI per frame, match start/end | in progress |
 | Compiled stat block | `stat-block.md` | data chat | **The 324-byte block the menu builds at VS START (player block +0x250 … +0x393)**: every field, the compile routine `0x800A7BB4` that fills it, and how the engines read it | compile routine, match start, slot option maths and camera setup read 2026-11-17 |
-| Part tables | `parts-tables.md` | data chat | Part tables, weapon details, options on the disc | ~90%, paused |
+| Part tables | `parts-tables.md` | data chat | Part tables, weapon details, options on the disc | ~99%: every byte named but weapon detail +0x04 (no reader anywhere), 2026-11-17 |
 | Mode launch | `mode-launch.md` | launch chat | Boot → menu → engine loop, the mode byte, resume flags, how Scenario (hub) and VS (menu → VS START → fight) start; goal: starting modes straight from the launcher | static read done 2026-11-17; repo gaps filled; runtime test next |
 | GameShark RAM list | `ram-map-gameshark.md` | shared, append-only | Raw code-derived addresses | reference |
 
@@ -81,6 +81,18 @@ Data chat → battle chat:
   in `parts-tables.md`.
 - Stat +0x34 bits 0–1 (cleared by head bytes +0x34 / +0x35 = 1) are an ignore mask for the
   collision sweep `0x80078230`: which objects carry +0x38 bits 0–1?
+- **Hit record** (6 bytes: flags, attack, impact) is the same for guns (slot +36–41) and the
+  blade (stat +0x66–0x6B, so player block +0x2B6 = flags 39, +0x2B8 attack, +0x2BA impact).
+  Flags: 0x10 solid / 0x20 energy pick the defence factor; 0x40 (WR-RS7) puts attack into
+  target AC +0x3A; 0x80 (WG-FGI-00 flame shell) sets AC +0x3E = damage ÷ 16, +0x3C = 100
+  (burn? `0x800796E4`). Impact → knockback level 0–5 = impact × 256 ÷ AC +0x16C (`0x80079AA4`,
+  from the AC hit callback `0x80082430`, set as AC +0x64 in both leg inits).
+- Slot **+10 = firing animation ID** → AC +0x84 at every shot (gun `0x80080FE4`, missile
+  `0x800818D0`, cannon `0x80081BC4`, which compares it with AC +0x68 → +0x0E). Fire routines per
+  kind: gun `0x80080DF4`, missile `0x80081888`, cannon `0x80081B18` (dispatch `0x80083160`).
+- Gun slot +9 bits: 0–1 shots per trigger (1 → 2, 2 → 4), 3 + bits 4–5 → alternate sides
+  (AC +0x47 bit 0), bit 2 = fixed-direction path (dispensers), bit 3 = weapon-arm aim
+  (passed to `0x800800E4`, changes AC +0x7E–0x82 when locked). Slot +12 bit 2 = no aim (rockets).
 
 Launch chat → battle chat:
 - FDAT **211 is a fifth engine, the VS replay** (entry 0x80051FA4). When replay is picked the

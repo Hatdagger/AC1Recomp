@@ -62,9 +62,9 @@ Carried weight = every part except the generator, capped at legs weight + carry 
 | +0x22 | u8 | Shell damage factor, 1–45 (SP-S/SCR: defence × 1.15) | known |
 | +0x23 | u8 | Energy damage factor, 1–45 (SP-E/SCR) | known |
 | +0x24 | u8 | Stability, 32–255 (legs +0x40, SP-ABS +800, SP-ABS_Re +1600) | known |
-| +0x25 | u8 | **Radar flags**: head +0x3A or back radar +0x30; bit 0 set by SP-MAW (missile indicator); 1 with Human PLUS and no radar | |
+| +0x25 | u8 | **Radar flags**: head +0x3A (0 on every head) or back radar +0x30; **bit 0 = missiles shown on the radar** (VS `0x8005713C` → `0x8005663C`, arena `0x80057AB4`), also set by SP-MAW; 1 with Human PLUS and no radar. No other bit is read | code |
 | +0x26 | u8 | Head byte +0x33. **No reads** in the VS or arena engine: unused in fights | |
-| +0x27 | u8 | **Radar type**: head +0x3B or back radar +0x31; 3 with Human PLUS and no radar | |
+| +0x27 | u8 | **Radar display type**: head +0x3B (0 on every head) or back radar +0x31; 3 with Human PLUS and no radar. Low 4 bits pick the radar screen sprite at `0x8008FCDC` + type × 12 (VS `0x8005707C`, arena `0x800579F0`); bit 0x10 would show blips only in a 90° cone ahead (`0x8005649C`), never set | code |
 | +0x28 | u8 | **Body frame**: 0 two-legged, 1 caterpillar, 2 four-legged (from the body table). Match start turns 0 into **3** when Human PLUS level ≥ 4; frames 0/3 then run init `0x80085688`, frames 1/2 run `0x800875C8` | |
 | +0x29 | u8 | **Body combination** (0–71): core × arms group × legs group, see "Body layout" | |
 | +0x2A | u8 | Head byte +0x32. VS never reads it; the arena engine uses it to pick a HUD item, entry 176 + value × 64 passed to `0x800540EC` (`0x8005A438`), likely the head's display style | arena |
@@ -154,9 +154,9 @@ layout, same +0x36–0x3C as normal legs. All entries have 650, 40, 100, 2 excep
 | Off | Size | Meaning |
 |---|---|---|
 | +0x56 – +0x65 | 16×u8 | Layout bytes 0–15 (look like model joint numbers). Bytes 0–1 (**+0x56, +0x57**) are the joints the missile interceptor fires from. Bytes 4–5 (**+0x5A, +0x5B**) go to camera +0x01 / +0x02: the two joints the alternate camera is placed from (`0x80078888`) |
-| +0x66 | u16 | Blade +0x2E (39 on every blade) |
+| +0x66 | u16 | Blade +0x2E = **hit flags** (39: 0x20 energy). +0x66–0x6B is the blade's 6-byte hit record (flags, attack, impact), the same layout as weapon slot +36–41; copied to the stack at `0x8007F644` and handed to the sweep `0x8007F0C0` → hit `0x8008821C` |
 | +0x68 | u16 | **Blade attack** (blade +0x30) |
-| +0x6A | u16 | Blade +0x32 |
+| +0x6A | u16 | Blade +0x32 = **impact** (11–42): knockback level = impact × 256 ÷ AC +0x16C, 0–5 (`0x80079AA4`, from the hit callback `0x80082430`) |
 | +0x6C | u16 | Bit mask: two bits picked by layout bytes 16 and 17 |
 | +0x6E – +0x85 | u8 list | Layout list from layout byte 34, ending in 255: **joints hidden in the alternate camera**. Camera +0x04 points here; `0x80067620` (when +0x02 bit 0 is set) passes it to `0x8005ACC8`, which shifts each listed joint's +0x12 by −4,096 if it isn't already negative |
 | +0x86 | u8 | **Stealth**: 1 when a P77-ST is fitted |
@@ -174,7 +174,9 @@ the hand weapon (weapon arms empty the hands), then the usable back weapons. The
 | +2 – +6 | u8 | Muzzle joints for this slot | layout bytes 18–33 |
 | +7, +8 | u8 | Hand weapons and weapon arms: 64. **Back weapons**: from legs +0x3C (the "turning with a back weapon" figure), +7 = ⌊legs +0x3C × 1,228.8⌋ × 3,573 ÷ W ÷ 4,096 (about 1,072 × L ÷ W), +8 = legs +0x3C × 14,635,008 ÷ W ÷ 4,096 (about 3,573 × L ÷ W), both clamped 1–64, W = carried weight. These are the stat +0x0C / +0x0D formulas with legs +0x3C in place of +0x38 / +0x3A (`0x800A95D4`–`0x800A96AC`). For the **selected** weapon, `0x80082834` (match start and every weapon change) sets player block +0x210 = +7 × 5 ÷ 32 + 1 and +0x212 = +8 × 15 ÷ 32 + 1 | constant |
 | +9 | u8 | By kind (see "Options in the slot code"): guns detail +2; missiles from the FCS lock time; cannons recoil from stability and weight, 1–64. Bits 0–1 = fire mode in the fire routine `0x80080DF4` (1 → 2, 2 → 4, 3 → checks bits 4–5); the whole byte also sets player block +0x214 = +9 × 75 ÷ 32 + 1 for the selected weapon | detail |
-| +10, +11, +12 | u8 | Detail +3, +4, +5; +12 bit 0x80 = **SP-M/AUTO** on a missile | detail |
+| +10 | u8 | **Firing animation ID** (detail +3, right back slot +1): written to AC +0x84 by all three fire routines | detail |
+| +11 | u8 | Detail +4 (right back slot +1 unless 255). No reader found in any engine | detail |
+| +12 | u8 | Aim flags (detail +5): bit 2 = fire straight ahead, no lock box (rockets); bit 0x80 = **SP-M/AUTO** on a missile (`0x8008197C`). Bits 0–1 unread | detail |
 | +14 | u16 | Ammo (max) | detail +8 |
 | +16 | u16 | Ammo (current, starts full; match start copies +14 into it again for every usable slot) | detail +8 |
 | +18 | u16 | Solid weapons: ammo price (detail +0xC). Others: energy per shot (detail +0xA), × 3 ÷ 4 with **SP-DEtq** | detail +0xA / +0xC |
@@ -260,7 +262,8 @@ screenshot camera** (START + ○ + ✕, tested in game; see below).
 
 Poke one, watch the effect, log the result here:
 +0x02 bit 5 (options +0x35), +0x34 bits 0–1 (which objects they skip), body frame 3 (Human
-PLUS ≥ 4), slot +7/+8/+9 → player block +0x210–0x214, slot +10 to +12. Watch slot +58–61 and
+PLUS ≥ 4), slot +7/+8/+9 → player block +0x210–0x214. (Slot +10 to +12 are now read from the
+code, see the slot table.) Watch slot +58–61 and
 +0x04/+0x11 for any write to confirm they're padding. 
 
 Tested (user, 2026-11-17): **START + △ + □** = first-person cockpit camera (+0x02 bit 0).

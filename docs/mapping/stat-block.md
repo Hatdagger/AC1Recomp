@@ -98,8 +98,8 @@ resets the record from the defaults at `0x800D5860`.
 
 Masks use the raw pad word at **player block +0x04** (held; +0x06 = previous frame): Up 0x10,
 Right 0x20, Down 0x40, Left 0x80, L2 0x100, R2 0x200, L1 0x400, R1 0x800, △ 0x1000, ○ 0x2000,
-✕ 0x4000, □ 0x8000. Uses below are from the code where marked, otherwise from the default
-button.
+✕ 0x4000, □ 0x8000. Uses are from the code where an address is given; the user confirmed the whole default
+layout (2026-11-17).
 
 | Off | Options record | Default | Use |
 |---|---|---|---|
@@ -108,13 +108,13 @@ button.
 | +0x42 | +0x08 | Left | **Turn left** (adds to turn speed, `0x8007DC80`) |
 | +0x44 | +0x0C | Right | **Turn right** (subtracts) |
 | +0x46 | +0x28 | △ | **Next weapon** (new press, needs usable weapons; bumps player block +0x11, `0x80082F88`) |
-| +0x48 | +0x24 | ✕ | Boost, probably (read in most movement code) |
+| +0x48 | +0x24 | ✕ | Boost (read in most movement code) |
 | +0x4A | +0x2C | □ | **Fire** (held, `0x80081054`) |
 | +0x4C | +0x20 | ○ | **Blade** (new press, needs blade attack +0x68 ≠ 0, `0x80083230`) |
-| +0x4E | +0x10 | L1 | Strafe left, probably (read with forward/back by the leg code) |
-| +0x50 | +0x18 | L2 | Look up/down, probably; L2 + R2 together reset a timer at player block +0x21C (`0x8007D628`) |
-| +0x52 | +0x14 | R1 | Strafe right, probably |
-| +0x54 | +0x1C | R2 | Look up/down, probably (pair with L2) |
+| +0x4E | +0x10 | L1 | Strafe left (read with forward/back by the leg code) |
+| +0x50 | +0x18 | L2 | Look up/down; L2 + R2 together reset a timer at player block +0x21C (`0x8007D628`) |
+| +0x52 | +0x14 | R1 | Strafe right |
+| +0x54 | +0x1C | R2 | Look up/down (pair with L2) |
 
 The other option bytes: +0x30 → `0x8003EA93` (default 1), +0x31 / +0x32 → sound volumes
 (defaults 63 / 31), +0x33 (0), **+0x34 → stat +0x00** (time limit), **+0x35 bit 0 → stat
@@ -152,24 +152,45 @@ the hand weapon (weapon arms empty the hands), then the usable back weapons. The
 | +1 | u8 | Model ID (shot-speed table) | detail +1 |
 | +2 – +6 | u8 | Muzzle joints for this slot | layout bytes 18–33 |
 | +7, +8 | u8 | 64. For the **selected** weapon, `0x80082834` (match start and every weapon change) sets player block +0x210 = +7 × 5 ÷ 32 + 1 and +0x212 = +8 × 15 ÷ 32 + 1 | constant |
-| +9 | u8 | Detail +2 (adjusted for some kinds). Bits 0–1 = fire mode in the fire routine `0x80080DF4` (1 → 2, 2 → 4, 3 → checks bits 4–5); the whole byte also sets player block +0x214 = +9 × 75 ÷ 32 + 1 for the selected weapon | detail |
-| +10, +11, +12 | u8 | Detail +3, +4, +5 (+12 can get bit 0x80) | detail |
+| +9 | u8 | By kind (see "Options in the slot code"): guns detail +2; missiles from the FCS lock time; cannons recoil from stability and weight, 1–64. Bits 0–1 = fire mode in the fire routine `0x80080DF4` (1 → 2, 2 → 4, 3 → checks bits 4–5); the whole byte also sets player block +0x214 = +9 × 75 ÷ 32 + 1 for the selected weapon | detail |
+| +10, +11, +12 | u8 | Detail +3, +4, +5; +12 bit 0x80 = **SP-M/AUTO** on a missile | detail |
 | +14 | u16 | Ammo (max) | detail +8 |
 | +16 | u16 | Ammo (current, starts full; match start copies +14 into it again for every usable slot) | detail +8 |
-| +18 | u16 | Energy per shot / ammo price (depends on kind) | detail +0xA / +0xC |
-| +20 | u16 | FCS range for the weapon's lock class | FCS |
+| +18 | u16 | Solid weapons: ammo price (detail +0xC). Others: energy per shot (detail +0xA), × 3 ÷ 4 with **SP-DEtq** | detail +0xA / +0xC |
+| +20 | u16 | Lock range: the smaller of the FCS class range and the weapon range | FCS, detail +0xE |
 | +22 | u16 | Weapon range | detail +0xE |
 | +24 – +30 | 4×u16 | Lock box: outer w, h, inner w, h (0 for no-lock weapons) | FCS |
-| +32 | u16 | Lock time (scaled for solid weapons, SP-AXL), 1–255 | FCS |
+| +32 | u16 | Lock time: FCS class lock time; with **SP-AXL** × 1.15 for solid weapons, × 0.85 for the rest, 1–255; 1 for no-lock weapons | FCS |
 | +34 | u8 | Locks at once: the smaller of FCS max and the weapon's salvo | FCS, detail +0x10 |
 | +35 | u8 | Fire interval (energy weapons with SP-EH get faster) | detail +0x11 |
 | +36 | u8 | Damage flags (0x10 solid, 0x20 energy) | detail +0x12 |
-| +38 | u16 | **Attack** | detail +0x14 |
+| +37 | u8 | Detail +0x13, copied as is | detail |
+| +38 | u16 | **Attack**; × 1.15 with **SP-E+** on energy weapons | detail +0x14 |
 | +40 | u16 | Impact | detail +0x16 |
-| +42 – +61 | | no access found: the fire routine reads only +1–5, +9–12, +16 (and writes it), +22, +35, and no player-block-relative access exists in the VS or arena engine. Likely padding; confirm with a watch | |
+| +42 – +57 | 16 chars | **Weapon type name for the HUD**, right-aligned and space-padded, copied with unaligned stores from the 33-name table at `0x800D5488` (16 bytes each) by detail +7: 0 MACHINE GUN, 1 GATLING GUN, 2 CANNON, 3 DUAL MISSILE, 4 LASER CANNON, 5 PLASMA CANNON, 6 RIFLE, 7 HAND GUN, 8 SNIPER RIFLE, 9 FLAMETHROWER, 10 BAZOOKA, 11 PULSE RIFLE, 12 PLASMA RIFLE, 13 SMALL MISSILE, 14 MISSILE, 15 LARGE MISSILE, 16 MULTI MISSILE, 17 TRIPLE MISSILE, 18 BOMB DISPENCER, 19 SMALL ROCKET, 20 ROCKET, 21 LARGE ROCKET, 22 CHAIN GUN, 23 SLUG GUN, 24 LINEAR GUN, 25 GRENADE LAUNCHER, 26 PULSE CANNON, 27 LASER RIFLE, 28 SPECIAL MISSILE, 29 PLASMA DISPENSER, 30 SPECIAL ROCKET, 31 MINE DISPENSER, 32 FLAME SHELL | detail +7 |
+| +58 – +61 | | not written (no access found): padding | |
 
-The slot code also applies SP-M/AUTO, SP-SAP, SP-E+ and SP-DEtq; the exact maths per option is
-the next thing to write down (routine `0x800A8904`–`0x800AA75C`).
+Earlier passes missed +42–57 because they're written with `swl`/`swr` (unaligned
+stores); scans for written bytes must include those.
+
+## Options in the slot code (`0x800A8904`–`0x800AA75C`)
+
+The same code runs for each slot (weapon arms, hand, back L, back R; the back copies share
+one tail). Option bits are the option IDs in the mask `0x8003EA70`: 0 SP-MAW, 1 SP-JAM,
+2 SP-M/AUTO, 3 SP-ABS, 4 SP-SAP, 5 SP-CND-K, 6 SP-AXL, 7 SP-S/SCR, 8 SP-E/SCR, 9 SP-EH,
+10 SP-E+, 11 SP-DEtq, 12 SP-ABS_Re. "Solid" / "energy" = detail +0x12 bit 0x10 / 0x20.
+
+| Option | Slot field | Maths |
+|---|---|---|
+| SP-AXL (bit 6) | +32 lock time | FCS class lock time × 115 ÷ 100 for **solid** weapons, × 85 ÷ 100 for all others, clamped 1–255. Without it: the FCS value as is. Lock class 4 (no lock) always gets 1. Note the trade-off: solid weapons lock *slower* with SP-AXL if lower = faster; **check in game** |
+| SP-M/AUTO (bit 2) | +12 | Missiles (kind 1) get bit 0x80 |
+| SP-SAP (bit 4) | +9 (cannons) | Recoil = detail +2 × ⌊4,169,728 ÷ S⌋ × ⌊32,768,000 ÷ W⌋ ÷ 2²⁴, clamped 1–64 (about detail +2 × 8,144,000 ÷ (S × W)). S = legs stability (+0x40), **+800 with SP-SAP**; W = carried weight. So SP-SAP and heavier ACs both cut recoil |
+| SP-DEtq (bit 11) | +18 | Non-solid weapons: energy per shot × 3 ÷ 4 |
+| SP-EH (bit 9) | +35 | Energy weapons: fire interval × 100 ÷ 120 (= × 5 ÷ 6, faster) |
+| SP-E+ (bit 10) | +38 | Energy weapons: attack × 115 ÷ 100 |
+
+Without options, slot +9 by kind: guns (0) = detail +2; missiles (1) = (256 − FCS class lock
+time) ÷ 8, 0 → 1, capped at 64; cannons (2) = the recoil formula above.
 
 ## Match start (VS engine `0x8008342C`, arena copy `0x800850DC`)
 
@@ -198,13 +219,12 @@ mode).
 Poke one, watch the effect, log the result here:
 +0x02 bit 5 (options +0x35), +0x05 (stage?), +0x0F/+0x10 (core bytes),
 +0x26, +0x2A (head bytes), +0x34 bits 0–1, +0x36–0x3C (collision?), body frame 3 (Human
-PLUS ≥ 4), slot +7/+8/+9 → player block +0x210–0x214, slot +10 to +12. Watch slot +42–61 and
+PLUS ≥ 4), slot +7/+8/+9 → player block +0x210–0x214, slot +10 to +12. Watch slot +58–61 and
 +0x04/+0x11 for any write to confirm they're padding.
 
 ## Next steps
 
-1. Option maths in the weapon slot code (`0x800A8904`–`0x800AA75C`): SP-M/AUTO, SP-SAP,
-   SP-E+, SP-DEtq, SP-EH, SP-AXL.
-2. Reverse-joint legs (14–20): which body combination they get (missing from `0x800D4A64`).
-3. Read `0x800876C4` (collision setup) to name +0x36–0x3C without a test.
+1. Reverse-joint legs (14–20): which body combination they get (missing from `0x800D4A64`).
+2. Read `0x800876C4` (collision setup) to name +0x36–0x3C without a test.
+3. Check in game which way SP-AXL moves lock time for solid weapons.
 4. The tests above (needs the user's PC).

@@ -139,7 +139,7 @@ its own button, **Circle**. A swing lunges about 500 units forward along the fac
   blade record **+0x30 = attack**, +0x2C = charge drain.
 - Armored-CoreR's "492 seen" is two blade hits (one swing once landed 492 here too). The
   "683 expected" came from the swapped fields and can be dropped.
-- Reach: a hit landed from 650–700 units away facing the target; from 400 it missed.
+- Reach: one hit at 700 units, two hits from 650 in (see "Blade code"), miss at 800.
 
 ### Blade code (VS engine, read statically from FDAT 209, 2026-11-17, not yet run-tested)
 
@@ -178,10 +178,22 @@ line (`0x8007E82C` twice), and then saves this frame's line to +0x30. Each test:
 **Why one swing can hit twice (492):** there is **no "already hit this swing" check**.
 Each of the up to **10 line tests** (5 frames × 2) that touches the target's cylinder
 deals a full hit. Normally the blade arc crosses the target in only one sample → 246.
-When two samples overlap the target (most likely a closer target, which covers more of the arc, or the
-lunge carrying the blade through it) → 2 hits = 492. Theoretical maximum 10 hits.
-`?` needs a run test: log AP with a write trace while swinging from 300, 500 and 700
-units.
+When two samples overlap the target → 2 hits = 492. Theoretical maximum 10 hits.
+
+**Measured (VS engine, 2026-11-17, harness script `blade4.py`):** both ACs reset to the same spot
+before each swing (P2 at (5000, −1251, −3000), P1 straight behind it at distance d, facing it),
+default AC vs default AC, write trace on P2's AP:
+
+| Distance | Result (11 swings) |
+|---|---|
+| 800 | miss |
+| 700 | 1 hit, 246 (twice) |
+| 650, 600, 550, 500, 400, 300 | **2 hits, 492, every time** |
+
+So **close range = double hit** for the default LS-2001 blade; 3+ hits never seen. The two
+AP writes land 3–4 video frames apart, i.e. on **two different swing frames**, not the
+halfway + current pair within one frame. (The earlier "from 400 it missed" was P2 knocked out of
+place by the previous swing.)
 
 **Hit dispatcher side note:** when one AC hits the other, the attacker's player block
 **+0x24C = 40**; it counts down each frame and drives the HUD "HIT" blink (`0x8005699C`).
@@ -205,8 +217,8 @@ Triangle changes weapon; L1/R1 strafe; L2/R2 look; Left/Right turn.
 
 ## Open questions
 
-- Blade double hit: explained from the code (no per-swing hit guard, 10 line tests per
-  swing, see "Blade code"); the distances that give 2+ hits still need a run test.
+- Blade double hit: solved (no per-swing hit guard; 2 hits from ≤ 650 units, 1 at 700).
+  Open: whether other blades (longer reach, Moonlight) can reach 3+ hits.
 
 - Base address of the AC object array in the arena engine, and AP's offset in it.
 - Is the player block a copy made at match start, or live? (Test: poke range mid-fight.)

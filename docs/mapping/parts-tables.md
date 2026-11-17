@@ -203,6 +203,5 @@ at +0x398 comes right after. Mapped so far:
 Formulas: Armored-CoreR `docs/research/gen1-movement.md` and `gen1-weapons.md`. The C port
 (`src/gen1/acr_gen1_compile.c`) matches the game on 600 random builds.
 
-Next: map the rest of the 324 bytes (+0–5, +15–17, +29–33, +37–0x95 and the weapon-slot
-structs) by tracing the compile routine. This is the step that lets the launcher build a
-fight directly, with no menus.
+The rest of the 324 bytes belong to the battle lane (`battle-system.md`); see `README.md`
+for who maps what.

@@ -315,6 +315,17 @@ static const uint32_t k_run_d_card_finish[] = {
 #define RUN_D_MOVE_IMAGE     0x8002C81Cu  /* boot exe MoveImage(rect, x, y) */
 #define RUN_D_WEAPON_RECT    0x800CB8B8u  /* (384,256,64,64) -> (768,448) */
 #define RUN_D_WEAPON_CLUT    0x800CB8C0u  /* (320,482,256,1) -> (0,493), (0,494) */
+/* The disc queue (boot exe 0x800160C4): a ring of 16 entries of 48 bytes;
+ * write pointer +888, read pointer +892 from 0x80043C70. Empty when equal.
+ * The card screen waits for it (0x800589DC) before the hub opens; the hub's
+ * first state waits for its backdrop task (0x80056DBC), whose two MENU_TIM
+ * loads queue behind the AC's seven part textures (0x800822B0). Opening the
+ * hub in the same frame as those seven left the hub stalled in two of three
+ * tests (trace 2026-11-17: no hub state after the backdrop loads, 90 s
+ * timeout). So the hub opens on a later menu frame, once the queue is empty. */
+#define RUN_D_CDQ_WRITE      0x80043FE8u
+#define RUN_D_CDQ_READ       0x80043FECu
+#define RUN_D_HUB_WAIT_MAX   600u         /* frames: open anyway after this */
 #define RUN_D_HUB_OPEN       0x800552C0u
 #define RUN_D_SIG_HUB_OPEN   0x27BDFFB8u  /* addiu sp,sp,-72 */
 #define RUN_D_HUB_INPUT      0x80055848u
@@ -330,6 +341,8 @@ static int run_state_ok;
 enum { STAGE_TITLE = 0, STAGE_LOADGAME, STAGE_LOADING, STAGE_BACK, STAGE_DIRECT };
 static int run_direct;                     /* this session booted directly */
 static int run_direct_press;               /* X still to press at the hub */
+static int run_direct_hub_due;             /* the hub still to open (queue draining) */
+static uint32_t run_direct_hub_wait;
 static uint32_t run_direct_buf;            /* guest buffer for the save */
 /* At the hub: one O press (one menu back), at normal speed so the hub's
  * music starts as it would, then hand over behind the loading screen. */
@@ -343,6 +356,7 @@ static int run_stage;
 static uint32_t run_newgame_seen;          /* run_frames when that menu last ran */
 static int run_result_seen;                /* this fight's result is booked */
 static uint32_t run_pay;                   /* what the next payout pays: 1 on a new win, else 0 */
+static int run_prize_paid;                 /* a new win was just paid: its prize may open now */
 static int run_save_pending;               /* a win waits for the autosave */
 static unsigned run_win_screen;            /* booked wins waiting for the arena screen (P, restock) */
 
@@ -403,6 +417,9 @@ static void run_check_session(void)
     run_fixes = 0;
     run_arena_at_builds = run_arena_at_ai = 0xFF;
     run_direct = run_direct_press = 0;
+    run_direct_hub_due = 0;
+    run_direct_hub_wait = 0;
+    run_prize_paid = 0;
     run_prize_reset();
     moa_rec_reset();
     run_ghost_beaten_n = 0;
@@ -586,16 +603,34 @@ static int run_direct_boot(struct CPUState *cpu)
     run_restock_catch_up("load");
     psx_mod_write_byte(RUN_ARENA_LOCK, 0);
     psx_mod_write_byte(RUN_D_MAIL_SHOWN, 1);     /* no mail box in the way */
-    /* 3. The hub, on Arena */
-    const uint32_t hub = psx_mod_call_guest(cpu, RUN_D_HUB_OPEN, ra, 0, 0, 0, 0);
-    if (hub >= 0x80000000u && hub < 0x80200000u) psx_mod_write_byte(hub + RUN_HUB_ENTRY, RUN_HUB_ARENA);
+    /* 3. The hub, on Arena: on a later menu frame, once the disc queue has
+     * taken the AC's textures (run_direct_hub_frame, RUN_D_CDQ_WRITE). */
     run_direct = 1;
-    run_direct_press = 1;
+    run_direct_hub_due = 1;
+    run_direct_hub_wait = 0;
     run_stage = STAGE_DIRECT;
     psx_mod_counter_add("moa.run.direct_boot", 1);
-    run_log("direct: title flags cleared, save loaded, card screen finish replayed, "
-            "hub opened on Arena (frame %u)", (unsigned)run_frames);
+    run_log("direct: title flags cleared, save loaded, card screen finish replayed "
+            "(frame %u); the hub opens once the disc queue is empty", (unsigned)run_frames);
     return 1;
+}
+
+/* From the menu's controller sampling, every menu frame of the boot. */
+static void run_direct_hub_frame(struct CPUState *cpu)
+{
+    if (!run_direct_hub_due) return;
+    const int empty = psx_mod_read_word(RUN_D_CDQ_WRITE) == psx_mod_read_word(RUN_D_CDQ_READ);
+    if (!empty && ++run_direct_hub_wait < RUN_D_HUB_WAIT_MAX) return;
+    run_direct_hub_due = 0;
+    if (psx_mod_read_word(RUN_D_HUB_OPEN) != RUN_D_SIG_HUB_OPEN) {
+        run_log("direct: hub open code not in memory, the menus take over");
+        return;
+    }
+    const uint32_t hub = psx_mod_call_guest(cpu, RUN_D_HUB_OPEN, cpu->gpr[31], 0, 0, 0, 0);
+    if (hub >= 0x80000000u && hub < 0x80200000u) psx_mod_write_byte(hub + RUN_HUB_ENTRY, RUN_HUB_ARENA);
+    run_direct_press = 1;
+    run_log("direct: hub opened on Arena (frame %u, waited %u frames for the disc queue%s)",
+            (unsigned)run_frames, (unsigned)run_direct_hub_wait, empty ? "" : ", gave up");
 }
 
 static int run_title_open_filter(struct CPUState *cpu, uint32_t address)
@@ -657,9 +692,10 @@ static void run_newgame_entry(struct CPUState *cpu, uint32_t address)
     run_newgame_seen = run_frames;
 }
 
+static void run_direct_hub_frame(struct CPUState *cpu);
+
 static void run_menu_input_entry(struct CPUState *cpu, uint32_t address)
 {
-    (void)cpu;
     if (!run_autopilot || !run_on()) return;
     const uint32_t w = psx_mod_read_word(address);
     if (w != RUN_SIG_INPUT_A && w != RUN_SIG_INPUT_B) return;
@@ -674,6 +710,7 @@ static void run_menu_input_entry(struct CPUState *cpu, uint32_t address)
     const uint32_t t = run_ticks++;
     if (run_direct) {                            /* nothing pressed; the hub hook presses X */
         psx_mod_write_half(RUN_PAD_BUFFER + 2u, 0xFFFFu);
+        run_direct_hub_frame(cpu);
         return;
     }
     if (run_stage == STAGE_BACK) {               /* one O press, once */
@@ -1288,8 +1325,8 @@ static void run_prize_frame(void)
             !run_state_ok || run_state.run.over ? NULL :
             !run_at_hub ? "not at the hub" : run_autopilot ? "boot autopilot" :
             run_fade ? "loading screen fade" : run_show_on || run_show_rank ? "restock screen" :
-            !run_prize_where ? "not at the arena screen or hub" :
-            psx_mod_read_byte(RUN_FIGHT_DONE) ? "fight result not applied" :
+            !run_prize_where && !run_prize_paid ? "not at the arena screen or hub" :
+            psx_mod_read_byte(RUN_FIGHT_DONE) && !run_prize_paid ? "fight result not applied" :
             psx_mod_read_word(k_run_tables[0].addr) != 0x302D4448u ? "part tables not in memory" : "";
         if (!why || (why[0] && run_prize_due() < 0)) { waits = NULL; return; }
         if (why[0]) {
@@ -1526,6 +1563,10 @@ static void run_payout_entry(struct CPUState *cpu, uint32_t address)
         return;
     }
     const uint32_t was = psx_mod_read_word(tab + 8u * who);
+    /* A new win is paid: its prize may open now, over the game's own result
+     * windows (they wait while the prize screen holds the pad), instead of
+     * ~9 s later when the game clears its fight-finished byte. */
+    if (run_pay) run_prize_paid = 1;
     psx_mod_write_word(tab + 8u * who, run_pay);
     run_pay_due = 0;
     run_log("payout: %u (stock %u), credits %u", (unsigned)run_pay, (unsigned)was,
@@ -1897,6 +1938,7 @@ static void run_sampler_entry(struct CPUState *cpu, uint32_t address)
     (void)cpu;
     if (!run_on() || !run_at_hub || psx_mod_read_word(address) != RUN_SIG_SAMPLER) return;
     run_prize_where = 0;                          /* in a fight: no prize screen */
+    run_prize_paid = 0;
     run_maybe_return();
     /* The fight's own result, before the retry/exit choice (a retry never
      * reaches the arena screen's result routine). Logged on each change so a

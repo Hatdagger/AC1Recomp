@@ -509,5 +509,8 @@ So chapter-timed (kind 0) mails depend on mission wins **and** arena ranks.
 - Map header fields (80, 19, 4 × 19) and the blocks after it.
 - Objectives, win/lose checks, timer, results and rewards; enemy list; script reader
   `0x80091FFC` (stepped at `0x80092E4C`; writes AC +0x6D/+0x7C/+0x7E/+0x84).
+- **Items found in missions**: how a mission hands out a part (pickup object? mission code at the
+  end?), so earned parts can come out of the shop later (design: project doc
+  `mail-folders-design.md`).
 - Mail: mission mode T+4 = 0 (what it is; it hands out every mail of kinds 0–3 at once); what
   the second delivery call (`0x800AC2D4`) belongs to; Phantasma's own mail table.

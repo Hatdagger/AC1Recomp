@@ -1624,13 +1624,49 @@ static void run_a0_flip(struct CPUState *cpu, uint32_t address)
 /* MENU_TIM.T's entry table, read from the disc's first sector of the file
  * (halfword count, then each entry's start sector). The game keeps no copy
  * we could find in RAM (the old file-table lookup always gave 0), so the
- * table comes from disc once per menu LBA. */
+ * table comes from disc once per menu LBA.
+ *
+ * Project Phantasma: its package puts a longer copy of MENU_TIM.T in the
+ * disc's spare area (the stock file plus a 604-sector block) and points the
+ * file's directory record at it, but leaves the copy's entry table exactly as
+ * shipped (885 entries). Its plug-in (mod_builtin_moa_phantasma.c, part A)
+ * builds the longer table in memory: entries 885-887 empty at the stock end
+ * (sector 2906), then arena 10's 204 entries from 888 in a fixed layout. So
+ * the run reads the file where the effective disc has it now (not the LBA
+ * the launcher saw on the unpatched image) and works out entries 885+ the
+ * same way the plug-in does. */
+#define RUN_MENU_STOCK_ENTRIES 885u
+#define RUN_MENU_STOCK_END     2906u    /* stock file length in sectors */
+#define RUN_PP_BLOCK_SECTORS   604u
 static uint8_t run_hdr_sec[2048];
 static uint32_t run_hdr_lba;
+static int run_menu_pp;                /* 1 = the live file holds the arena-10 block */
+
+/* MENU_TIM.T's first sector on the disc as the game reads it now. */
+static uint32_t run_menu_lba(void)
+{
+    static uint32_t live;
+    static int looked;
+    if (!looked) {
+        uint32_t lba = 0, size = 0;
+        looked = 1;
+        if (psx_mod_disc_file_extent("GG/MS/MENU_TIM.T", &lba, &size) && lba) {
+            live = lba;
+            run_menu_pp = size >= (RUN_MENU_STOCK_END + RUN_PP_BLOCK_SECTORS) * 2048u;
+            run_log("menu file: live at %u (%u bytes, Phantasma block %s); run file says %u",
+                    (unsigned)lba, (unsigned)size, run_menu_pp ? "present" : "absent",
+                    (unsigned)run_state.lineup.menu_lba);
+        } else {
+            run_log("menu file: live position not found; using the run file's %u",
+                    (unsigned)run_state.lineup.menu_lba);
+        }
+    }
+    return live ? live : run_state.lineup.menu_lba;
+}
 
 static uint32_t run_index(void)
 {
-    const uint32_t lba = run_state.lineup.menu_lba;
+    const uint32_t lba = run_menu_lba();
     if (!lba) return 0;
     if (run_hdr_lba != lba) {
         if (!psx_mod_read_disc_sectors(lba, 1u, run_hdr_sec)) return 0;
@@ -1642,9 +1678,31 @@ static uint32_t run_index(void)
     return 1u;
 }
 
+/* Sectors of arena-10 block entry n (0-203), as the package lays it out:
+ * 50 descriptions (1), 49 emblems (2) and an empty player slot, 50 portraits
+ * (8), 50 second descriptions (1), builds (2), names (2), rewards (1), AI (1).
+ * Same as pp_block_sectors in the plug-in. */
+static uint32_t run_pp_block_sectors(uint32_t n)
+{
+    if (n < 50u) return 1u;
+    if (n < 99u) return 2u;
+    if (n == 99u) return 0u;
+    if (n < 150u) return 8u;
+    if (n < 200u) return 1u;
+    if (n < 202u) return 2u;
+    return 1u;
+}
+
 /* Start sector of entry k (relative to the file). */
 static uint32_t run_hdr(uint32_t k)
 {
+    if (k >= RUN_MENU_STOCK_ENTRIES && run_menu_pp) {
+        uint32_t at = RUN_MENU_STOCK_END;
+        if (k < RUN_PP_FIRST) return at;
+        for (uint32_t n = 0; n < k - RUN_PP_FIRST && n < 204u; ++n) at += run_pp_block_sectors(n);
+        return at;                                    /* k = 888+204: the block's end */
+    }
+    if (k > RUN_MENU_STOCK_ENTRIES) return 0;         /* past the stock end word */
     if (2u + 2u * k + 1u >= sizeof run_hdr_sec) return 0;
     return (uint32_t)(run_hdr_sec[2 + 2 * k] | run_hdr_sec[3 + 2 * k] << 8);
 }
@@ -1652,11 +1710,12 @@ static uint32_t run_hdr(uint32_t k)
 /* First entry and count of a source arena; 0 = not available. */
 static int run_source(uint32_t ix, uint8_t arena, uint32_t *first, uint32_t *count)
 {
+    (void)ix;
     if (arena == RUN_PP_ARENA) {
         *first = RUN_PP_FIRST; *count = 50u;
-        /* Phantasma's index covers its block only once installed. */
-        return run_hdr((RUN_PP_FIRST + 203u)) >
-               run_hdr(RUN_PP_FIRST);
+        /* Only once the live menu file holds Phantasma's block. */
+        (void)run_menu_lba();
+        return run_menu_pp && run_hdr(RUN_PP_FIRST + 203u) > run_hdr(RUN_PP_FIRST);
     }
     if (arena > 8u) return 0;
     *count = psx_mod_read_byte(RUN_ARENA_COUNTS + arena);
@@ -1710,15 +1769,15 @@ static const uint8_t *run_stock_entry(int kind, uint32_t bytes)
     static uint8_t ent[4][4096];
     static uint32_t got_lba[4], got_bytes[4];
     if (kind < 0 || kind > 3 || bytes > sizeof ent[0] || !run_index()) return NULL;
-    if (got_lba[kind] == run_state.lineup.menu_lba && got_bytes[kind] == bytes) return ent[kind];
+    if (got_lba[kind] == run_menu_lba() && got_bytes[kind] == bytes) return ent[kind];
     uint32_t first, count;
     if (!run_source(1u, RUN_ARENA, &first, &count)) return NULL;
     const uint32_t entry = first + 4u * count + (uint32_t)kind;
     const uint32_t a = run_hdr(entry), b = run_hdr(entry + 1u);
     if (b <= a || (b - a) > 2u || bytes > (b - a) * 2048u ||
-        !psx_mod_read_disc_sectors(run_state.lineup.menu_lba + a, b - a, ent[kind]))
+        !psx_mod_read_disc_sectors(run_menu_lba() + a, b - a, ent[kind]))
         return NULL;
-    got_lba[kind] = run_state.lineup.menu_lba;
+    got_lba[kind] = run_menu_lba();
     got_bytes[kind] = bytes;
     return ent[kind];
 }
@@ -1781,14 +1840,14 @@ static int run_record(uint32_t ix, struct moa_run_pick p, int kind, uint32_t str
     if (!run_source(ix, p.arena, &first, &count) || p.rank >= count) return 0;
     const uint32_t entry = first + 4u * count + (uint32_t)kind;
     int c = 0;
-    while (c < used && (key[c] != entry || lba[c] != run_state.lineup.menu_lba)) ++c;
+    while (c < used && (key[c] != entry || lba[c] != run_menu_lba())) ++c;
     if (c == used) {
         const uint32_t a = run_hdr(entry), b = run_hdr(entry + 1u);
         if (used == CACHE) used = c = 0;              /* full: start over */
         if (b <= a || (b - a) > 2u ||
-            !psx_mod_read_disc_sectors(run_state.lineup.menu_lba + a, b - a, sec[c]))
+            !psx_mod_read_disc_sectors(run_menu_lba() + a, b - a, sec[c]))
             return 0;
-        key[c] = entry; lba[c] = run_state.lineup.menu_lba;
+        key[c] = entry; lba[c] = run_menu_lba();
         used = c + 1;
     }
     if ((p.rank + 1u) * stride > 4096u) return 0;
@@ -1803,10 +1862,10 @@ static void run_apply_fix(int kind, uint32_t buf, uint32_t bytes)
     static uint8_t out[4096];
     const uint32_t stride = k_stride[kind];
     const uint32_t ix = run_index();
-    if (!ix || !run_state.lineup.menu_lba || MOA_RUN_SLOTS * stride + 4u > bytes) {
+    if (!ix || !run_menu_lba() || MOA_RUN_SLOTS * stride + 4u > bytes) {
         psx_mod_counter_add("moa.run.data_skipped", 1);
         run_log("data kind %d: skipped (index %08x, menu lba %u, bytes %u)", kind,
-                (unsigned)ix, (unsigned)run_state.lineup.menu_lba, (unsigned)bytes);
+                (unsigned)ix, (unsigned)run_menu_lba(), (unsigned)bytes);
         return;
     }
     int missing = 0;

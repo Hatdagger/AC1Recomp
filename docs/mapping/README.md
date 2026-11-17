@@ -28,6 +28,12 @@ From battle chat to data chat:
 - Player block **+0x284 bit 0**: when clear, hit stagger is halved (`0x800796A4`). Meaning still unknown.
 - Blade **confirmed in combat** (VS engine): compiled +0x68 = 738 is the attack used by the damage routine
   (246 AP per hit as an energy hit); compiled +0x1C = 2,050 is not used in damage. Blade record +0x30 = attack.
+- Blade reads from the stat block (VS engine, static read, `0x80083224` / `0x8007EB48`):
+  +0x29C = blade button mask, **+0x2B6 = blade hit record** (flags; +0x2B8 attack),
+  +0x26C = charge drain taken from energy +0x16 at swing start, +0x283 = blade wave type
+  (0 none, 1–4 jump table at 0x80051154; 4 = no melee sweep `?`), +0x2A8 / +0x2A9 = the
+  two model joints of the blade line (hand, tip), +0x298 = a button mask checked after the
+  sweep `?`, +0x28E = a button mask that stops the lunge `?`.
 
 
 Battle chat → data chat: if you find a write into player block +0x250 … +0x393 (the stat

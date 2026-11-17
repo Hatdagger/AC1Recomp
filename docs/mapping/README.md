@@ -17,9 +17,17 @@ Several chats map Master of Arena at the same time. To avoid double work:
 | Part tables | `parts-tables.md` | data chat | Part tables, weapon details, options on the disc | ~99%: every byte named but weapon detail +0x04 (no reader anywhere), 2026-11-17 |
 | Mode launch | `mode-launch.md` | launch chat | Boot → menu → engine loop, the mode byte, resume flags, how Scenario (hub) and VS (menu → VS START → fight) start; goal: starting modes straight from the launcher | static read done 2026-11-17; repo gaps filled; runtime test next |
 | GameShark RAM list | `ram-map-gameshark.md` | shared, append-only | Raw code-derived addresses | reference |
+| Missions: weapon detail +0x04 | `parts-tables.md` | data chat | Narrow check only: does the missions engine (FDAT 207) read weapon detail +0x04? Not the rest of the missions lane | claimed 2026-11-17 |
 
-Not claimed yet (claim before starting): arena opponent rosters, missions data (FDAT 207), save/memory card format,
+Not claimed yet (claim before starting): missions data (FDAT 207, apart from the +0x04 check above), save/memory card format,
 menus and UI flow (other than mode launch), sound/music, stage data.
+
+Already covered in code, not a mapping lane: **arena opponent rosters.** Arena numbers, opponent
+counts (`0x800D5A08`), starts (`0x800D5A14`), names (`0x800D5A20`), the per-arena entries in
+`GG/MS/MENU_TIM.T` (names, emblems, 64-byte builds, descriptions, prize money, 36-byte AI records),
+beaten flags and rank bytes are all used by `games/master-of-arena/moa_phantasma.c`,
+`moa_ai_battle.c` and `moa_arena_run.c`, and by `psxrecomp/runtime/src/mod_builtin_moa_phantasma.c`.
+Read those before mapping anything arena-related.
 
 ## Handed over
 

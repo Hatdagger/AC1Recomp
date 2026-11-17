@@ -58,6 +58,8 @@ mod_function_entry_funcs = [
     "0x80053808", "0x80053498", "0x80052C80", "0x80052EE4", "0x800532FC",
     # arena engine (AI Battle)
     "0x80055768", "0x8008DC98", "0x8008D4AC", "0x8007F69C",
+    # split-screen VS engine: controller sampler (VS AI, moa_vs_ai.c)
+    "0x8007DA4C",
     # menu: save checksum (AI Battle keeps the settings on DATA LOAD)
     "0x80070F1C",
     # boot exe: archive sector read (instant loading, mod_builtin_moa_loading.c)

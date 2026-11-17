@@ -414,6 +414,18 @@ int stbi_write_png_to_func(void (*func)(void *, void *, int), void *context,
 #define SAVE_PLUS     0xDEC                    /* Human PLUS state; [0] = level */
 #define SAVE_VALID    0xE58                    /* 1 = a save the loader accepts */
 #define SAVE_MONEY    0x1C8                    /* u32 credits (RAM 0x8003EA74) */
+/* The summary the game's DATA SAVE / LOAD list shows (menu save writer
+ * 0x80071ED8..0x80071FAC), before the checksummed range: +0x184 the AC and
+ * pilot names (36 bytes, RAM 0x800371EC, as at +0x1CC), +0x1A8 u16 sorties
+ * (0x8004AC58), +0x1AC u32 credits (0x8003EA74). Left zero, the list shows
+ * the save with no name until the game saves over it. */
+#define SAVE_SUM_NAMES   0x184
+#define SAVE_SUM_CREDITS 0x1AC
+static void save_summary(uint8_t *b)
+{
+    memcpy(b + SAVE_SUM_NAMES, b + SAVE_ACNAME, 36);
+    memcpy(b + SAVE_SUM_CREDITS, b + SAVE_MONEY, 4);
+}
 #define SAVE_OWNED    0x280                    /* 256 owned-part counts (RAM 0x80036FEC) */
 
 /* Names are Shift-JIS, two bytes a character (the name editor offers full-width
@@ -722,6 +734,7 @@ void moa_card_to_save(const struct moa_card *c, uint8_t b[MOA_SAVE_BLOCK])
     b[SAVE_PLUS] = c->plus;
     b[SAVE_PLUS + 2] = c->plus ? 1 : 0;        /* the level waives the load limits */
     b[SAVE_VALID] = 1;
+    save_summary(b);
     /* Checksum the loader checks (menu 0x80070F1C): each byte from +432 over
      * 3240 bytes, zero-extended and inverted as a 32-bit word (nor), summed;
      * stored at +384. */
@@ -1051,6 +1064,7 @@ int moa_memcard_fit_story(const char *path, int slot, const struct moa_card *car
         b[SAVE_CLUT + 2 * i] = (uint8_t)(card->palette[i] & 255);
         b[SAVE_CLUT + 2 * i + 1] = (uint8_t)((card->palette[i] >> 8) & 0x7F);
     }
+    save_summary(b);
     save_checksum(b);
     f = fopen(path, "wb");
     ok = 0;

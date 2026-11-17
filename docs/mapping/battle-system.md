@@ -124,6 +124,14 @@ Check: WG-RF35 (attack 218) on the default AC (shell factor 27): 218 × 27 >> 6 
 Hit record (`0x801D6F88` for P2's rifle): byte 0 flags (= weapon detail +0x12, 0x17),
 +2 attack (218), +4 impact (3) — the weapon detail table values.
 
+## Match timer (VS engine, measured)
+
+- Time left = **game steps** at `0x80097EB4` (u16, timer struct `0x80097EA0` +0x14).
+  About **22 steps per second** (2:00 ≈ 2,640). Writing it moves the HUD clock.
+- Decremented once per step at `0x800523CC` (called from `0x80052180`), only while byte
+  `0x801D4C09` (P1 object +0x49) is 255 and the value is ≥ 2.
+- For tests, the harness writes 2,600 back into it to keep the clock from running out.
+
 ## Test harness (this chat)
 
 Debug-tools Linux build from branch `mapping-debug` (draft release, not for players),
@@ -134,7 +142,9 @@ boosts; L1/R1 strafe; L2/R2 look; Left/Right turn.
 
 ## Open questions
 
-- Match timer address in VS (to freeze it for unlimited time).
+- Unlimited time as a real option: NOP the decrement at `0x800523CC` (needs a mod hook).
+- Blade: the default VS AC shows only RIFLE and SMALL MISSILE (Triangle cycles them), so
+  the blade test needs an AC with a blade set up first.
 
 - Blade damage mismatch (683 expected vs 492 seen in Armored-CoreR): data chat says blade record +0x30 is attack and +0x2C charge drain (swapped in the old notes). Re-measure a blade hit in VS.
 

@@ -297,3 +297,29 @@ jobs:
             --title "Armored Core: Master of Arena ${RELEASE_TAG#moa-}" \
             --notes-file docs/moa-release-notes.md \
             --prerelease
+
+  # mapping-debug branch only: the debug-tools AppImage as a DRAFT release
+  # (drafts are invisible to the launcher's update check and to the public).
+  debug-draft:
+    name: Debug build (draft)
+    if: github.ref == 'refs/heads/mapping-debug'
+    needs: [appimage]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download AppImage
+        uses: actions/download-artifact@v4
+        with:
+          name: armored-core-moa-linux-x64-appimage
+          path: out
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release delete mapping-debug-tools --repo "${GITHUB_REPOSITORY}" --yes 2>/dev/null || true
+          gh release create mapping-debug-tools out/*.AppImage \
+            --repo "${GITHUB_REPOSITORY}" --target "${GITHUB_SHA}" \
+            --title "Mapping debug build (not for players)" \
+            --notes "Debug-server Linux build from the mapping-debug branch." --draft

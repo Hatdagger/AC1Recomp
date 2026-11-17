@@ -160,11 +160,12 @@ struct vs_ai_side {
 };
 static struct vs_ai_side vs_side[2];
 
-/* Area bits: the stage clears them at the start of each step and sets them
- * again after the ACs have moved, so the sampler only ever sees them clear.
- * The frame hook keeps the fullest value seen between two samplers (bits
- * are only added during a step, so the fullest one is the settled one). */
-static uint8_t vs_area_seen[2], vs_area[2];
+/* Debug (PSX_MOA_VS_AI_DEBUG=1): the AI's state goes into two player-block
+ * bytes nothing else uses (+0x254, +0x261), for the test harness. The engine
+ * restores the player blocks when the fight ends. */
+#define PB_DBG_RETURN     0x254u
+#define PB_DBG_FLAGS      0x261u
+static int vs_ai_debug = -1;
 
 static unsigned vs_bits(unsigned v) { return (v & 1u) + ((v >> 1) & 1u) + ((v >> 2) & 1u); }
 
@@ -366,7 +367,8 @@ static uint16_t vs_ai_think(unsigned side, uint32_t me, uint32_t foe)
         s->home_x = (rd16s(my + AC_X) + rd16s(en + AC_X)) / 2;
         s->home_z = (rd16s(my + AC_Z) + rd16s(en + AC_Z)) / 2;
     }
-    const unsigned area = vs_area[side];
+    /* Set this step by the stage's box objects, before the ACs move (traced). */
+    const unsigned area = psx_mod_read_byte(me + PB_AREA) & 7u;
     if (s->steps < 30) { if (vs_bits(area) > vs_bits(s->area_full)) s->area_full = (uint8_t)area; }
     else if (s->area_full && area && (area & s->area_full) != s->area_full) {
         if (!s->returning) psx_mod_counter_add(side ? "moa.vsai.p2.area_edge" : "moa.vsai.p1.area_edge", 1);
@@ -519,6 +521,16 @@ static uint16_t vs_ai_think(unsigned side, uint32_t me, uint32_t foe)
         psx_mod_counter_add(side ? "moa.vsai.p2.blade" : "moa.vsai.p1.blade", 1);
     }
 
+    if (vs_ai_debug < 0) {
+        const char *e = getenv("PSX_MOA_VS_AI_DEBUG");
+        vs_ai_debug = e && e[0] == '1';
+    }
+    if (vs_ai_debug) {
+        psx_mod_write_byte(me + PB_DBG_RETURN, s->returning);
+        psx_mod_write_byte(me + PB_DBG_FLAGS, (uint8_t)(s->area_full | (s->evade ? 8 : 0) |
+            (s->jump ? 16 : 0) | (s->strafe_on ? 32 : 0) | (s->boosting ? 64 : 0) |
+            (s->firing || s->burst ? 128 : 0)));
+    }
     s->last_word = w;
     return w;
 }
@@ -556,9 +568,6 @@ static int vs_sampler_filter(struct CPUState *cpu, uint32_t address)
     }
     last_steps = steps;
 
-    vs_area[0] = vs_area_seen[0]; vs_area[1] = vs_area_seen[1];
-    vs_area_seen[0] = vs_area_seen[1] = 0;
-
     /* The round is over: the people answer CONTINUE? with their own pads. */
     if (psx_mod_read_half(VS_END_COUNT) != 0) return 1;
 
@@ -575,17 +584,7 @@ static int vs_sampler_filter(struct CPUState *cpu, uint32_t address)
     return 1;
 }
 
-static void vs_frame_hook(void)
-{
-    if (!vs_ai_on() || !vs_engine(VS_SAMPLER)) return;
-    for (unsigned side = 0; side < 2; side++) {
-        const uint8_t a = psx_mod_read_byte(PB_P1 + side * PB_BYTES + PB_AREA) & 7u;
-        if (vs_bits(a) > vs_bits(vs_area_seen[side])) vs_area_seen[side] = a;
-    }
-}
-
 PSX_MOD_CONSTRUCTOR(moa_vs_ai_register)
 {
-    mod_register_frame_hook(vs_frame_hook);
     (void)psx_game_register_offline_function_filter(VS_SAMPLER, vs_sampler_filter);
 }

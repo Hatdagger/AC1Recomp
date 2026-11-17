@@ -1,0 +1,312 @@
+/* Master of Arena: the launcher's START GAME choices.
+ *
+ *   PSX_MOA_START=load   LOAD GAME: the save in PSX_MOA_START_SAVE (an 8 KB
+ *                        save block the launcher read from memory card 1)
+ *                        goes into RAM and the hub opens. No logos, title,
+ *                        NEW/LOAD menu or card screens.
+ *   PSX_MOA_START=new    NEW GAME: straight to the game's name entry.
+ *   PSX_MOA_START=title  LAUNCH GAME: the title, without the logos and intro
+ *                        movie unless PSX_MOA_FULL_BOOT=1.
+ *
+ * Each direct start replays what the game itself does on that road, mapped
+ * in docs/mapping/boot-loads.md (§3 SCENARIO, §4a LOAD and the card screen's
+ * finish, §4b NEW GAME). It runs in place of the title (the menu entry calls
+ * 0x800AAE94 when it would open the title). If any code word or the save
+ * does not check out, nothing is changed and the title opens as normal.
+ *
+ * Offline only. The launcher clears PSX_MOA_START for every other mode
+ * (Rogue Arena, AI Battle, netplay), so those keep their own boots.
+ */
+#include "mod_plugins.h"
+#include "cpu_state.h"
+
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* ---- the game (boot exe + menu module FDAT 206), see boot-loads.md ---------- */
+
+#define QS_MENU_ENTRY      0x800A69C8u
+#define QS_TITLE_OPEN      0x800AAE94u
+#define QS_TO_TITLE        0x8003EA7Au  /* byte: the menu opens the title */
+#define QS_NO_LOGOS        0x8003EA7Fu  /* byte: title opens without logos / intro */
+#define QS_LINK_RETURN     0x8003EA80u  /* byte: back to the link versus menu */
+#define QS_SCORE           0x8003EA94u  /* byte: 255 on SCENARIO */
+#define QS_MODE            0x8003EA2Au  /* engine mode byte: 0 */
+#define QS_PLUS            0x8003EAC8u  /* 8 bytes cleared on SCENARIO */
+#define QS_MAIL_SHOWN      0x8003EA82u  /* LOAD sets it */
+#define QS_OWNED           0x80036FECu  /* owned parts, 256 bytes */
+#define QS_OWNED_COPY      0x8003EB20u  /* the card screen's copy */
+#define QS_GARAGE          0x80036FB0u  /* 12 part ids */
+
+#define QS_SCENARIO_TEAM   0x800631FCu  /* garage = the scenario starting AC */
+#define QS_ARENA_RESET     0x800BA854u
+#define QS_VS_RESET        0x800C566Cu
+#define QS_SETTINGS_DEF    0x800B69F8u
+#define QS_SETTINGS_APPLY  0x800B6A80u
+#define QS_KILL_GROUP      0x80057B28u  /* (group) */
+#define QS_PICTURE         0x80057CB0u  /* (archive, entry): sync, to VRAM */
+#define QS_TIM_QUEUE       0x800586A0u  /* (archive, entry): queued, to VRAM */
+#define QS_NEW_TASK        0x800575B8u  /* (group) -> task */
+#define QS_PART_LISTS      0x80090FD8u
+#define QS_SLOT_DEFAULTS   0x80083130u
+#define QS_EMPTY_SLOTS     0x80067244u  /* (1) */
+#define QS_AC_TEXTURES     0x800822B0u  /* queue the garage AC's part textures */
+#define QS_DISC_BUSY       0x800589DCu  /* non-zero (low 16 bits) = disc queue still loading */
+#define QS_DISC_WAIT_MAX   20000000u    /* safety cap: each check runs a little game time */
+#define QS_HUB_OPEN        0x800552C0u
+#define QS_NEWGAME_STATE   0x800AC820u  /* NEW GAME: windows, then 0x800ACA0C name entry */
+#define QS_NULL_DRAW       0x80057C24u
+#define QS_LOAD_N          0x80073480u  /* LOAD: addiu v0,zero,'N' */
+#define QS_LOAD_COPY       0x80073620u  /* LOAD: addiu t4,v0,0x6FB0 (first copy) */
+
+#define QS_LOAD_IMAGE      0x8002C75Cu  /* boot exe */
+#define QS_MOVE_IMAGE      0x8002C81Cu
+#define QS_DRAW_SYNC       0x8002C4B0u
+#define QS_EMBLEM_RECT     0x800CC070u
+#define QS_CLUT_RECT       0x800CC078u
+#define QS_WEAPON_RECT     0x800CB8B8u
+#define QS_WEAPON_CLUT     0x800CB8C0u
+
+#define ARCH_MENU_TIM      4u
+
+/* Every routine called, with its first code word: the menu module must be
+ * the one in memory (all modules load at 0x80050DD8). */
+static const struct { uint32_t at, word; } k_code[] = {
+    { QS_MENU_ENTRY,     0x27BDFEB0u }, { QS_TITLE_OPEN,    0x27BDFFE0u },
+    { QS_SCENARIO_TEAM,  0x00002821u }, { QS_ARENA_RESET,   0x00003021u },
+    { QS_VS_RESET,       0x27BDFFE0u }, { QS_SETTINGS_DEF,  0x3C028005u },
+    { QS_SETTINGS_APPLY, 0x27BDFFD8u }, { QS_KILL_GROUP,    0x2484FFFEu },
+    { QS_PICTURE,        0x27BDFFE8u }, { 0x80099098u,      0x3C02801Au },
+    { 0x800941F4u,       0x24050018u }, { 0x80093BC4u,      0x3C02801Au },
+    { 0x800A2318u,       0x27BDFFE8u }, { 0x800A2020u,      0x3C02801Au },
+    { QS_PART_LISTS,     0x27BDFFC8u }, { QS_SLOT_DEFAULTS, 0x27BDFFE0u },
+    { QS_EMPTY_SLOTS,    0x27BDFFE0u }, { QS_AC_TEXTURES,   0x27BDFFE0u },
+    { QS_HUB_OPEN,       0x27BDFFB8u }, { QS_NEW_TASK,      0x00804021u },
+    { QS_TIM_QUEUE,      0x27BDFFD8u }, { QS_NEWGAME_STATE, 0x27BDFFD0u },
+    { 0x800ACA0Cu,       0x27BDFFE8u }, { QS_LOAD_N,        0x2402004Eu },
+    { QS_DISC_BUSY,      0x27BDFFE8u },
+    { QS_LOAD_COPY,      0x244C6FB0u },
+};
+
+/* LOAD's inline unpack for Master of Arena's own saves (0x80073610 ..
+ * 0x80073B90): every byte it writes comes from the save, unchanged. */
+static const struct { uint32_t dst; uint16_t from, bytes; } k_unpack[] = {
+    { 0x80036FB0u,  440,  12 },   /* garage parts */
+    { 0x80036FBCu,  592, 560 },   /* paint, owned parts (+640), shop stock (+896) ... */
+    { 0x800371ECu,  460,  36 },   /* AC name, pilot name */
+    { 0x8003EA70u,  454,   2 },   /* options */
+    { 0x8003EA72u,  452,   2 },   /* paint pattern / variant */
+    { 0x8003EA74u,  456,   4 },   /* credits */
+    { 0x8003EAC8u, 3564,   8 },   /* Human PLUS and the flags after it */
+    { 0x8004AC50u, 3232,  44 },
+    { 0x8004B508u,  496,  96 },
+    { 0x8004B568u, 3276, 288 },   /* settings */
+    { 0x8004B688u, 3572, 100 },
+};
+/* LOAD's calls after the unpack. */
+static const uint32_t k_after_load[] = {
+    QS_SETTINGS_APPLY, 0x80099098u, 0x800941F4u, 0x80093BC4u, 0x800A2318u, 0x800A2020u };
+
+#define SAVE_BYTES   3712u        /* 0xE80, what LOAD reads */
+#define SUM_AT       384u         /* word: sum of ~byte over 3240 bytes from 432 */
+#define SUM_FROM     432u
+#define SUM_BYTES    3240u
+#define VERSION_AT   3672u        /* byte: 1 */
+#define EMBLEM_AT    1152u
+#define CLUT_AT      3200u
+
+/* ---- session ---------------------------------------------------------------- */
+
+enum { QS_NONE = 0, QS_LOAD, QS_NEW, QS_TITLE };
+static int qs_mode = -1;
+static int qs_done;                 /* the direct start ran (or was given up) */
+static uint32_t qs_buf;             /* guest copy of the save, for LoadImage */
+
+static void qs_session(void)
+{
+    static char last[32] = "-";
+    const char *e = getenv("PSX_MOA_RUN_SESSION");
+    if (!e) e = "";
+    if (strncmp(last, e, sizeof last - 1) != 0) {
+        snprintf(last, sizeof last, "%s", e);
+        qs_mode = -1;
+        qs_done = 0;
+    }
+    if (qs_mode >= 0) return;
+    const char *m = getenv("PSX_MOA_START");
+    qs_mode = !m ? QS_NONE : !strcmp(m, "load") ? QS_LOAD : !strcmp(m, "new") ? QS_NEW
+            : !strcmp(m, "title") ? QS_TITLE : QS_NONE;
+}
+
+static int qs_full_boot(void)
+{
+    const char *e = getenv("PSX_MOA_FULL_BOOT");
+    return e && e[0] == '1';
+}
+
+static int qs_code_ok(void)
+{
+    for (size_t i = 0; i < sizeof k_code / sizeof k_code[0]; i++)
+        if (psx_mod_read_word(k_code[i].at) != k_code[i].word) return 0;
+    return 1;
+}
+
+static void qs_log(const char *what)
+{
+    psx_mod_counter_add(what, 1);
+    fprintf(stderr, "[moa start] %s\n", what);
+}
+
+static uint32_t call(struct CPUState *cpu, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2)
+{
+    return psx_mod_call_guest(cpu, fn, cpu->gpr[31], a0, a1, a2, 0);
+}
+
+/* §3: what the title's SCENARIO row does before NEW/LOAD (0x800AB58C). */
+static void qs_scenario(struct CPUState *cpu)
+{
+    psx_mod_write_byte(QS_SCORE, 255);
+    psx_mod_write_byte(QS_MODE, 0);
+    call(cpu, QS_SCENARIO_TEAM, 0, 0, 0);
+    call(cpu, QS_ARENA_RESET, 0, 0, 0);
+    call(cpu, QS_VS_RESET, 0, 0, 0);
+    call(cpu, QS_SETTINGS_DEF, 0, 0, 0);
+    call(cpu, QS_SETTINGS_APPLY, 0, 0, 0);
+    for (uint32_t i = 0; i < 8u; i++) psx_mod_write_byte(QS_PLUS + i, 0);
+    call(cpu, QS_KILL_GROUP, 2, 0, 0);
+    call(cpu, QS_PICTURE, ARCH_MENU_TIM, 0, 0);
+    call(cpu, QS_PICTURE, ARCH_MENU_TIM, 1, 0);
+    call(cpu, QS_PICTURE, ARCH_MENU_TIM, 4, 0);
+}
+
+static int qs_read_save(uint8_t save[SAVE_BYTES])
+{
+    const char *path = getenv("PSX_MOA_START_SAVE");
+    if (!path || !path[0]) return 0;
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    const int ok = fread(save, 1, SAVE_BYTES, f) == SAVE_BYTES;
+    fclose(f);
+    if (!ok || save[0] != 'S' || save[1] != 'C' || save[VERSION_AT] != 1u) return 0;
+    uint32_t sum = 0;
+    for (uint32_t i = 0; i < SUM_BYTES; i++) sum += ~(uint32_t)save[SUM_FROM + i];
+    const uint32_t want = (uint32_t)save[SUM_AT] | (uint32_t)save[SUM_AT + 1] << 8 |
+                          (uint32_t)save[SUM_AT + 2] << 16 | (uint32_t)save[SUM_AT + 3] << 24;
+    return sum == want;
+}
+
+/* LOAD GAME: §3, §4a steps 2-4. */
+static int qs_load(struct CPUState *cpu)
+{
+    static uint8_t save[SAVE_BYTES];
+    if (!qs_read_save(save)) { qs_log("moa.start.load_bad_save"); return 0; }
+    if (!qs_buf) qs_buf = psx_mod_alloc_guest_memory(SAVE_BYTES, 4u);
+    if (!qs_buf) { qs_log("moa.start.no_guest_memory"); return 0; }
+    for (uint32_t i = 0; i < SAVE_BYTES; i += 4u)
+        psx_mod_write_word(qs_buf + i, (uint32_t)save[i] | (uint32_t)save[i + 1] << 8 |
+                                       (uint32_t)save[i + 2] << 16 | (uint32_t)save[i + 3] << 24);
+    qs_scenario(cpu);
+    /* LOAD ('N' path), after its card read */
+    for (size_t k = 0; k < sizeof k_unpack / sizeof k_unpack[0]; k++)
+        for (uint32_t i = 0; i < k_unpack[k].bytes; i++)
+            psx_mod_write_byte(k_unpack[k].dst + i, save[k_unpack[k].from + i]);
+    call(cpu, QS_LOAD_IMAGE, QS_EMBLEM_RECT, qs_buf + EMBLEM_AT, 0);
+    call(cpu, QS_LOAD_IMAGE, QS_CLUT_RECT, qs_buf + CLUT_AT, 0);
+    call(cpu, QS_DRAW_SYNC, 0, 0, 0);
+    for (size_t i = 0; i < sizeof k_after_load / sizeof k_after_load[0]; i++)
+        call(cpu, k_after_load[i], 0, 0, 0);
+    psx_mod_write_byte(QS_MAIL_SHOWN, 1);
+    /* The card screen's finish (0x8005CE68, opened from the title). */
+    for (uint32_t i = 0; i < 256u; i++)
+        psx_mod_write_byte(QS_OWNED_COPY + i, psx_mod_read_byte(QS_OWNED + i));
+    call(cpu, QS_PART_LISTS, 0, 0, 0);
+    call(cpu, QS_SLOT_DEFAULTS, 0, 0, 0);
+    call(cpu, QS_EMPTY_SLOTS, 1, 0, 0);
+    call(cpu, QS_AC_TEXTURES, 0, 0, 0);
+    /* Then it waits for the disc queue (0x8005D0C4: loop on 0x800589DC), so
+     * the AC's textures are in VRAM before the block below is moved and
+     * before the hub opens (the hub's first state does not wait on the disc;
+     * its open moves that block back at once). The menu entry's back-from-
+     * arena road waits the same way. Rogue Arena's direct boot stalled
+     * without it. */
+    uint32_t spins = 0;
+    while ((call(cpu, QS_DISC_BUSY, 0, 0, 0) & 0xFFFFu) != 0u)
+        if (++spins >= QS_DISC_WAIT_MAX) { qs_log("moa.start.load_disc_wait_cap"); break; }
+    const uint8_t bl = psx_mod_read_byte(QS_GARAGE + 6u), br = psx_mod_read_byte(QS_GARAGE + 7u);
+    if ((bl != 0xFFu && bl >= 52u) || (br != 0xFFu && br >= 52u)) {
+        call(cpu, QS_MOVE_IMAGE, QS_WEAPON_RECT, 768, 448);
+        call(cpu, QS_MOVE_IMAGE, QS_WEAPON_CLUT, 0, 493);
+        call(cpu, QS_MOVE_IMAGE, QS_WEAPON_CLUT, 0, 494);
+        call(cpu, QS_DRAW_SYNC, 0, 0, 0);
+    }
+    /* LOAD's callback (0x800AC9E8): the hub. */
+    call(cpu, QS_HUB_OPEN, 0, 0, 0);
+    qs_log("moa.start.load_hub");
+    return 1;
+}
+
+/* NEW GAME: §3, then §4b. ✕ on NEW GAME queues the AC's textures and
+ * MENU_TIM 7, then the title task runs 0x800AC820 (windows) and 0x800ACA0C
+ * (credits, setup, name entry, then the hub). Here a task like the title's
+ * is made and started in 0x800AC820, so the game runs that chain itself. */
+static int qs_new(struct CPUState *cpu)
+{
+    qs_scenario(cpu);
+    call(cpu, QS_AC_TEXTURES, 0, 0, 0);
+    call(cpu, QS_TIM_QUEUE, ARCH_MENU_TIM, 7, 0);
+    const uint32_t t = call(cpu, QS_NEW_TASK, 0, 0, 0);
+    if (t < 0x80000000u || t >= 0x80200000u || t == 0x801D0BA0u) {
+        qs_log("moa.start.new_no_task");
+        return 1;    /* SCENARIO is half set: the title would be wrong too */
+    }
+    psx_mod_write_word(t + 0x74u, QS_TITLE_OPEN);   /* as the title's own task */
+    psx_mod_write_word(t + 0x78u, QS_NEWGAME_STATE);
+    psx_mod_write_word(t + 0x7Cu, QS_NULL_DRAW);
+    psx_mod_write_word(t + 0x70u, 0);
+    psx_mod_write_byte(t + 2u, 0);
+    psx_mod_write_byte(t + 3u, 0);
+    psx_mod_write_byte(t + 5u, 0);
+    psx_mod_write_byte(t + 0xA3u, 1);
+    qs_log("moa.start.new_name_entry");
+    return 1;
+}
+
+/* ---- hooks -------------------------------------------------------------------- */
+
+/* Menu entry: on the way to the title, open it without logos and intro
+ * (the game's own switch, read just after this). Not on the way back to
+ * the link versus menu, where the same byte means something else. */
+static void qs_menu_entry(struct CPUState *cpu, uint32_t address)
+{
+    (void)cpu;
+    qs_session();
+    if (qs_mode == QS_NONE || psx_mod_read_word(address) != 0x27BDFEB0u) return;
+    if (qs_mode == QS_TITLE && qs_full_boot()) return;
+    if (psx_mod_read_byte(QS_TO_TITLE) && !psx_mod_read_byte(QS_LINK_RETURN))
+        psx_mod_write_byte(QS_NO_LOGOS, 1);
+}
+
+static int qs_title_open(struct CPUState *cpu, uint32_t address)
+{
+    qs_session();
+    if (qs_done || (qs_mode != QS_LOAD && qs_mode != QS_NEW) ||
+        psx_mod_read_word(address) != 0x27BDFFE0u)
+        return 0;
+    qs_done = 1;                        /* once: a later title is the player's */
+    if (!qs_code_ok()) { qs_log("moa.start.code_mismatch"); return 0; }
+    /* What opening the title clears (the menu entry clears both after this
+     * call too). Rogue Arena's first direct-boot test found 0x8003EA7A still
+     * 1 after a fight (title branch instead of the hub), so they are cleared
+     * here as well. */
+    psx_mod_write_byte(QS_TO_TITLE, 0);
+    psx_mod_write_byte(QS_NO_LOGOS, 0);
+    return qs_mode == QS_LOAD ? qs_load(cpu) : qs_new(cpu);
+}
+
+PSX_MOD_CONSTRUCTOR(moa_quick_start_register)
+{
+    (void)psx_game_register_offline_function_entry(QS_MENU_ENTRY, qs_menu_entry);
+    (void)psx_game_register_offline_function_filter(QS_TITLE_OPEN, qs_title_open);
+}

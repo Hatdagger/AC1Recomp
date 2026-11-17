@@ -967,6 +967,17 @@ int moa_memcard_list_story(const char *path, struct moa_story_save *out, int max
     return n;
 }
 
+int moa_memcard_read_story(const char *path, int slot, uint8_t out[8192])
+{
+    if (slot < 1 || slot > 15) return 0;
+    uint8_t *mc = (uint8_t *)malloc(131072);
+    if (!mc) return 0;
+    const int ok = read_card_image(path, mc) && is_story(mc, slot, NULL);
+    if (ok) memcpy(out, mc + slot * 8192, 8192);
+    free(mc);
+    return ok;
+}
+
 static void save_checksum(uint8_t *b)
 {
     /* As moa_card_to_save: the loader's sum over +432, 3240 bytes, at +384. */

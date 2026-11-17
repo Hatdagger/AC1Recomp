@@ -218,6 +218,9 @@ with the textures the menu left in VRAM, which is rule 2.
 | VS without menus | §5 (the VS menu must have opened once: the StoreImage blocks, sound bank, MENU_TIM 1/4/6, model slots); each player's AC models + textures (`moa_load_unit`); §6 |
 | Arena fight | the player's textures in VRAM (rule 2), the opponent's set, §7 |
 
+In code: `games/master-of-arena/moa_quick_start.c` replays the Load Save and New Game rows for
+the launcher's START GAME menu (LOAD GAME / NEW GAME / LAUNCH GAME with FULL BOOT).
+
 ## 10. Open
 
 - Hub background missing after the Rogue Arena direct boot: is it the same cause (AC

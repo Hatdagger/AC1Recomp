@@ -317,13 +317,39 @@ void psx_savestate_menu_note_slots_changed(void)
     s_dirty = 1;
 }
 
+/* A plugin's overlay (psx_mod_set_overlay_image): drawn over the live game
+ * with its alpha, below the runtime's own menus. */
+static const uint32_t *s_mod_pixels;
+static int s_mod_w, s_mod_h;
+static int s_mod_showing;                  /* the last image handed out was the plugin's */
+
+void psx_savestate_menu_set_mod_overlay(const uint32_t *pixels, int w, int h)
+{
+    s_mod_pixels = (pixels && w > 0 && h > 0) ? pixels : NULL;
+    s_mod_w = s_mod_pixels ? w : 0;
+    s_mod_h = s_mod_pixels ? h : 0;
+}
+
+int psx_savestate_menu_overlay_blend(void)
+{
+    return s_mod_showing;
+}
+
 int psx_savestate_menu_needs_present(void)
 {
-    return s_open || s_ext_open;
+    return s_open || s_ext_open || s_mod_pixels != NULL;
 }
 
 int psx_savestate_menu_overlay_image(const uint32_t **pixels, int *w, int *h)
 {
+    s_mod_showing = 0;
+    if (!s_ext_open && !s_open && s_mod_pixels) {
+        s_mod_showing = 1;
+        if (pixels) *pixels = s_mod_pixels;
+        if (w) *w = s_mod_w;
+        if (h) *h = s_mod_h;
+        return 1;
+    }
     if (s_ext_open && s_ext_pixels && s_ext_w > 0 && s_ext_h > 0) {
         if (pixels) *pixels = s_ext_pixels;
         if (w) *w = s_ext_w;

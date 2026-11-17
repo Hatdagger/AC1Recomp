@@ -22,7 +22,7 @@ experiment.
 | Shared (averaged) | **Lock** settings (lock range, lock box, lock value) and **fire interval** ("RELOAD TIME" in the garage), averaged across the group. The group locks as one |
 | Kept per weapon | Damage, impact, ammo, energy per shot, projectile. Ammo is **not** synced: one weapon can run dry first |
 | △ cycling | A linked group is **one entry**: △ skips the linked partners. The selected weapon is still one of the group |
-| HUD | Show **each linked part's name and ammo** stacked in the **game's own HUD font** |
+| HUD | One line per linked weapon, stacked in the **game's own HUD font**: the **weapon type** the game already shows (DUAL MISSILE, MULTI MISSILE…, compiled slot +42), **not** the part name, plus its ammo. When more than one weapon is linked, each line also shows its **slot**: `ARM`, `BACK L` or `BACK R` |
 | Running dry | An empty weapon **drops out** of the group. Selection moves to a member that still has ammo (e.g. arms empty → back missiles selectable), and the rest keep firing together |
 | Back cannons | Keep their own rules: two-legged ACs still crouch to fire them |
 | First build | **Split-screen VS only** (VS engine, FDAT 209). That also covers netplay and AI Battle. Arena, missions and replays come later |
@@ -67,7 +67,8 @@ blocks when it exits, so nothing leaks back into the save):
    no ammo.
 5. **△ cycle** (`0x80082D90`, mask +0x296 → player block +0x11). Skip partners. When the
    selected member is empty, move to one with ammo.
-6. **HUD.** Draw an extra name + ammo line per linked member in the game's font.
+6. **HUD.** Draw an extra line per linked member in the game's font: weapon type (slot +42) +
+   ammo, with `ARM` / `BACK L` / `BACK R` added when the group has more than one member.
 7. Test build on a branch, which the user reviews before it's merged.
 
 ## Open points

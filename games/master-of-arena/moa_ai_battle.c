@@ -34,6 +34,7 @@
 
 #include "moa_card.h"
 #include "moa_screen.h"
+#include "moa_vs_direct.h"
 
 #define MOA_MODE_BYTE     0x8003EA2Au  /* engine the exe launches next */
 #define MOA_MODE_ARENA    3u
@@ -326,86 +327,11 @@ static int moa_arena_unit(uint32_t arena, uint32_t rank,
     return record[0] != 0xFFu && record[1] != 0xFFu;
 }
 
-/* ---- loading the units' graphics --------------------------------------------
+/* ---- loading the units' graphics ----------------------------------------------
  *
- * The match draws each AC from its player's own part files: one heap copy per
- * part (archive 5), painted in place, listed in the player's file table. The
- * garage works on one player at a time: a working table that points at that
- * player's files, and a working set of textures and colour tables in video
- * memory (the other player's set is kept aside and traded in by a swap). The
- * steps below are the garage's own: bring the player's set to the front,
- * point the working table at the player's files, set the garage's parts and
- * paint, rebuild (each part's textures and file are loaded, the file it
- * replaces freed, the paint baked), wait for the disc, and hand the table back
- * to the player (as leaving AC SETUP does).
- *
- * VS START is a menu state the game calls every frame until it moves on, so the
- * steps run one per frame while VS START is held back.
+ * Shared with every versus feature: moa_vs_direct.c (the garage's own steps,
+ * one per frame while VS START is held back, plus each card's emblem).
  */
-#define MOA_CD_BUSY         0x800589DCu  /* nonzero while disc loads are queued */
-#define MOA_SIG_CD_BUSY     0x27BDFFE8u
-#define MOA_REBUILD         0x80081E20u  /* garage AC: textures + paint, part files */
-#define MOA_SIG_REBUILD     0x27BDFFE8u
-#define MOA_AC_SWAP         0x800C0E7Cu  /* trade the two players' AC graphics */
-#define MOA_SIG_AC_SWAP     0x27BDFFC0u
-#define MOA_VS_FRONT        133u         /* VS menu state: 1 = player 2's set in front */
-#define MOA_GARAGE_PATTERN  0x8003EA72u  /* pattern, variant (0 = custom paint) */
-#define MOA_VS_PATTERN      0x8003EAD2u  /* + player */
-#define MOA_VS_VARIANT      0x8003EAB8u  /* + player */
-#define MOA_GARAGE_PARTS    0x80036FB0u  /* current AC: 12 part ids, then paint */
-#define MOA_GARAGE_PAINT    0x80036FBCu
-#define MOA_GARAGE_OPTIONS  0x8003EA70u
-#define MOA_WORK_FILES      0x801FBB00u  /* working table: file per slot */
-#define MOA_WORK_SIZES      0x801D0B28u  /* sizes in halves */
-#define MOA_PLAYER_FILES    0x8004AB60u  /* + 60 per player */
-#define MOA_PLAYER_SIZES    0x8004A9E0u  /* + 30 per player */
-#define MOA_FILE_FIRST      3u           /* slots 3..14 are the AC's parts */
-#define MOA_FILE_END        15u
-#define MOA_LOAD_FRAMES_MAX 900u         /* give up waiting after ~15 seconds */
-
-static int moa_cd_busy(struct CPUState *cpu)
-{
-    return (psx_mod_call_guest(cpu, MOA_CD_BUSY, cpu->gpr[31], 0, 0, 0, 0) & 0xFFFFu) != 0;
-}
-
-/* Garage := player `player`'s files, the unit's parts and paint; rebuild. */
-static void moa_load_unit(struct CPUState *cpu, unsigned player)
-{
-    for (uint32_t i = MOA_FILE_FIRST; i < MOA_FILE_END; i++) {
-        psx_mod_write_word(MOA_WORK_FILES + 4u * i,
-                           psx_mod_read_word(MOA_PLAYER_FILES + 60u * player + 4u * i));
-        psx_mod_write_word(MOA_WORK_SIZES + 4u * i,
-                           psx_mod_read_half(MOA_PLAYER_SIZES + 30u * player + 2u * i));
-    }
-    for (unsigned i = 0; i < 12; i++)
-        psx_mod_write_byte(MOA_GARAGE_PARTS + i,
-                           psx_mod_read_byte(MOA_VS_PARTS + 12u * player + i));
-    for (unsigned i = 0; i < MOA_PAINT_BYTES; i++)
-        psx_mod_write_byte(MOA_GARAGE_PAINT + i,
-                           psx_mod_read_byte(MOA_VS_PAINT + MOA_PAINT_BYTES * player + i));
-    psx_mod_write_half(MOA_GARAGE_OPTIONS, psx_mod_read_half(MOA_VS_OPTIONS + 2u * player));
-    psx_mod_write_byte(MOA_GARAGE_PATTERN, 0);
-    psx_mod_write_byte(MOA_GARAGE_PATTERN + 1u, 0);
-    psx_mod_write_byte(MOA_VS_PATTERN + player, 0);
-    psx_mod_write_byte(MOA_VS_VARIANT + player, 0);
-    (void)psx_mod_call_guest(cpu, MOA_REBUILD, cpu->gpr[31], 0, 0, 0, 0);
-}
-
-/* The rebuilt part files belong to player `player` from now on. */
-static void moa_commit_unit(unsigned player)
-{
-    for (uint32_t i = MOA_FILE_FIRST; i < MOA_FILE_END; i++) {
-        psx_mod_write_word(MOA_PLAYER_FILES + 60u * player + 4u * i,
-                           psx_mod_read_word(MOA_WORK_FILES + 4u * i));
-        psx_mod_write_half(MOA_PLAYER_SIZES + 30u * player + 2u * i,
-                           (uint16_t)psx_mod_read_word(MOA_WORK_SIZES + 4u * i));
-    }
-}
-
-static void moa_swap_sets(struct CPUState *cpu)
-{
-    (void)psx_mod_call_guest(cpu, MOA_AC_SWAP, cpu->gpr[31], 0, 0, 0, 0);
-}
 
 /* ---- cards ------------------------------------------------------------------
  *
@@ -475,8 +401,12 @@ static int moa_read_card(const char *path, struct moa_card *card)
     return ok;
 }
 
-/* A card as a unit: its record and its own AI record. */
-static int moa_card_unit(const char *path, uint8_t *record, uint8_t *ai)
+/* A card as a unit: its record, its own AI record, and the whole unit
+ * (names, paint, emblem) for the versus staging area. */
+static struct moa_vs_unit moa_vs_units[2];
+static uint8_t moa_vs_unit_ok[2];
+
+static int moa_card_unit(const char *path, unsigned u, uint8_t *record, uint8_t *ai)
 {
     static struct moa_card card;
     if (!moa_read_card(path, &card)) {
@@ -485,6 +415,8 @@ static int moa_card_unit(const char *path, uint8_t *record, uint8_t *ai)
     }
     moa_card_record(&card, record);
     moa_card_ai_record(&card, ai);
+    moa_vs_unit_from_card(&card, ai[0], 0, &moa_vs_units[u]);
+    moa_vs_unit_ok[u] = 1;
     psx_mod_counter_add(card.has_ai ? "moa.ai.card_unit" : "moa.ai.card_unit_balanced", 1);
     return 1;
 }
@@ -500,9 +432,10 @@ static int moa_pick_units(uint8_t record[2][MOA_RECORD_BYTES],
     int have[2] = { 0, 0 };
     int used[2] = { -1, -1 };
     moa_unit_waive[0] = moa_unit_waive[1] = 0;
+    moa_vs_unit_ok[0] = moa_vs_unit_ok[1] = 0;
     for (unsigned u = 0; u < 2; u++) {
         if (!chosen[u] || !chosen[u][0]) continue;
-        have[u] = moa_card_unit(chosen[u], record[u], ai[u]);
+        have[u] = moa_card_unit(chosen[u], u, record[u], ai[u]);
         for (int k = 0; k < moa_card_paths_count; k++)
             if (strcmp(moa_card_paths[k], chosen[u]) == 0) used[u] = k;
         if (!have[u]) psx_mod_counter_add("moa.ai.chosen_card_unreadable", 1);
@@ -517,7 +450,7 @@ static int moa_pick_units(uint8_t record[2][MOA_RECORD_BYTES],
             if (k == used[0] || k == used[1]) continue;
             used[u] = k;                       /* tried, readable or not */
             free_cards--;
-            have[u] = moa_card_unit(moa_card_paths[k], record[u], ai[u]);
+            have[u] = moa_card_unit(moa_card_paths[k], u, record[u], ai[u]);
         }
     }
     uint32_t picked = 0xFFFFFFFFu;
@@ -627,10 +560,11 @@ static int moa_time_limit_secs(void)
 }
 
 /* VS START, held back for as many frames as the units' graphics take. */
-static unsigned moa_load_step;
-static uint32_t moa_load_frames;
 static uint8_t moa_unit_record[2][MOA_RECORD_BYTES];
 static uint8_t moa_unit_ai[2][MOA_AI_RECORD_BYTES];
+
+static void moa_set_ff(int on);
+static int moa_manual_unit1(void);
 
 static void moa_units_ready(void)
 {
@@ -642,6 +576,12 @@ static void moa_units_ready(void)
     moa_stage_pick();
     moa_matches++;
     psx_mod_counter_add("moa.ai.match", 1);
+    /* Player vs AI: the player takes over here, at the game's own loading
+     * screen before the fight (no stop on the versus menu). */
+    if (moa_manual_unit1()) {
+        moa_set_ff(0);
+        psx_mod_counter_add("moa.ai.handover_loading", 1);
+    }
 }
 
 static uint8_t moa_menu_loaded[2];             /* unit came in through DATA LOAD */
@@ -649,7 +589,7 @@ static int moa_vs_start_armed;                 /* the script is done with the me
 
 static int moa_vs_start_filter(struct CPUState *cpu, uint32_t address)
 {
-    if (moa_load_step == 0) moa_ai_enabled = -1;  /* read the option per match */
+    if (!moa_vs_direct_loading()) moa_ai_enabled = -1;  /* read the option per match */
     if (!moa_ai_battle_on() || psx_mod_read_word(address) != MOA_SIG_VS_START)
         return 0;
     /* The same routine compiles an AC after DATA LOAD: only the real VS START,
@@ -657,13 +597,10 @@ static int moa_vs_start_filter(struct CPUState *cpu, uint32_t address)
     if (!moa_vs_start_armed) return 0;
     const uint8_t mode = psx_mod_read_byte(MOA_MODE_BYTE);
     if (mode != MOA_MODE_VERSUS && mode != MOA_MODE_ARENA) return 0;
-    const int can_load = psx_mod_read_word(MOA_CD_BUSY) == MOA_SIG_CD_BUSY &&
-                         psx_mod_read_word(MOA_REBUILD) == MOA_SIG_REBUILD &&
-                         psx_mod_read_word(MOA_AC_SWAP) == MOA_SIG_AC_SWAP;
-    const uint32_t state = cpu->gpr[4];
-    if (moa_load_step == 0) {
+    if (!moa_vs_direct_loading()) {
         if (!moa_pick_units(moa_unit_record, moa_unit_ai)) {
             psx_mod_counter_add("moa.ai.roster_failed", 1);
+            if (moa_manual_unit1()) moa_set_ff(0);  /* the player still gets the fight */
             return 0;                          /* stock versus match instead */
         }
         if (moa_menu_loaded[0] && moa_menu_loaded[1]) {
@@ -675,42 +612,21 @@ static int moa_vs_start_filter(struct CPUState *cpu, uint32_t address)
             moa_units_ready();
             return 0;
         }
-        moa_enter_unit(0, moa_unit_record[0], moa_unit_ai[0]);
-        moa_enter_unit(1, moa_unit_record[1], moa_unit_ai[1]);
-        if (!can_load) {                       /* default colours, but a match */
-            moa_units_ready();
-            return 0;
+        /* Straight into the versus staging area: a card's whole unit (names
+         * and emblem too), an arena opponent's build. */
+        moa_vs_direct_clear();
+        for (unsigned u = 0; u < 2; u++) {
+            if (moa_vs_unit_ok[u]) moa_vs_direct_set_unit(u, &moa_vs_units[u]);
+            else moa_enter_unit(u, moa_unit_record[u], moa_unit_ai[u]);
         }
-        moa_load_step = 1;
-        moa_load_frames = 0;
     }
-    if (moa_cd_busy(cpu) && ++moa_load_frames < MOA_LOAD_FRAMES_MAX)
+    int timed_out = 0;
+    if (moa_vs_direct_load_frame(cpu, cpu->gpr[4], &timed_out))
         return 1;                              /* VS START runs again next frame */
-    switch (moa_load_step) {
-    case 1:                                    /* player 1's set in front */
-        if (psx_mod_read_byte(state + MOA_VS_FRONT) == 1) {
-            moa_swap_sets(cpu);
-            psx_mod_write_byte(state + MOA_VS_FRONT, 0);
-        }
-        moa_load_unit(cpu, 0);
-        moa_load_step = 2;
-        return 1;
-    case 2:                                    /* unit 1 done; player 2's set */
-        moa_commit_unit(0);
-        moa_swap_sets(cpu);
-        moa_load_unit(cpu, 1);
-        moa_load_step = 3;
-        return 1;
-    default:                                   /* unit 2 done; player 1 in front */
-        moa_commit_unit(1);
-        moa_swap_sets(cpu);
-        moa_load_step = 0;
-        if (moa_load_frames >= MOA_LOAD_FRAMES_MAX)
-            psx_mod_counter_add("moa.ai.load_timeout", 1);
-        psx_mod_counter_add("moa.ai.painted", 1);
-        moa_units_ready();
-        return 0;                              /* VS START goes ahead */
-    }
+    if (timed_out) psx_mod_counter_add("moa.ai.load_timeout", 1);
+    psx_mod_counter_add("moa.ai.painted", 1);
+    moa_units_ready();
+    return 0;                                  /* VS START goes ahead */
 }
 
 /* ---- straight to the versus menu ----------------------------------------------
@@ -750,8 +666,8 @@ static uint32_t moa_autopilot_ticks;
  *   slot 2, PSX_MOA_AI_LOADMENU=1), SELECT MAP to PSX_MOA_AI_MAP (1..10),
  *   back to VS START.
  *
- * Player vs AI (PSX_MOA_AI_P1=1): the player takes over there. AI vs AI: VS
- * START, the fight in fast forward, START at the result to watch the replay;
+ * Player vs AI (PSX_MOA_AI_P1=1): VS START, and the player takes over at the
+ * game's own loading screen before the fight. AI vs AI: VS START, the fight in fast forward, START at the result to watch the replay;
  * the player takes over when the replay begins. A loaded build is checked
  * against its card; a unit that did not come through falls back to the
  * direct entry at VS START.
@@ -770,7 +686,7 @@ static uint32_t moa_autopilot_ticks;
 #define MOA_PAD_X           0x4000u
 #define MOA_PAD_O           0x2000u
 
-enum { STEP_PRESS, STEP_CHECK, STEP_HANDOVER, STEP_FIGHT, STEP_ROW };
+enum { STEP_PRESS, STEP_CHECK, STEP_HANDOVER, STEP_FIGHT, STEP_ROW, STEP_START };
 #define MOA_VS_ROW          0x801B2038u  /* versus menu cursor: 0 VS START .. 3 SELECT MAP */
 struct moa_step { uint8_t kind, port; uint16_t buttons, hold, wait; uint8_t phase; };
 enum { PH_READY = 0, PH_UNIT1, PH_UNIT2, PH_START };
@@ -794,6 +710,15 @@ static int moa_env_flag(const char *name)
 {
     const char *v = getenv(name);
     return v && v[0] == '1';
+}
+
+/* Versus without the menu (moa_vs_direct.c): straight from boot to the
+ * versus menu, the units written in directly, no DATA LOAD. On unless
+ * PSX_MOA_VS_DIRECT=0 (the older scripted route, kept for comparison). */
+static int moa_vs_direct_on(void)
+{
+    const char *v = getenv("PSX_MOA_VS_DIRECT");
+    return !(v && v[0] == '0');
 }
 
 /* Fast forward while the session runs unattended. Asked for again every frame
@@ -867,7 +792,7 @@ static void moa_script_build(void)
     moa_step_time = 0;
     moa_menu_loaded[0] = moa_menu_loaded[1] = 0;
     moa_phase_now = PH_READY;
-    if (moa_env_flag("PSX_MOA_AI_LOADMENU")) {
+    if (!moa_vs_direct_on() && moa_env_flag("PSX_MOA_AI_LOADMENU")) {
         const char *card[2] = { getenv("PSX_MOA_AI_UNIT1"), getenv("PSX_MOA_AI_UNIT2") };
         for (unsigned u = 0; u < 2; u++) moa_expect_set[u] = moa_card_parts(card[u], moa_expect_parts[u]);
         if (moa_expect_set[0] && moa_expect_set[1]) {
@@ -882,12 +807,10 @@ static void moa_script_build(void)
      * input (the first press after the menu opens is otherwise lost). */
     moa_add(STEP_ROW, 1, 1, 0, 0);
     moa_add(STEP_ROW, 1, 0, 0, 0);                      /* VS START */
-    if (moa_manual_unit1()) {
-        moa_add(STEP_HANDOVER, 1, 0, 0, 0);
-    } else {
-        moa_add(STEP_FIGHT, 1, 0, 0, 0);
-        moa_tap(1, MOA_PAD_X, 0);                       /* VS START */
-    }
+    /* Both kinds press VS START: Player vs AI is handed over at the game's
+     * loading screen (moa_units_ready), not on the menu. */
+    moa_add(moa_manual_unit1() ? STEP_START : STEP_FIGHT, 1, 0, 0, 0);
+    moa_tap(1, MOA_PAD_X, 0);                           /* VS START */
 }
 
 static uint32_t moa_step_budget(const struct moa_step *st);
@@ -950,6 +873,10 @@ static void moa_script_frame(void)
         moa_set_ff(0);
         psx_mod_counter_add("moa.ai.handover_menu", 1);
         moa_script_pos = moa_script_len;
+        return;
+    case STEP_START:                                    /* Player vs AI: VS START, no lock */
+        moa_vs_start_armed = 1;
+        moa_script_pos++; moa_step_time = 0;
         return;
     case STEP_FIGHT:                                    /* stays fast through the fight */
         moa_vs_start_armed = 1;
@@ -1262,20 +1189,28 @@ static void moa_session_check(void)
     moa_limit_armed = 0;
     moa_stage_pending = 0;
     moa_screen_frames = 0;
-    moa_load_step = 0;
+    moa_vs_direct_reset();                     /* incl. a graphics load cut short */
 }
 
 static void moa_menu_entry(struct CPUState *cpu, uint32_t address)
 {
     (void)cpu;
     moa_ai_enabled = -1;
-    if (!moa_ai_battle_on() || psx_mod_read_word(address) != MOA_SIG_MENU_ENTRY)
+    if (!moa_ai_battle_on() || psx_mod_read_word(address) != MOA_SIG_MENU_ENTRY) {
+        /* Not an AI Battle boot: a direct boot left armed must not turn
+         * this game's title into the versus menu. */
+        if (!moa_ai_battle_on()) moa_vs_direct_arm_boot(0);
         return;
+    }
     moa_session_check();
     if (moa_matches > 0) {                     /* back from a match */
         moa_return_to_launcher("moa.ai.return_after_match");
         return;
     }
+    /* Direct: the title is replaced by the versus menu. The autopilot stays
+     * on behind it in case that does not happen (a different disc, say): it
+     * stops as soon as the versus menu opens. */
+    moa_vs_direct_arm_boot(moa_vs_direct_on());
     moa_autopilot = 1;
     moa_autopilot_ticks = 0;
     moa_set_ff(1);

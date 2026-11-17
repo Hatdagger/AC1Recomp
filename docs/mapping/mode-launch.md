@@ -192,6 +192,12 @@ DATA LOAD / SELECT MAP presses (the build comes from the card instead of a sessi
 card). After the fight 0x8003EA7E = 1 brings the player back to the VS menu, where the
 existing "return to launcher" logic already takes over.
 
+**Implementation (branch `vs-direct`, 2026-11-17, not yet built or tested):**
+`games/master-of-arena/moa_vs_direct.c` holds steps 1–3 (boot to the versus menu, units with
+names and emblem into the staging area, graphics at VS START). AI Battle uses it by default
+(`PSX_MOA_VS_DIRECT=0` brings back the old scripted DATA LOAD route for comparison).
+Netplay is next.
+
 **Scenario — Load Save / New Game without the title:** set mode = 0 and the Scenario
 values from `0x800AB500`, then run the LOAD GAME state (`0x800AC8E8`) — card screens still
 show — or, for a true skip, put the save into RAM ourselves and call `0x800552C0` (open the

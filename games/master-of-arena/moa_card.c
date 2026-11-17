@@ -651,6 +651,8 @@ static void save_put_name(uint8_t *dst, const char *src)
     }
 }
 
+void moa_card_put_name(uint8_t dst[18], const char *src) { save_put_name(dst, src); }
+
 void moa_card_to_save(const struct moa_card *c, uint8_t b[MOA_SAVE_BLOCK])
 {
     memset(b, 0, MOA_SAVE_BLOCK);

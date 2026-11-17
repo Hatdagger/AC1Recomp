@@ -146,6 +146,23 @@ or one read of the code that uses it.
 | Weapon detail | +0x04 | 255 most; 2 radars and two-slot units; 1 grenade launcher, WC-IR24 | Slot use (two-slot = 2)? |
 | Weapon detail | +0x05 | 1 most; rockets 6; energy cannons 3; dispensers, radars 0 | Aim mode (rockets fire straight, no lock) |
 
+## Room for more optional parts
+
+Checked 2026-11-17 (menu module, FDAT 206), with custom options in mind:
+
+- **The menus are built for 19 option IDs, not 13.** The option list loops (e.g. `0x80091A5C`,
+  also around `0x80091DF0`, `0x8009241C`) run IDs 0–18, reading the record at
+  `0x800D1AA0 + ID × 44` and shifting the owned/fitted mask one bit per ID. Inventory also has
+  19 option bytes (13 + 6 spare, see below).
+- **The table itself has only 13 records.** `0x800D1AA0 + 13 × 44 = 0x800D1DE4`, which is where
+  the weapon-arms detail table starts, so IDs 13–18 would read weapon data as a name. New
+  records need a new home (a recomp hook can point the reads elsewhere).
+- **The fitted mask `0x8003EA70` is 16 bits** (only `lh`/`lhu`/`sh` at +0, 27 stores and 55
+  loads in the menus; the engines never read it, they get the compiled block). Bits 0–12 are
+  used, so **3 free bits (IDs 13–15)** without changing the game. IDs 16–18 need the mask widened.
+- Option effects are coded in the compile routine (`stat-block.md`, "Options in the slot code"),
+  so a new option needs its own code, which a recomp plugin can run after `0x800A7BB4`.
+
 ## Open questions
 
 - **Blade +0x2C vs +0x30 (mostly settled).** The disc shows +0x30 running from 738 (LS-2001)

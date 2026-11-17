@@ -59,8 +59,8 @@ Data chat → battle chat:
   +0x39C; arena `0x801E29C8`): +0x0A distance 650, +0x0C height 40, +0x0E smoothing shift 2,
   +0x2C / +0x2E angles, +0x01/+0x02 joints and +0x04 hidden-joint list for the alternate
   camera (stat +0x02 bit 0, START + △ + □ while START is held, `0x8007CC70`). Chase camera
-  `0x800878FC`, alternate `0x80087B90`. START + ○ + ✕ sets camera +0x08 bit 0 (effect not
-  traced). Details in `stat-block.md`, "Camera setup".
+  `0x800878FC`, alternate `0x80087B90`. START + ○ + ✕ sets camera +0x08 bit 0: tested, the
+  camera stays in place and keeps following the AC (screenshot camera). Details in `stat-block.md`, "Camera setup".
 
 Launch chat → battle chat:
 - FDAT **211 is a fifth engine, the VS replay** (entry 0x80051FA4). When replay is picked the

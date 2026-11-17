@@ -252,7 +252,8 @@ Each player has a 56-byte camera record: VS `0x801D6EF8` (player 1) and `0x801D6
 `0x80087658` resets the rest (+0x00 = 255, +0x08, +0x18 = 0, angles +0x2C–0x33 from
 `0x8003EA48`). Chase camera: `0x800878FC` (angles +0x2C / +0x2E, pitch clamped to ±800);
 alternate camera: `0x80087B90`, picked by stat +0x02 bit 0. The camera state beyond these
-fields belongs to the battle chat (its "Camera routine" row).
+fields belongs to the battle chat (its "Camera routine" row). Camera +0x08 bit 0 = **fixed
+screenshot camera** (START + ○ + ✕, tested in game; see below).
 
 ## To name by a test in VS
 
@@ -261,8 +262,10 @@ Poke one, watch the effect, log the result here:
 +0x26, +0x2A (head bytes), +0x34 bits 0–1, body frame 3 (Human
 PLUS ≥ 4), slot +7/+8/+9 → player block +0x210–0x214, slot +10 to +12. Watch slot +58–61 and
 +0x04/+0x11 for any write to confirm they're padding. Hold START + △ + □ in a fight to
-confirm the alternate camera (+0x02 bit 0); see what START + ○ + ✕ (`0x6008`, sets camera
-+0x08 bit 0) does.
+confirm the alternate camera (+0x02 bit 0).
+
+Tested (user, 2026-11-17): **START + ○ + ✕** (`0x6008`, sets camera +0x08 bit 0) drops the
+camera where it is; it stays put but keeps turning to follow the AC (a screenshot camera).
 
 ## Next steps
 

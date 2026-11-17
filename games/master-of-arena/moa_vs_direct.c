@@ -82,7 +82,7 @@ void moa_vs_unit_from_card(const struct moa_card *c, uint8_t plus_level, int wai
      * hand weapon, back left, back right, generator, FCS, (none), legs.
      * Caterpillar legs (27 and up) have no booster. */
     const uint8_t booster = r[3] >= 27u && r[3] != 0xFFu ? 0xFFu : r[12];
-    const uint8_t parts[12] = { r[0], booster, r[1], r[2], r[5], r[4],
+    const uint8_t parts[12] = { r[0], booster, r[1], r[2], r[5], moa_card_game_hand(r),
                                 r[6], r[7], r[9], r[8], 0xFFu, r[3] };
     memcpy(u->parts, parts, 12);
     for (unsigned i = 0; i < 48; i++) u->paint[i] = c->paint[i] > 64 ? 64 : c->paint[i];

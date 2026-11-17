@@ -19,9 +19,8 @@
  *
  * A direct boot (see "Direct boot" below: no title, no LOAD GAME, no card
  * screens; the save goes straight into RAM through the game's own unpack) is
- * written but off: its first real run broke stage and AC drawing and hung on
- * the way back to the hub. PSX_MOA_RUN_DIRECT=1 tries it; the menu presses
- * above are the boot.
+ * the default boot (launcher FAST BOOT). PSX_MOA_RUN_DIRECT=0 (FAST BOOT
+ * OFF) makes the menu presses above the boot, the fallback.
  *
  * If the hub does not come up in time the overlay is dropped and the
  * player is given the menus, so a wrong step can never leave a black screen.
@@ -228,7 +227,7 @@ enum { KIND_BUILDS = 0, KIND_NAMES, KIND_REWARDS, KIND_AI };
 #define RUN_HUB_TIMEOUT      (60u * 90u)  /* frames; fast forward makes this short */
 #define RUN_FADE_FRAMES      24u
 
-/* ---- Direct boot (off; PSX_MOA_RUN_DIRECT=1 tries it, see run_direct_wanted)
+/* ---- Direct boot (on; PSX_MOA_RUN_DIRECT=0 turns it off, see run_direct_wanted)
  *
  * Instead of the title, LOAD GAME and the card screens, the title-open hook
  * does what those screens end up doing, with the game's own routines
@@ -492,16 +491,13 @@ static void run_menu_entry(struct CPUState *cpu, uint32_t address)
     run_log("boot: menu reached, autopilot on");
 }
 
-/* Off by default: the first build where it actually ran (once the 'N' save
- * check matched) left the game without stage backgrounds and AC models, 13
- * lineup records unreadable (arena tables not set up yet) and a hang on the
- * way back to the hub. Title / LOAD GAME set up more than the routines it
- * replays; until that is traced, the menu presses are the boot.
- * PSX_MOA_RUN_DIRECT=1 tries it. */
+/* On by default (launcher FAST BOOT); PSX_MOA_RUN_DIRECT=0 falls back to the
+ * menu presses. (It was off while the first builds missed the card screen's
+ * finish and opened the hub before the disc queue was empty.) */
 static int run_direct_wanted(void)
 {
     const char *e = getenv("PSX_MOA_RUN_DIRECT");
-    return e && e[0] == '1';
+    return !(e && e[0] == '0');
 }
 
 /* The run's save as LOAD would read it: the session card's block 1, first

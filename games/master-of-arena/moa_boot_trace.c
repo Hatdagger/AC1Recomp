@@ -134,7 +134,7 @@ static void bt_begin(void)
     const char *run = getenv("PSX_MOA_RUN_FILE");
     if (!on || on[0] != '1' || !run || !run[0]) return;
     const char *d = getenv("PSX_MOA_RUN_DIRECT");
-    const char *route = (d && d[0] == '1') ? "direct" : "menu";
+    const char *route = (d && d[0] == '0') ? "menu" : "direct";   /* as run_direct_wanted */
     snprintf(bt_base, sizeof bt_base, "%s.boot-%s", run, route);
     char p[1100];
     snprintf(p, sizeof p, "%s.csv", bt_base);

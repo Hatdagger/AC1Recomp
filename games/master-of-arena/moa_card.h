@@ -60,6 +60,13 @@ struct moa_card {
 int moa_card_decode(const uint8_t *file, size_t bytes, struct moa_card *out);
 
 /* The 64-byte arena AC record the game uses for an opponent. */
+/* The hand weapon byte as the game writes it: 255 for no hand weapon. The
+ * builder keeps 0 (the table's NO WEAPON row) for an empty hand, but the game
+ * would fit that row as a weapon with 0 ammo (stat compile, menu 0x800A8EB0);
+ * weapon arms always have 255 there, as the game's own garage and every
+ * arena opponent do. Use wherever a record goes into the game. */
+uint8_t moa_card_game_hand(const uint8_t rec[13]);
+
 void moa_card_record(const struct moa_card *card, uint8_t record[64]);
 
 /* ---- AI ---- */

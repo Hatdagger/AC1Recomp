@@ -253,12 +253,12 @@ done:
  * the hands (menu 0x80082A1C, 0x8008336C, 0x800880C8) and every arena opponent
  * with weapon arms has 255 there. Hand id 0 is the table's "NO WEAPON" row,
  * and the stat compile (0x800A8EB0) fits anything but 255 as a weapon: a
- * NO WEAPON slot with 0 ammo, the "0/0" arm weapon of a Retry test. The
- * launcher's builder keeps 0 for weapon arms; the run converts at its edges
- * (new ACs, the run's save, ghosts), so older run files are fixed too. */
+ * NO WEAPON slot with 0 ammo, the "0/0" arm weapon of a Retry test. Run
+ * files made before this kept 0; the run converts at its edges (new ACs,
+ * the run's save, ghosts), so those are fixed too (moa_card_game_hand). */
 void moa_run_game_hand(uint8_t rec[13])
 {
-    if (rec[4] == 0 || (rec[2] >= 12 && rec[2] != 255)) rec[4] = 255;
+    rec[4] = moa_card_game_hand(rec);
 }
 
 int moa_run_start_ac(const struct moa_parts *p, uint64_t seed, uint8_t rec[13])

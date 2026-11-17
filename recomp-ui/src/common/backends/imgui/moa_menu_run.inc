@@ -14,10 +14,11 @@ static std::string g_run_status;
 static char g_run_pilot[17] = "";
 static char g_run_ac[17] = "";             /* optional: blank is fine */
 enum { R_NEW = 0, R_CONTINUE, R_PILOT, R_AC, R_SEED, R_FAST, R_ROWS };
-/* FAST BOOT (TEST): the game's direct boot (no title, LOAD GAME or card
- * screens; moa_arena_run_boot.c) instead of the menu presses. Off by default
- * and not kept between launcher sessions while it is being tested. */
-static bool g_run_fast = false;
+/* FAST BOOT: the game's direct boot (no title, LOAD GAME or card screens;
+ * moa_arena_run_boot.c). On by default; OFF goes back to the menu presses,
+ * the fallback if the direct boot ever fails. Not kept between launcher
+ * sessions. */
+static bool g_run_fast = true;
 
 /* The one-time notice before the first run (kept from the demo for a feature
  * to come): once OK is pressed a marker file beside memory card 1 keeps it
@@ -203,7 +204,7 @@ static void draw_run_page(LauncherModel* m, const Gfx& g, const Input& in) {
         { "PILOT NAME", g_name_edit == 2 ? pilot : (g_run_pilot[0] ? upper(g_run_pilot) : "REQUIRED"), true },
         { "AC NAME", g_name_edit == 1 ? ac : (g_run_ac[0] ? upper(g_run_ac) : "OPTIONAL"), true },
         { "SEED", seed, true },
-        { "FAST BOOT (TEST)", g_run_fast ? "ON" : "OFF", true },
+        { "FAST BOOT", g_run_fast ? "ON" : "OFF", true },
     };
     int activate = -1;
     for (int i = 0; i < R_ROWS; ++i) {

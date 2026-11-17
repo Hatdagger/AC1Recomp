@@ -12,16 +12,17 @@ Several chats map Master of Arena at the same time. To avoid double work:
 
 | Lane | Doc | Owner | Covers | Status |
 |---|---|---|---|---|
-| Battle system | `battle-system.md` | battle chat | Everything that runs during a fight: player block, AC object, **the 324-byte compiled stat block (player block +0x250)**, damage, weapons in flight, movement, AI per frame, match start/end | in progress |
-| Static game data | `parts-tables.md`, `arena-roster.md` (next) | data chat | Data stored on the disc and read by the menus: part tables, weapon details, options, **arena opponent rosters** (builds, AI settings, rewards, ranks) | parts ~90%; roster claimed |
+| Battle system | `battle-system.md` | battle chat | Everything else that runs during a fight: player block (outside the stat block), AC object, damage, weapons in flight, movement, AI per frame, match start/end | in progress |
+| Compiled stat block | `stat-block.md` | data chat | **The 324-byte block the menu builds at VS START (player block +0x250 … +0x393)**: every field, the compile routine `0x800A7BB4` that fills it, and how the engines read it | started 2026-11-17 |
+| Part tables | `parts-tables.md` | data chat | Part tables, weapon details, options on the disc | ~90%, paused |
 | GameShark RAM list | `ram-map-gameshark.md` | shared, append-only | Raw code-derived addresses | reference |
 
-Not claimed yet (claim before starting): missions data (FDAT 207), save/memory card format,
+Not claimed yet (claim before starting): arena opponent rosters, missions data (FDAT 207), save/memory card format,
 menus and UI flow, sound/music, stage data.
 
 ## Handed over
 
-From data chat to battle chat:
+From data chat to battle chat (the battle chat finds writes into +0x250…+0x393: hand them over here rather than mapping them):
 - Blade: +0x30 of the blade record is attack, +0x2C most likely charge drain (it's what lands
   at compiled +28). Armored-CoreR's notes had them swapped, which may explain the blade damage
   mismatch (683 vs 492). Details in `parts-tables.md`.

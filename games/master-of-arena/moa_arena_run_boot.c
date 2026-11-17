@@ -301,6 +301,23 @@ static const struct { uint32_t dst; uint16_t from, bytes; } k_run_d_unpack[] = {
 #define RUN_D_CLUT_RECT      0x800CC078u
 static const uint32_t k_run_d_after_load[] = {
     0x800B6A80u, 0x80099098u, 0x800941F4u, 0x80093BC4u, 0x800A2318u, 0x800A2020u };
+/* What the card screen does after LOAD returns (state 0x8005CE68, the
+ * title case: parent task's open routine == 0x800AAE94), mapped 2026-11-17
+ * (mode-launch.md, "After LOAD: the card screen's finish"). Skipping it left
+ * the AC's part textures out of video memory: no AC in the hub or the first
+ * fight, until the arena's return path (0x800A70C0) queued them. */
+#define RUN_D_OWNED          0x80036FECu  /* owned parts, 256 bytes ... */
+#define RUN_D_OWNED_COPY     0x8003EB20u  /* ... copied here (garage/shop lists) */
+static const uint32_t k_run_d_card_finish[] = {
+    0x80090FD8u,                          /* part lists from the copy */
+    0x80083130u };                        /* empty core/booster/head/arms/legs -> defaults */
+#define RUN_D_EMPTY_SLOTS    0x80067244u  /* (1): fallback files for empty slots */
+#define RUN_D_SIG_EMPTY_SLOTS 0x27BDFFE0u
+#define RUN_D_AC_TEXTURES    0x800822B0u  /* queue the garage AC's part textures */
+#define RUN_D_SIG_AC_TEXTURES 0x27BDFFE0u
+#define RUN_D_MOVE_IMAGE     0x8002C81Cu  /* boot exe MoveImage(rect, x, y) */
+#define RUN_D_WEAPON_RECT    0x800CB8B8u  /* (384,256,64,64) -> (768,448) */
+#define RUN_D_WEAPON_CLUT    0x800CB8C0u  /* (320,482,256,1) -> (0,493), (0,494) */
 #define RUN_D_HUB_OPEN       0x800552C0u
 #define RUN_D_SIG_HUB_OPEN   0x27BDFFB8u  /* addiu sp,sp,-72 */
 #define RUN_D_HUB_INPUT      0x80055848u
@@ -494,6 +511,8 @@ static int run_direct_code_ok(void)
            psx_mod_read_word(RUN_D_LOAD_N) == RUN_D_SIG_LOAD_N &&
            psx_mod_read_word(RUN_D_LOAD_COPY) == RUN_D_SIG_LOAD_COPY &&
            psx_mod_read_word(RUN_D_HUB_OPEN) == RUN_D_SIG_HUB_OPEN &&
+           psx_mod_read_word(RUN_D_EMPTY_SLOTS) == RUN_D_SIG_EMPTY_SLOTS &&
+           psx_mod_read_word(RUN_D_AC_TEXTURES) == RUN_D_SIG_AC_TEXTURES &&
            psx_mod_read_word(RUN_D_HUB_INPUT) == RUN_D_SIG_HUB_INPUT;
 }
 
@@ -546,6 +565,25 @@ static int run_direct_boot(struct CPUState *cpu)
     (void)psx_mod_call_guest(cpu, RUN_D_DRAW_SYNC, ra, 0, 0, 0, 0);
     for (size_t i = 0; i < sizeof k_run_d_after_load / sizeof k_run_d_after_load[0]; i++)
         (void)psx_mod_call_guest(cpu, k_run_d_after_load[i], ra, 0, 0, 0, 0);
+    /* 2b. The card screen's finish after a good LOAD (0x8005CFB0..0x8005D14C,
+     * title case). The game then waits for the disc queue (0x800589DC); here
+     * the menu loop drains it behind the loading screen. */
+    for (uint32_t i = 0; i < 256u; i++)
+        psx_mod_write_byte(RUN_D_OWNED_COPY + i, psx_mod_read_byte(RUN_D_OWNED + i));
+    for (size_t i = 0; i < sizeof k_run_d_card_finish / sizeof k_run_d_card_finish[0]; i++)
+        (void)psx_mod_call_guest(cpu, k_run_d_card_finish[i], ra, 0, 0, 0, 0);
+    (void)psx_mod_call_guest(cpu, RUN_D_EMPTY_SLOTS, ra, 1, 0, 0, 0);
+    (void)psx_mod_call_guest(cpu, RUN_D_AC_TEXTURES, ra, 0, 0, 0, 0);
+    {   /* back weapon ids 52 and up keep a texture block aside; the hub open
+         * (0x800554A8) moves it back */
+        const uint8_t bl = psx_mod_read_byte(0x80036FB6u), br = psx_mod_read_byte(0x80036FB7u);
+        if ((bl != 0xFFu && bl >= 52u) || (br != 0xFFu && br >= 52u)) {
+            (void)psx_mod_call_guest(cpu, RUN_D_MOVE_IMAGE, ra, RUN_D_WEAPON_RECT, 768, 448, 0);
+            (void)psx_mod_call_guest(cpu, RUN_D_MOVE_IMAGE, ra, RUN_D_WEAPON_CLUT, 0, 493, 0);
+            (void)psx_mod_call_guest(cpu, RUN_D_MOVE_IMAGE, ra, RUN_D_WEAPON_CLUT, 0, 494, 0);
+            (void)psx_mod_call_guest(cpu, RUN_D_DRAW_SYNC, ra, 0, 0, 0, 0);
+        }
+    }
     /* The run is in RAM: hand the data over now (the arena hooks wait for
      * it), keep the loading screen until the Arena list is up. */
     run_at_hub = 1;

@@ -72,8 +72,8 @@ with the same layout shifted (+0x64 save data, +0x60 battle data).
 3. **Weapons and projectiles** — fire routines, pool layout and update routines done
    2026-11-17 ("Weapons in flight"); missile lock slots, volleys and steering read 2026-11-17
    (static). Open: run-test the missile notes; the second missile spawn call `0x8007BED4`.
-4. **Movement** — ground speed cap (Armored-CoreR uses 75 per axis), boost, jump, turning,
-   leg type differences. This is the "feel" Armored-CoreR keeps chasing.
+4. **Movement** — done for the default AC 2026-11-17 ("Movement and energy"): the 75 cap is ¾ of
+   the AC's width, handlers, energy rules all measured. Open: landing recovery, other leg types.
 5. **Match start / end** — the call that sets up both ACs from the build and part tables
    (unblocks direct launching from the launcher) and the result record.
 
@@ -432,6 +432,62 @@ Kinds 8, 9, 10, 12 are not used by the launcher table. The other spawn call (`0x
    some targets, then removal (`0x8008B60C`).
 
 Arena engine: the same handler is most likely at `0x8008FFB4` (pattern match only).
+
+## Movement and energy (VS engine, code + measured 2026-11-17)
+
+Checked in this repo's debug build in plain VS, default AC on both sides, P2 idle. Armored-CoreR's
+numbers are **not** taken as given (the user rates that research as rough); each line below was
+measured here or read in FDAT 209. Speeds are in 1/64 world units per step, angles 4,096 = 360°.
+
+**How the AC moves.** Every position write during walking, turning, boosting and rising comes from
+one place: the animation player's per-axis stepper (`0x80055034` → `0x80054FF8`, AC +0x6C, steppers
+at +0x6C +0x20 / +0x28 / +0x30). Each movement handler turns velocity (+0xD4 … +0xD8) into a step
+vector (velocity ÷ 64) and loads the stepper through `0x80054124` + `0x800540B8`.
+
+**The 75-per-axis speed limit is the AC's size.** `0x80054124(step, out, half-width, half-height, n)`
+cuts any axis whose step is larger than the limit down to the limit. The limit is taken from AC
++0x28 (width, 100) and +0x2A (height, 212):
+- three quarters of them (**75** sideways, **159** up/down) in `0x8007B60C`, `0x8007B8B0`, `0x800859F4`;
+- half (50 / 106) in `0x8007B108`, `0x8007B454`, `0x8007BC6C`, `0x8007E714`.
+It looks like protection against moving through walls. **Tested**: ground boost tops out at 75 a step
+with AC +0x28 = 100. With +0x28 = 150 it reaches the true top speed, 83 a step (5,320 ÷ 64).
+AC +0x28 / +0x2A come from a 44-byte object-type record (pointer AC +0x04, set by `0x8007CE84`), not from the parts.
+
+**Handlers and values** (player block, set at match start; see `stat-block.md`):
+
+| What | Handler | Value used | Measured (default AC) |
+|---|---|---|---|
+| Turning | `0x8007E1DC` (write `0x8007E268`), also in the air and boost handlers | +0x20C accel, +0x20E top | +6 per step up to **38**, stops at once on release ✔ |
+| Ground boost | `0x8007F7BC` | +0x208 accel, +0x20A top | velocity +531 per step; 83 a step at the top, capped to 75 by the size limit ✔ |
+| Rise / air | `0x8007FBAC` | +0x200 accel, +0x202 top, +0x204 / +0x206 air boost | take-off −3,200, then −64 per step to **−5,000** ✔ |
+| Gravity | `0x8007FBAC` (`0x8007FC88`) | +256 per step, fall limit 9,600 | +256 per step after release ✔ |
+| Walking | animation root motion | none | 11 ×3, 25 ×4, then 31 ×4 / 37–38 ×4 repeating, the same facing 0°, 45° and 90° ✔ |
+
+- Boost button = **player block +0x298** (the pad mask the energy and air code test). The data chat had this as "?".
+- **Second turn set +0x210 / +0x212** (from the selected slot +7 / +8) is used only by the handler
+  `0x8007E3E0`. `0x8007B454` installs it from the hit callback `0x80082430` and the animation callback
+  `0x8008389C`, so it is likely the turn rate while staggered or recovering `?`. That handler also slows
+  velocity by 1/8 per step and zeroes it below 512.
+  - Live values: rifle selected 1 / 1, missile selected 3 / 28.
+
+**Energy** (`0x80082D90`, player block +0x16; capacity +0x262, rise cost +0x264, refill standing
++0x266, red zone +0x268, refill moving +0x26A):
+
+| Rule | Code | Measured |
+|---|---|---|
+| Rise / air boost (class 0xC0) costs +0x264 per step | ✔ | −436 ✔ |
+| Ground boost (class 0xB0) costs half | ✔ | −218 ✔ |
+| Other classes while holding boost: no cost | ✔ | |
+| Refill standing +0x266; moving +0x26A when class 0x10 / 0xB0 (two-legged), or 0xB0 with speed (caterpillar, four-legged) | ✔ | +210 standing, +127 walking / coasting ✔ |
+| Below the red zone, cost and refill ÷ 4 | ✔ | −54, +31, +52 ✔ |
+| Cost > energy left: energy = 0, **booster lock** (+0x18 bit 0) | ✔ | ✔ |
+| While locked: refill ÷ 2, **even below the red zone** (no ÷ 4), no boosting; lock clears only at full | ✔ | +63 moving, +105 standing ✔ |
+| Refill adds before it checks the cap, so the bar overshoots by up to one refill for a step, then snaps back to the capacity | ✔ | +210 then −57 ✔ |
+
+Also in `0x80082D90`: △ cycles the weapon (+0x296 mask → player block +0x11), which re-runs `0x80082834`
+and drops the locks (`0x80080084`).
+
+Not done: landing recovery after long falls; air-boost release rate; other leg types and heavy builds.
 
 ## Match timer (VS engine, measured)
 

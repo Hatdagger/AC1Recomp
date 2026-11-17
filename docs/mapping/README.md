@@ -53,6 +53,10 @@ From battle chat to data chat:
   missiles per volley from each side, spread. Model IDs → part names would make it readable
   (details in `battle-system.md`, "Missiles").
 
+- Player block **+0x298 = boost button mask** (energy `0x80082D90` and air handler `0x8007FBAC` test it).
+- Measured (VS, default AC): selected slot +7 / +8 = **0 / 0 for the rifle** (so +0x210 / +0x212 = 1 / 1),
+  17 / 59 for the missile (3 / 28). `stat-block.md` says hand weapons get 64; worth a re-check.
+
 Battle chat → data chat: if you find a write into player block +0x250 … +0x393 (the stat
 block), note it here instead of mapping it.
 

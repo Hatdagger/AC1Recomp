@@ -65,7 +65,7 @@ Carried weight = every part except the generator, capped at legs weight + carry 
 | +0x26 | u8 | Head byte +0x33 | **name by test** |
 | +0x27 | u8 | **Radar type**: head +0x3B or back radar +0x31; 3 with Human PLUS and no radar | |
 | +0x28 | u8 | **Body frame**: 0 two-legged, 1 caterpillar, 2 four-legged (from the body table). Match start turns 0 into **3** when Human PLUS level ≥ 4; frames 0/3 then run init `0x80085688`, frames 1/2 run `0x800875C8` | |
-| +0x29 | u8 | **Body combination** (0–39): core shape × arms shape × legs shape | |
+| +0x29 | u8 | **Body combination** (0–71): core × arms group × legs group, see "Body layout" | |
 | +0x2A | u8 | Head byte +0x32 | **name by test** |
 
 **Human PLUS level 6 and up** (match start, `0x80083560`): rise drain +0x14 is halved, both
@@ -87,7 +87,7 @@ Back radars (40–51) switch the head's radar off first (+0x1E, +0x25, +0x27 = 0
 | +0x32 | u8 | Back R ID (same) |
 | +0x33 | u8 | Blade ID |
 | +0x34 | u16 | Flags, starts at 3: bit 0 cleared if head byte +0x34 = 1; bit 1 cleared if head byte +0x35 = 1; **bit 3 = SP-JAM (missile jammer)**. Match start copies the flags minus bits 0–1 to AC object +0x38, then **clears bit 3 here** (the jammer lives in the AC object from then on) |
-| +0x36 – +0x3C | 4×u16 | From the body table (650, 40, 100, 2 on almost every body; caterpillar + regular arms has 0 instead of 40). Match start (`0x8007DC24`) passes all four, +0x3A squared, layout bytes 4–5 (+0x5A, +0x5B) and the layout list (+0x6E) to `0x800876C4`, so likely **body collision sizes** (+0x3A = 100 looks like a radius) — **name by test** |
+| +0x36 – +0x3C | 4×u16 | From the body table (650, 40, 100, 2 on every body except combination 1, core 0 + regular arms + caterpillar, which has 0 instead of 40). Match start (`0x8007DC24`) passes all four, +0x3A squared, layout bytes 4–5 (+0x5A, +0x5B) and the layout list (+0x6E) to `0x800876C4`, so likely **body collision sizes** (+0x3A = 100 looks like a radius) — **name by test** |
 
 ## Options and button masks (+0x3E – +0x55)
 
@@ -122,13 +122,30 @@ The other option bytes: +0x30 → `0x8003EA93` (default 1), +0x31 / +0x32 → so
 
 ## Body layout (+0x56 – +0x87)
 
-The body combination (+0x29) picks a 16-byte entry at `0x800D5008`, whose first word points
-to a layout record (three layouts on the disc: `0x800D4DC4` two-legged, `0x800D4DFE`
-caterpillar, `0x800D4E72` four-legged). The combo table at `0x800D4A64` (12-byte entries: core
-shape, list of arms, list of legs) decides the combination. Cores 3 and 4 (XXA-S0, XXL-D0)
-count as core 0. The shapes in that table: arms {0,1,3,6,7,8}, {4,5}, {2}, weapon arms
-{12–21}; legs {0,3,6,10,11}, {2,5,8,9,13}, {1,4,7,12}, four legs {21–26}, caterpillars
-{27–32}. Reverse-joint legs (14–20) aren't in it: to check what they get.
+The body combination (+0x29) is the index of the first matching entry in the combo table
+`0x800D4A64` (72 entries of 12 bytes: core ID, pointer to an arms list, pointer to a legs list,
+lists end in 255). Cores 3 and 4 (XXA-S0, XXL-D0) are looked up as core 0. The search has no
+end check, so every real part combination must match; it does (legs 15, 25, 29 are DUMMY
+slots). Groups: arms {0,1,3,6,7,8}, {4,5}, {2}, weapon arms {12–21}; legs {0,3,6,10,11},
+{2,5,8,9,13}, {1,4,7,12}, **reverse-joint {14,16–20}**, four legs {21–24,26}, caterpillars
+{27,28,30–32}.
+
+The index then picks a 16-byte entry in the body table `0x800D5008` (72 entries, ending where
+the weapon name table starts): a layout pointer, the body frame (+0x28) and the four values
+copied to +0x36–0x3C. Six layouts, a normal one and a weapon-arms one per frame:
+
+| Layout | Frame | Combinations |
+|---|---|---|
+| `0x800D4DC4` | 0 two-legged | 0, 4, 5, 7–30, **48–56 (reverse-joint legs)** |
+| `0x800D4F5A` | 0 two-legged | 31–39, 66–68 (weapon arms, incl. on reverse-joint legs) |
+| `0x800D4DFE` | 1 caterpillar | 1–3, 57–62 |
+| `0x800D4FCE` | 1 caterpillar | 69–71 (weapon arms) |
+| `0x800D4E72` | 2 four-legged | 6, 40–47 |
+| `0x800D4F94` | 2 four-legged | 63–65 (weapon arms) |
+
+So **reverse-joint legs are plain two-legged bodies** in the compiled block: same frame, same
+layout, same +0x36–0x3C as normal legs. All entries have 650, 40, 100, 2 except combination 1
+(core 0 + regular arms + caterpillar), which has 0 instead of 40.
 
 | Off | Size | Meaning |
 |---|---|---|
@@ -224,7 +241,6 @@ PLUS ≥ 4), slot +7/+8/+9 → player block +0x210–0x214, slot +10 to +12. Wat
 
 ## Next steps
 
-1. Reverse-joint legs (14–20): which body combination they get (missing from `0x800D4A64`).
-2. Read `0x800876C4` (collision setup) to name +0x36–0x3C without a test.
-3. Check in game which way SP-AXL moves lock time for solid weapons.
-4. The tests above (needs the user's PC).
+1. Read `0x800876C4` (collision setup) to name +0x36–0x3C without a test.
+2. Check in game which way SP-AXL moves lock time for solid weapons.
+3. The tests above (needs the user's PC).

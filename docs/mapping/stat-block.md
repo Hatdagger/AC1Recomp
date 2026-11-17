@@ -31,7 +31,7 @@ Part records named below are the menu tables in `parts-tables.md`. "Garage" = lo
 | Off | Size | Meaning | Source |
 |---|---|---|---|
 | +0x00 | u16 | **Match time limit in seconds**: 120 or 300 or 0 (no limit), from options record +0x34 (`0x8004B59C`: 0 → 120, 1 → 300, else 0). VS setup (`0x80055C48`) takes the larger of the two players' values × 22 as the time left in steps at `0x80097EB4` (120 → 2,640, matches the battle chat's measured timer); the clock only runs while it's ≥ 2 | options |
-| +0x02 | u8 | Flags: bit 0 cleared, bits 1 and 2 set, **bit 3 = legs can fit a booster** (legs +0x42). **Bit 0 = first-person (cockpit) camera**, tested in game: set at `0x8007CC70` while START is held when the pad reads exactly START + △ + □ (`0x9008`); cleared at `0x8007CA88` (START held), `0x80082920`, `0x8008FB68`. With it set the camera (`0x80087B90`) sits at model joints +0x5A / +0x5B and the joints in list +0x6E are hidden (see "Camera setup"). **Bit 5** comes from options record +0x35 (default 1; `0x800B6AE4`), meaning unknown. Bit 1 read at `0x80087760`, bit 4 at `0x80087EB8` | |
+| +0x02 | u8 | Flags: bit 0 cleared, bits 1 and 2 set, **bit 3 = legs can fit a booster** (legs +0x42). **Bit 0 = first-person (cockpit) camera**, tested in game: set at `0x8007CC70` while START is held when the pad reads exactly START + △ + □ (`0x9008`); cleared at `0x8007CA88` (START held), `0x80082920`, `0x8008FB68`. With it set the camera (`0x80087B90`) sits at model joints +0x5A / +0x5B and the joints in list +0x6E are hidden (see "Camera setup"). **Bit 5 = vibration on**: from options record +0x35, the VIBRATION option (default 1; `0x800B6AE4`; the menus also keep it per player at `0x8003EAD0` / `0x8003EAD1`). The main executable's vibration routine `0x800174E4` reads it straight from the block (`0x800453E8` bit 21 for player 1, `0x80045788` for player 2) and does nothing when it's clear. Bit 1 read at `0x80087760`, bit 4 at `0x80087EB8` | |
 | +0x03 | u8 | **Human PLUS level** (`0x8003EAC8`) | |
 | +0x04 | | no access found in the menus, VS or arena engines: padding | |
 | +0x05 | u8 | **Stage number** (confirmed by the launch chat: at VS START it is byte `0x800D5800[map − 1]`, map = `0x8003EA81` (1–10), written by `0x800B348C`). Set by the menus in both players' blocks (same value, e.g. `0x800C097C` from a table indexed by `0x8003EA78`; `0x8007E0DC` writes 29). At VS load `0x80055930` copies player 1's or player 2's (picked by bit 0 of `0x8003EA94`) to the global `0x80097EA0` | menus |
@@ -65,7 +65,7 @@ Carried weight = every part except the generator, capped at legs weight + carry 
 | +0x25 | u8 | **Radar flags**: head +0x3A (0 on every head) or back radar +0x30; **bit 0 = missiles shown on the radar** (VS `0x8005713C` → `0x8005663C`, arena `0x80057AB4`), also set by SP-MAW; 1 with Human PLUS and no radar. No other bit is read | code |
 | +0x26 | u8 | Head byte +0x33. **No reads** in the VS or arena engine: unused in fights | |
 | +0x27 | u8 | **Radar display type**: head +0x3B (0 on every head) or back radar +0x31; 3 with Human PLUS and no radar. Low 4 bits pick the radar screen sprite at `0x8008FCDC` + type × 12 (VS `0x8005707C`, arena `0x800579F0`); bit 0x10 would show blips only in a 90° cone ahead (`0x8005649C`), never set | code |
-| +0x28 | u8 | **Body frame**: 0 two-legged, 1 caterpillar, 2 four-legged (from the body table). Match start turns 0 into **3** when Human PLUS level ≥ 4; frames 0/3 then run init `0x80085688`, frames 1/2 run `0x800875C8` | |
+| +0x28 | u8 | **Body frame**: 0 two-legged, 1 caterpillar, 2 four-legged (from the body table). Match start turns 0 into **3** when Human PLUS level ≥ 4; frames 0/3 then run init `0x80085688`, frames 1/2 run `0x800875C8`. **Frame 3 = two-legged that fires back cannons standing**: the cannon fire routine (`0x80081B74`) lets frames 1 and 3 fire at once, while frame 0 must be in AC state 34 (the cannon crouch, `0x80081BF4`); the HUD shows the cannon lock box for frames 1–3 without crouching (`0x80066C9C`); frame 3 also skips the cannon kick in AC state 16 (`0x80081E60`) | code |
 | +0x29 | u8 | **Body combination** (0–71): core × arms group × legs group, see "Body layout" | |
 | +0x2A | u8 | Head byte +0x32. VS never reads it; the arena engine uses it to pick a HUD item, entry 176 + value × 64 passed to `0x800540EC` (`0x8005A438`), likely the head's display style | arena |
 
@@ -87,7 +87,7 @@ Back radars (40–51) switch the head's radar off first (+0x1E, +0x25, +0x27 = 0
 | +0x31 | u8 | Back L ID (rewritten when a P77-ST is fitted) |
 | +0x32 | u8 | Back R ID (same) |
 | +0x33 | u8 | Blade ID |
-| +0x34 | u16 | Flags, starts at 3: bit 0 cleared if head byte +0x34 = 1; bit 1 cleared if head byte +0x35 = 1; **bit 3 = SP-JAM (missile jammer)**. Bits 0–1 are passed as an *ignore* mask to the collision sweep `0x80078230` (from `0x800806A0` and the shot code `0x800800E4`): objects whose +0x38 flags share a set bit are skipped, so a head with byte +0x34 / +0x35 = 1 lets its AC's sweeps see those objects. Which objects carry bits 0–1 is for the battle chat. Match start copies the flags minus bits 0–1 to AC object +0x38, then **clears bit 3 here** (the jammer lives in the AC object from then on) |
+| +0x34 | u16 | Flags, starts at 3: bit 0 cleared if head byte +0x34 = 1; bit 1 cleared if head byte +0x35 = 1; **bit 3 = SP-JAM (missile jammer)**. Bits 0–1 are the head's **NOISE CANCELER** (+0x34) and **BIO SENSOR** (+0x35), garage labels. They are passed as an *ignore* mask to `0x80078230`, the sweep that finds lock-on targets (from the gun lock `0x800801D0`, missile lock `0x800806FC` and `0x80083324`): a target whose +0x38 flags share a set bit is skipped. That sweep only ever checks the two ACs (2 records of 376 bytes from `0x801D4BC0`), and an AC's +0x38 never has bits 0–1 (match start clears them, nothing sets them), so **these head features do nothing in VS or the arena**. They look like Armored Core mission features (FDAT 207, not mapped). Bit 3 (SP-JAM) is the only AC +0x38 bit a lock reads: each frame a missile lock on a jammer AC breaks with chance 1,639 ÷ 32,768 = 5% (`0x800809B0`). Match start copies the flags minus bits 0–1 to AC object +0x38, then **clears bit 3 here** (the jammer lives in the AC object from then on) |
 | +0x36 | u16 | **Camera distance**, 650 on every body. Copied to camera +0x0A; the chase camera (`0x800878FC`) scales its direction vector by it (× 650 ÷ 4096, then halved) to place the camera behind the AC. See "Camera setup" |
 | +0x38 | u16 | **Camera height**, 40 (0 on combination 1, core 0 + regular arms + caterpillar). Copied to camera +0x0C and subtracted from the camera's Y (PS1 −Y = up), so the camera sits 40 above the follow point |
 | +0x3A | u16 | 100 on every body. Copied to camera +0x10, and its square to camera +0x14, but **nothing reads either** in the VS engine, the arena engine or the main executable: unused (a leftover; was guessed as a collision radius) |
@@ -274,13 +274,25 @@ alternate camera: `0x80087B90`, picked by stat +0x02 bit 0. The camera state bey
 fields belongs to the battle chat (its "Camera routine" row). Camera +0x08 bit 0 = **fixed
 screenshot camera** (START + ○ + ✕, tested in game; see below).
 
-## To name by a test in VS
+## Settled without a test (code read, 2026-11-17)
 
-Poke one, watch the effect, log the result here:
-+0x02 bit 5 (options +0x35), +0x34 bits 0–1 (which objects they skip), body frame 3 (Human
-PLUS ≥ 4), slot +7/+8/+9 → player block +0x210–0x214. (Slot +10 to +12 are now read from the
-code, see the slot table.) Watch slot +58–61 and
-+0x04/+0x11 for any write to confirm they're padding. 
+The list that used to wait for a test in VS:
+
+- **+0x02 bit 5** = vibration on (see the header table).
+- **+0x34 bits 0–1** = noise canceler / bio sensor; no effect in fights (see "Part IDs and flags").
+- **Body frame 3** = Human PLUS two-legged that fires back cannons without crouching (see +0x28).
+- **Player block +0x210 / +0x212** (from slot +7 / +8) are the turn rates the routine
+  `0x8007E3E0` passes to the turn code `0x8007DC80`, where every other caller passes the normal
+  +0x20C / +0x20E. `0x8007E3E0` is installed as an AC state callback by `0x8007B454` from the
+  hit callback when the AC is in state 34 (`0x8008262C`) and at `0x80085098` / `0x800850C4`, so
+  it is most likely **turning while crouched in the cannon stance** `?`. That makes legs +0x3C
+  the crouched turn figure. Hand weapons give the fixed 11 / 31.
+- **Player block +0x214** (from slot +9) = **cannon kick**: the cannon fire routine multiplies it
+  by a value from the shot (`0x80081E80`, × shot +2 ÷ 256) and shakes the AC and the pad by
+  that much; 0 means no kick.
+- **Padding confirmed**: no access to +0x04, +0x11 or slot +58–61 (all three slots) in the VS,
+  arena or replay engines through the player block (scan hits at those offsets all use the
+  scratchpad `0x1F800000` or arena structs at `0x801E2750`).
 
 Tested (user, 2026-11-17): **START + △ + □** = first-person cockpit camera (+0x02 bit 0).
 **START + ○ + ✕** (`0x6008`, sets camera +0x08 bit 0) drops the
@@ -288,4 +300,5 @@ camera where it is; it stays put but keeps turning to follow the AC (a screensho
 
 ## Next steps
 
-1. The tests above (needs a way to run the game; the user can't test right now).
+1. Nothing left in this doc that needs a test. Open: AC state 34 / the `0x8007E3E0` callback
+   could be confirmed by the battle chat (state machine is their lane).

@@ -13,7 +13,7 @@ Several chats map Master of Arena at the same time. To avoid double work:
 | Lane | Doc | Owner | Covers | Status |
 |---|---|---|---|---|
 | Battle system | `battle-system.md` | battle chat | Everything else that runs during a fight: player block (outside the stat block), AC object, damage, weapons in flight, movement, AI per frame, match start/end | in progress |
-| Compiled stat block | `stat-block.md` | data chat | **The 324-byte block the menu builds at VS START (player block +0x250 … +0x393)**: every field, the compile routine `0x800A7BB4` that fills it, and how the engines read it | compile routine, match start, slot option maths and camera setup read 2026-11-17 |
+| Compiled stat block | `stat-block.md` | data chat | **The 324-byte block the menu builds at VS START (player block +0x250 … +0x393)**: every field, the compile routine `0x800A7BB4` that fills it, and how the engines read it | every byte named 2026-11-17 (compile, match start, options, camera, lock-on; test list settled from code) |
 | Part tables | `parts-tables.md` | data chat | Part tables, weapon details, options on the disc | ~99%: every byte named but weapon detail +0x04 (no reader anywhere), 2026-11-17 |
 | Mode launch | `mode-launch.md` | launch chat | Boot → menu → engine loop, the mode byte, resume flags, how Scenario (hub) and VS (menu → VS START → fight) start; goal: starting modes straight from the launcher | static read done 2026-11-17; repo gaps filled; runtime test next |
 | GameShark RAM list | `ram-map-gameshark.md` | shared, append-only | Raw code-derived addresses | reference |
@@ -79,8 +79,13 @@ Data chat → battle chat:
   per frame, cone ±stat +0x10 × 4, range 5,000, AC +0x118 = 15-frame burst, 1 in 32 shots kill
   the missile. Object list `0x801D6F6C` (256 × 228 bytes), missile handler `0x8009907C`. Details
   in `parts-tables.md`.
-- Stat +0x34 bits 0–1 (cleared by head bytes +0x34 / +0x35 = 1) are an ignore mask for the
-  collision sweep `0x80078230`: which objects carry +0x38 bits 0–1?
+- ~~Stat +0x34 bits 0–1: which objects carry +0x38 bits 0–1?~~ Answered by the data chat: they
+  are the head's noise canceler / bio sensor, and the sweep `0x80078230` only checks the two
+  ACs, which never carry those bits, so no effect in fights. SP-JAM: a missile lock on a jammer
+  AC breaks with a 5% chance per frame (`0x800809B0`).
+- AC state 34 looks like the two-legged cannon crouch (cannon fire needs it on frame 0,
+  `0x80081BF4`); `0x8007E3E0` (turning with player block +0x210 / +0x212) is installed from
+  it. Worth confirming in the state machine.
 - **Hit record** (6 bytes: flags, attack, impact) is the same for guns (slot +36–41) and the
   blade (stat +0x66–0x6B, so player block +0x2B6 = flags 39, +0x2B8 attack, +0x2BA impact).
   Flags: 0x10 solid / 0x20 energy pick the defence factor; 0x40 (WR-RS7) puts attack into

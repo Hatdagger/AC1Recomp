@@ -57,10 +57,10 @@ index is the part's ID in cards, the garage struct and arena opponent records.
 | Category | Offset | Size | Meaning | Proven by |
 |---|---|---|---|---|
 | Head, core, arms, legs | +0x2C / +0x2E / +0x30 | u16 | AP / shell defence / energy defence | garage, damage formula |
-| Head | +0x32 | u8 | Arena only: picks a HUD item (stat +0x2A), likely display style | arena code |
-| Head | +0x33 | u8 | Never read in fights (stat +0x26) | VS, arena |
-| Head | +0x34, +0x35 | u8 | When 1, clear stat +0x34 bit 0 / bit 1: an ignore mask for the collision sweep, so the AC's sweeps also see objects flagged with that bit | VS code |
-| Head | +0x36 | u16 | Has a radar (1) / none (0) | disc: range is 0 whenever this is 0 |
+| Head | +0x32 | u8 | **COMPUTER TYPE**: 0 STANDARD, 1 DETAILED, 2 ROUGH (garage labels `0x800D29D0`, `0x80084590`). Arena only: picks a HUD item (stat +0x2A); VS ignores it | menu, arena code |
+| Head | +0x33 | u8 | **MAP TYPE**: 0 AREA&PLACE NAME, 1 PLACE NAME DISP, 2 AREA MEMORY, 3 NO MEMORY (`0x800D29DC`). A mission feature: never read in fights (stat +0x26) | menu, VS, arena |
+| Head | +0x34, +0x35 | u8 | **NOISE CANCELER** / **BIO SENSOR** (garage: NONE / PROVIDED). When 1, clear stat +0x34 bit 0 / bit 1, letting the lock-on sweep see targets flagged with that bit. In VS and the arena the only targets are ACs, which never carry those bits, so **no effect in fights**; likely mission features | menu, VS code |
+| Head | +0x36 | u16 | **RADAR FUNCTION**: has a radar (1) / none (0) | disc, garage |
 | Head | +0x38 | u16 | Radar range (PERFORMANCE shows ÷10) | perf maths |
 | Head | +0x3A, +0x3B | u8 | Radar flags / radar display type, the same bytes as back radar +0x30 / +0x31 (compile copies them to stat +0x25 / +0x27). **0 on every head**, so head radars never show missiles and always use display 0 | compile, disc |
 | Arms | +0x32 | u16 | Padding (always 0) | disc |
@@ -68,13 +68,13 @@ index is the part's ID in cards, the garage struct and arena opponent records.
 | Back (radars) | +0x30 | u8 | **Radar flags** (stat +0x25). Bit 0 = **missiles shown on the radar** (VS `0x8005713C` → `0x8005663C`, which scans the object list for missiles; arena `0x80057AB4`). The same bit SP-MAW sets. Set on RXA-77, RZT-333, RZ-BBP, RZ-Fw2 | VS, arena code |
 | Back (radars) | +0x31 | u8 | **Radar display type** (stat +0x27): low 4 bits pick the radar screen graphic, a 12-byte sprite entry at `0x8008FCDC` + type × 12 (VS `0x8005707C`; arena `0x800579F0`). 0 on most, 1 on RZ-A0 / RZ-A1 / RZ-BBP, 2 on RZT-333 / RZ-Fw2; 3 = Human PLUS built-in radar. Bit 0x10 would limit blips to a 90° cone ahead (`0x8005649C`), but no part sets it | VS, arena code |
 | Back | +0x32 | u16 | Padding (always 0) | disc |
-| Legs | +0x3C | u16 | **Turning with a back weapon selected** (×0.8 of +0x38 on two-legged, ×1.0 on four legs / caterpillars). The compile routine turns it into back-weapon slots +7 and +8 (`0x800A95D4`, `0x800A964C`), same formulas as stat +0x0C / +0x0D; see `stat-block.md` | compile |
+| Legs | +0x3C | u16 | **Turning with a back weapon selected**, most likely while crouched in the cannon stance (see `stat-block.md`, "Settled without a test") (×0.8 of +0x38 on two-legged, ×1.0 on four legs / caterpillars). The compile routine turns it into back-weapon slots +7 and +8 (`0x800A95D4`, `0x800A964C`), same formulas as stat +0x0C / +0x0D; see `stat-block.md` | compile |
 | Legs | +0x3E | u16 | 51 (two-legged) / 64 (four legs, caterpillars). **Never read**: back slot +8 reads +0x3C a second time where the matching stat +0x0D reads +0x3A, so +0x3E was probably meant for it (a developer slip) | compile |
 | Legs | +0x42 | u16 | Can fit a booster (1); 0 on every caterpillar | disc |
 | Legs | +0x46 | u16 | Padding (always 0) | disc |
 | Core | +0x32 | u16 | Arm load limit (arms + hand + blade; weapon arms count alone) | VS START check |
-| Core | +0x34 | u8 | **Missile interceptor reaction**: chance per frame ÷ 128 (XCA-00 48 = 37.5%, XXL-D0 32 = 25%) | VS code |
-| Core | +0x35 | u8 | **Missile interceptor angle**: ±value × 4 (4,096 = 360°): XCL-01 64 = ±22.5°, XCA-00 48 = ±16.9°, XXL-D0 20 = ±7° | VS code |
+| Core | +0x34 | u8 | **Missile interceptor reaction** (garage: VS-MG-RESPONSE): chance per frame ÷ 128 (XCA-00 48 = 37.5%, XXL-D0 32 = 25%) | VS code |
+| Core | +0x35 | u8 | **Missile interceptor angle** (garage: VS-MG-ANGLE): ±value × 4 (4,096 = 360°): XCL-01 64 = ±22.5°, XCA-00 48 = ±16.9°, XXL-D0 20 = ±7° | VS code |
 | Core | +0x36 | u16 | Option slots | VS START check |
 | Legs | +0x32 | u16 | Carry limit | VS START check |
 | Legs | +0x34 | u16 | Energy drain standing | compiled block |

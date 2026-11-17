@@ -1933,6 +1933,35 @@ static int run_hub_pick_filter(struct CPUState *cpu, uint32_t address)
     return 1;
 }
 
+/* At each fight's start: both ACs as the fight engine has them (the compiled
+ * stat blocks, stat-block.md): parts, then every weapon slot's kind, ammo and
+ * HUD name. A slot with 0 ammo is a weapon the AC can't use (the "0/0" seen in
+ * a Retry test); the ghost crashes also came at a fight's start. */
+static void run_log_fighters(void)
+{
+    for (uint32_t pl = 0; pl < 2u; pl++) {
+        const uint32_t blk = 0x800453E8u + 928u * pl;
+        const unsigned n = psx_mod_read_byte(blk + 0x87u);
+        run_log("fight: %s core %u legs %u head %u arms %u hand %u back L %u back R %u blade %u, %u weapon(s)",
+                pl ? "opponent" : "player",
+                psx_mod_read_byte(blk + 0x2Bu), psx_mod_read_byte(blk + 0x2Cu),
+                psx_mod_read_byte(blk + 0x2Du), psx_mod_read_byte(blk + 0x2Eu),
+                psx_mod_read_byte(blk + 0x30u), psx_mod_read_byte(blk + 0x31u),
+                psx_mod_read_byte(blk + 0x32u), psx_mod_read_byte(blk + 0x33u), n);
+        for (uint32_t w = 0; w < n && w < 3u; w++) {
+            const uint32_t sl = blk + 0x88u + 62u * w;
+            char name[17];
+            for (uint32_t i = 0; i < 16u; i++) {
+                const uint8_t c = psx_mod_read_byte(sl + 42u + i);
+                name[i] = (c >= 0x20 && c < 0x7F) ? (char)c : '.';
+            }
+            name[16] = 0;
+            run_log("fight:   slot %u kind %u ammo %u/%u '%s'", (unsigned)w,
+                    psx_mod_read_byte(sl), psx_mod_read_half(sl + 16u), psx_mod_read_half(sl + 14u), name);
+        }
+    }
+}
+
 static void run_sampler_entry(struct CPUState *cpu, uint32_t address)
 {
     (void)cpu;
@@ -1952,6 +1981,7 @@ static void run_sampler_entry(struct CPUState *cpu, uint32_t address)
         if (now != last) {
             last = now;
             run_log("fight: done %u, won %u, lost %u", done, won, lost);
+            if (done && !won && !lost) run_log_fighters();
         }
         if (!won && !lost) run_result_seen = 0;   /* a new fight: its result is not booked yet */
         if (done && !won && lost) run_book_loss("in fight");

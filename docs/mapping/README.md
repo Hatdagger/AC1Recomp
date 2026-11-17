@@ -18,9 +18,10 @@ Several chats map Master of Arena at the same time. To avoid double work:
 | Mode launch | `mode-launch.md` | launch chat | Boot → menu → engine loop, the mode byte, resume flags, how Scenario (hub) and VS (menu → VS START → fight) start; goal: starting modes straight from the launcher | static read done 2026-11-17; repo gaps filled; runtime test next |
 | GameShark RAM list | `ram-map-gameshark.md` | shared, append-only | Raw code-derived addresses | reference |
 | Missions: weapon detail +0x04 | `parts-tables.md` | data chat | Narrow check only: does the missions engine (FDAT 207) read weapon detail +0x04? Not the rest of the missions lane | claimed 2026-11-17 |
+| Menus: scenario hub | `menus-hub.md` | hub chat | The hub ring (FDAT 206 from `0x800552C0`): its 8 entries, tables, input, models and labels, and how to add / remove / replace entries. Not the screens behind the entries (garage, shop, …) | claimed 2026-11-17 |
 
 Not claimed yet (claim before starting): missions data (FDAT 207, apart from the +0x04 check above), save/memory card format,
-menus and UI flow (other than mode launch), sound/music, stage data.
+menus and UI flow (other than mode launch and the hub ring), sound/music, stage data.
 
 Already covered in code, not a mapping lane: **arena opponent rosters.** Arena numbers, opponent
 counts (`0x800D5A08`), starts (`0x800D5A14`), names (`0x800D5A20`), the per-arena entries in

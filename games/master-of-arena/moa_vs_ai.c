@@ -17,6 +17,10 @@
  * Offline only. Separate from the arena-engine AI Battle (moa_ai_battle.c).
  *
  * Addresses: docs/mapping/battle-system.md and stat-block.md (VS engine).
+ * Each pilot is imperfect: the reaction delay wanders round the profile's,
+ * the aim wobbles (more for slower pilots), guns fire in bursts, and every
+ * match starts from fresh dice.
+ *
  * Inputs checked in the game: ✕ while standing jumps; a direction plus ✕
  * boosts along the ground, but only once the AC is already moving.
  */
@@ -29,6 +33,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <time.h>
 
 /* Engine check: every engine loads at the same address. */
 #define VS_MODE_BYTE      0x8003EA2Au   /* 2 = split-screen VS */
@@ -142,6 +147,11 @@ struct vs_ai_side {
     uint16_t band_steps;                /* steps the distance band has held */
     uint8_t  band;
     uint8_t  firing;                    /* missile trigger held steps left */
+    int      aim_off;                   /* aim error now (angle units) */
+    uint16_t aim_timer;
+    unsigned react_now;                 /* reaction delay now (wanders round the profile's) */
+    uint16_t react_timer;
+    uint8_t  burst, pause;              /* gun trigger: steps held / steps resting */
     uint32_t seen_missiles[8];          /* pool records already judged (bitset) */
 };
 static struct vs_ai_side vs_side[2];
@@ -288,8 +298,27 @@ static uint16_t vs_ai_think(unsigned side, uint32_t me, uint32_t foe)
     const uint16_t m_sr = psx_mod_read_half(me + PB_M_STRAFE_R);
     const uint16_t m_move = m_fwd | m_back | m_sl | m_sr;
 
+    /* Reaction delay wanders between half and one and a half times the profile's. */
+    if (s->react_timer) s->react_timer--;
+    else {
+        const unsigned half = p->react / 2u;
+        s->react_now = p->react - half + (half ? vs_rand(s) % (2u * half + 1u) : 0u);
+        if (s->react_now < 1u) s->react_now = 1u;
+        s->react_timer = (uint16_t)(11 + vs_rand(s) % 33u);       /* 0.5 - 2 s */
+    }
+    /* Aim error: a slow wobble, bigger for slower pilots (react 4 → ±120, 8 → ±240). */
+    if (s->aim_timer) s->aim_timer--;
+    else {
+        const int spread = 30 * (int)p->react;
+        const int a = (int)(vs_rand(s) % (2u * spread + 1u)) - spread;
+        const int b = (int)(vs_rand(s) % (2u * spread + 1u)) - spread;
+        s->aim_off = (a + b) / 2;                                 /* mostly small */
+        if (vs_pct(s, 8)) s->aim_off *= 3;                         /* now and then a big miss */
+        s->aim_timer = (uint16_t)(11 + vs_rand(s) % 23u);         /* 0.5 - 1.5 s */
+    }
+
     /* Read: the enemy as seen `react` steps ago. */
-    const unsigned react = p->react < AI_HISTORY ? p->react : AI_HISTORY - 1;
+    const unsigned react = s->react_now < AI_HISTORY ? s->react_now : AI_HISTORY - 1;
     const unsigned now = s->steps % AI_HISTORY;
     s->hist_x[now] = rd16s(en + AC_X);
     s->hist_z[now] = rd16s(en + AC_Z);
@@ -339,7 +368,8 @@ static uint16_t vs_ai_think(unsigned side, uint32_t me, uint32_t foe)
     if (blade_only) s->want_dist = AI_BLADE_REACH - 150;
 
     /* Face */
-    if (aerr > AI_FACE_OK) w |= err > 0 ? m_left : m_right;
+    const int aim = vs_wrap(err + s->aim_off);                 /* where the pilot steers */
+    if ((aim < 0 ? -aim : aim) > AI_FACE_OK) w |= aim > 0 ? m_left : m_right;
 
     /* Evade: a missile launched at us, judged once each. */
     const unsigned fresh = vs_new_missiles(s, my, react);
@@ -432,8 +462,16 @@ static uint16_t vs_ai_think(unsigned side, uint32_t me, uint32_t foe)
                 psx_mod_counter_add(side ? "moa.vsai.p2.volley" : "moa.vsai.p1.volley", 1);
             }
             if (s->firing) w |= m_fire;
-        } else if ((locked || aerr < AI_FIRE_CONE) && vs_pct(s, p->fire)) {
-            w |= m_fire;
+        } else if (locked || aerr < AI_FIRE_CONE) {
+            /* Bursts and rests, held on average p->fire % of the time. */
+            if (!s->burst && !s->pause) {
+                s->burst = (uint8_t)(4 + vs_rand(s) % 11u);
+                const unsigned f = p->fire ? p->fire : 1u;
+                const unsigned rest = s->burst * (100u - (f < 100u ? f : 100u)) / f;
+                s->pause = (uint8_t)(rest ? rest / 2u + vs_rand(s) % (rest + 1u) : 0u);
+            }
+            if (s->burst) { s->burst--; w |= m_fire; }
+            else if (s->pause) s->pause--;
         }
     }
 
@@ -449,13 +487,17 @@ static uint16_t vs_ai_think(unsigned side, uint32_t me, uint32_t foe)
     return w;
 }
 
+/* A new match: fresh state and fresh dice, so no two fights play the same.
+ * (Replays still match: the game records the buttons, not the dice.) */
 static void vs_reset(void)
 {
+    static uint32_t matches;
+    const uint32_t seed = (uint32_t)time(NULL) * 2654435761u ^ (uint32_t)clock() ^ (++matches * 0x9E3779B9u);
     for (unsigned i = 0; i < 2; i++) {
-        const uint32_t rng = vs_side[i].rng;
         memset(&vs_side[i], 0, sizeof vs_side[i]);
         vs_load_profile(i);
-        vs_side[i].rng = rng ? rng : 0x9E3779B9u ^ (i * 0x85EBCA6Bu);
+        vs_side[i].rng = seed ^ ((i + 1u) * 0x85EBCA6Bu);
+        (void)vs_rand(&vs_side[i]);
     }
 }
 

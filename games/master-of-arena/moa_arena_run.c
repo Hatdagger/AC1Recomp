@@ -323,6 +323,7 @@ static void run_add_ghost(struct moa_run_state *s, int held)
     memcpy(gh->rec, s->run.start_ac, sizeof gh->rec);
     gh->used = 1;
     gh->attempt = s->run.attempt;
+    gh->rank_held = (uint8_t)held;
     gh->ai_from = ai;
     memcpy(gh->pilot, s->run.pilot, sizeof gh->pilot);
     memcpy(gh->ac, s->run.ac, sizeof gh->ac);

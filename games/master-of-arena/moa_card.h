@@ -166,6 +166,14 @@ int moa_memcard_fit_story(const char *path, int slot, const struct moa_card *car
 
 /* Draw a card (format 4, or 3 when it carries no AI) and write it as PNG. */
 int moa_card_write_png(const struct moa_card *card, const char *path);
+/* The same with a picture where the emblem goes (Rogue Arena ghost cards):
+ * art_rgba is 512x512 RGBA, transparent over the card background; the card's
+ * emblem and palette become the art reduced to 64x64 and 16 colours (so a
+ * game loading the card gets a small copy as its emblem). badge: large text
+ * on a plate in the picture's top right ("RANK 7"); footer: the bottom line.
+ * Any of the three may be NULL. */
+int moa_card_write_png_ex(struct moa_card *card, const char *path, const uint8_t *art_rgba,
+                          const char *badge, const char *footer);
 
 /* Every scenario save on a memory card image (.mcd, 128 KB) becomes a card
  * file in `out_dir`, named after the AC (never overwriting a file). Returns how

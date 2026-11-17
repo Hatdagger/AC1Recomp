@@ -93,7 +93,7 @@ struct moa_run_ghost {
     uint8_t  rec[13];              /* the build, as moa_run_state.start_ac */
     uint8_t  used;                 /* 1 = on the ladder */
     uint8_t  attempt;              /* the attempt it came from */
-    uint8_t  pad;
+    uint8_t  rank_held;            /* the best rank it reached (where it lost); 0 = not kept (older runs) */
     char     pilot[17];
     char     ac[17];
     struct moa_run_pick ai_from;   /* AI: copied from the opponent it displaced */

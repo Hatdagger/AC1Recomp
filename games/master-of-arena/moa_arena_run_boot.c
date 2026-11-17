@@ -1911,14 +1911,37 @@ static void run_ghost_save(uint8_t who)
     name[k] = 0;
     moa_run_seed_text(run_state.lineup.seed, seed);
     snprintf(card, sizeof card, "%s/%s-A%02u-%s.png", dir, seed, (unsigned)g->attempt + 1u, name[0] ? name : "GHOST");
-    const int ok = moa_card_write_png(&c, card);
+    /* The card: the AC as it looked (the garage renderer, when the 3D model
+     * install is there; else the plain emblem), its best rank on a badge and
+     * its attempt on the bottom line. */
+    char badge[24], footer[64];
+    const unsigned best = g->rank_held ? g->rank_held : (unsigned)who + 1u;
+    snprintf(badge, sizeof badge, "RANK %u", best);
+    snprintf(footer, sizeof footer, "ROGUE ARENA GHOST  /  ATTEMPT %u  /  BEATEN", (unsigned)g->attempt + 1u);
+    static uint8_t art[512 * 512 * 4];
+    const char *mdir = getenv("PSX_MOA_MODELS_DIR");
+    int have_art = 0;
+    if (mdir && mdir[0]) {
+        moa_acv *v = moa_acv_load(mdir, c.rec, c.paint);
+        if (v) {
+            memset(art, 0, sizeof art);
+            moa_acv_render_ex(v, -0.55f, 0.18f, 0.0f, 1.3f, 0u, NULL, 512, 512, art);
+            moa_acv_free(v);
+            have_art = 1;
+        }
+    }
+    const int ok = moa_card_write_png_ex(&c, card, have_art ? art : NULL, badge, footer);
+    /* The fight it was beaten in (the recorder's rows), beside the card. */
+    char fight[1320];
+    snprintf(fight, sizeof fight, "%.*s.fight.csv", (int)(strlen(card) - 4), card);
+    const int rec_ok = moa_rec_copy_last(fight);
     snprintf(csv, sizeof csv, "%s/defeated.csv", dir);
     FILE *t = fopen(csv, "r");
     const int fresh = !t;
     if (t) fclose(t);
     FILE *f = fopen(csv, "a");
     if (f) {
-        if (fresh) fputs("card,seed,ghost_attempt,pilot,ac,rank,defeated_by_attempt,date\n", f);
+        if (fresh) fputs("card,seed,ghost_attempt,best_rank,pilot,ac,rank,defeated_by_attempt,date\n", f);
         char when[32] = "";
         const time_t now = time(NULL);
         const struct tm *lt = localtime(&now);
@@ -1937,13 +1960,14 @@ static void run_ghost_save(uint8_t who)
             dst[n][o++] = '"';
             dst[n][o] = 0;
         }
-        fprintf(f, "%s,%s,%u,%s,%s,%u,%u,%s\n", base, seed, (unsigned)g->attempt + 1u, qp, qa,
+        fprintf(f, "%s,%s,%u,%u,%s,%s,%u,%u,%s\n", base, seed, (unsigned)g->attempt + 1u, best, qp, qa,
                 (unsigned)who + 1u, (unsigned)run_state.run.attempt + 1u, when);
         fclose(f);
     }
     psx_mod_counter_add(ok ? "moa.run.ghost_card" : "moa.run.ghost_card_fail", 1);
-    run_log("ghost beaten at rank %u: %s %s (attempt %u) -> %s%s", (unsigned)who + 1u, c.pilot, c.ac,
-            (unsigned)g->attempt + 1u, card, ok ? "" : " (not written)");
+    run_log("ghost beaten at rank %u: %s %s (attempt %u, best rank %u) -> %s%s%s%s", (unsigned)who + 1u,
+            c.pilot, c.ac, (unsigned)g->attempt + 1u, best, card, ok ? "" : " (not written)",
+            have_art ? "" : " (no 3D model install: emblem only)", rec_ok ? ", fight saved" : "");
 }
 
 static void run_frame_hook(void)

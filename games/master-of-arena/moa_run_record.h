@@ -31,6 +31,10 @@ void moa_rec_sample(const char *run_file, unsigned attempt, unsigned wins, unsig
  * (for the run log), or NULL when no fight was being recorded. */
 const char *moa_rec_end(int won);
 
+/* Copy the last recorded fight (its header, dumps, rows and summary) to
+ * `dest`. 1 = written. */
+int moa_rec_copy_last(const char *dest);
+
 #ifdef __cplusplus
 }
 #endif

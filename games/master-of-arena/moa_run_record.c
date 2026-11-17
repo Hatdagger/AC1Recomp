@@ -40,6 +40,8 @@ static struct {
     uint16_t ap[2], energy;
 } rec_st;
 static char rec_line[256];
+static char rec_path[1100];
+static long rec_from = -1, rec_to = -1;      /* the last fight's bytes in the file */
 
 static int rec_ram(uint32_t a) { return a >= 0x80000000u && a < 0x80200000u; }
 static int16_t rd_s16(uint32_t a) { return (int16_t)psx_mod_read_half(a); }
@@ -67,6 +69,10 @@ static void rec_begin(const char *run_file, unsigned attempt, unsigned wins, uns
     snprintf(path, sizeof path, "%s.rec.csv", run_file);
     rec_f = fopen(path, "a");
     if (!rec_f) return;
+    snprintf(rec_path, sizeof rec_path, "%s", path);
+    fseek(rec_f, 0, SEEK_END);
+    rec_from = ftell(rec_f);
+    rec_to = -1;
     rec_on = 1;
     rec_fight++;
     rec_calls = rec_rows = 0;
@@ -162,6 +168,25 @@ void moa_rec_sample(const char *run_file, unsigned attempt, unsigned wins, unsig
     if (++rec_rows % 60u == 0) fflush(rec_f);
 }
 
+int moa_rec_copy_last(const char *dest)
+{
+    if (rec_from < 0 || rec_to <= rec_from || !rec_path[0]) return 0;
+    FILE *in = fopen(rec_path, "rb");
+    if (!in) return 0;
+    FILE *out = fopen(dest, "wb");
+    int ok = out && fseek(in, rec_from, SEEK_SET) == 0;
+    char buf[8192];
+    for (long left = rec_to - rec_from; ok && left > 0; ) {
+        const size_t n = fread(buf, 1, left < (long)sizeof buf ? (size_t)left : sizeof buf, in);
+        if (!n || fwrite(buf, 1, n, out) != n) ok = 0;
+        left -= (long)n;
+    }
+    fclose(in);
+    if (out && fclose(out) != 0) ok = 0;
+    if (!ok && out) remove(dest);
+    return ok;
+}
+
 const char *moa_rec_end(int won)
 {
     if (!rec_on) return NULL;
@@ -177,6 +202,8 @@ const char *moa_rec_end(int won)
              rec_st.landed, rec_st.taken, rec_layout_ok ? "" : " (layout not as in VS: partial)");
     if (rec_f) {
         fprintf(rec_f, "# end %s\n", rec_line);
+        fflush(rec_f);
+        rec_to = ftell(rec_f);
         fclose(rec_f);
         rec_f = NULL;
     }

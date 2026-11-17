@@ -332,6 +332,9 @@ static int run_sent, run_told;
 static int run_fixes;
 static uint8_t run_arena_at_builds = 0xFF, run_arena_at_ai = 0xFF;
 
+static void run_prize_reset(void);
+static void run_reconcile(void);
+
 /* Sessions run in one process, so nothing may carry over from the last one
  * (a stale "at the hub" kept a Retry from booting). The launcher numbers each
  * start in PSX_MOA_RUN_SESSION; a new number clears everything. */
@@ -359,6 +362,7 @@ static void run_check_session(void)
     run_fixes = 0;
     run_arena_at_builds = run_arena_at_ai = 0xFF;
     run_direct = run_direct_press = 0;
+    run_prize_reset();
 }
 static const char *run_file_path(void) { return getenv("PSX_MOA_RUN_FILE"); }
 
@@ -386,6 +390,7 @@ static void run_apply_state(void)
     const char *path = run_file_path();
     run_state_ok = path && path[0] && moa_run_load(path, &run_state) == 1;
     if (!run_state_ok) psx_mod_counter_add("moa.run.file_missing", 1);
+    else run_reconcile();
 }
 
 static void run_finish_handover(void)
@@ -727,11 +732,11 @@ static int run_show_font(void)
 }
 
 /* One part drawn into 128x128 0xAARRGGBB, background transparent. */
-static int run_show_thumb(const char *dir, unsigned i, uint32_t *argb)
+static int run_part_thumb(const char *dir, unsigned tab, unsigned row, uint32_t *argb)
 {
     uint8_t paint[48];
     moa_run_paint(run_state.lineup.seed, run_state.run.attempt, paint);
-    moa_acv *v = moa_acv_load_part(dir, k_run_tables[run_show[i].tab].folder, run_show[i].row, paint);
+    moa_acv *v = moa_acv_load_part(dir, k_run_tables[tab].folder, row, paint);
     if (!v) return 0;
     static uint8_t rgba[RUN_THUMB * RUN_THUMB * 4];
     memset(rgba, 0, sizeof rgba);
@@ -742,6 +747,11 @@ static int run_show_thumb(const char *dir, unsigned i, uint32_t *argb)
         argb[p] = (uint32_t)q[3] << 24 | (uint32_t)q[0] << 16 | (uint32_t)q[1] << 8 | q[2];
     }
     return 1;
+}
+
+static int run_show_thumb(const char *dir, unsigned i, uint32_t *argb)
+{
+    return run_part_thumb(dir, run_show[i].tab, run_show[i].row, argb);
 }
 
 static void run_show_open(void)
@@ -762,11 +772,12 @@ static void run_show_open(void)
     }
     char title[40], line[48];
     snprintf(title, sizeof title, "SHOP RESTOCK  RANK %u", rank);
-    snprintf(line, sizeof line, "%u NEW PARTS FOR SALE   YOU HAVE %u P", run_show_n, (unsigned)run_state.run.points);
+    snprintf(line, sizeof line, "%u NEW PARTS FOR SALE   YOU HAVE %u P", run_show_n,
+             (unsigned)psx_mod_read_word(RUN_CREDITS));
     int ww = 0, wh = 0, w = 0, h = 0;
     psx_mod_window_size(&ww, &wh);
     const uint32_t *px = moa_screen_render_tiles(ww, wh, title, line, tile, (int)run_show_n,
-                                                 "PRESS ANY BUTTON", &w, &h);
+                                                 "PRESS ANY BUTTON", 0, &w, &h);
     if (!px) return;
     psx_mod_set_loading_screen("ROGUE ARENA  Shop restock", -1);
     psx_mod_set_loading_image(px, w, h);
@@ -879,6 +890,348 @@ static void run_restock_catch_up(const char *where)
     run_show_rank = (uint8_t)(MOA_RUN_SLOTS - run_restock_wins((unsigned)fresh));
 }
 
+/* ---- P bookkeeping ------------------------------------------------------------
+ *
+ * The game's credits are the player's P: what is left after shopping. P is
+ * only ever added to them (a win, a P prize), never set from the run's total,
+ * which once handed back everything spent at the next win. The run file says
+ * how much P went into the credits (p_paid) and how much of that the run card
+ * holds (p_card, at its last save), and which prizes are on the card. When a
+ * session loads the card, whatever never reached it (the session ended before
+ * the autosave) is added again: P to the credits, prize parts to the garage. */
+static int run_reconciled;
+static int run_pay_due;                    /* the payout still has to pay the win's 1 P */
+static uint32_t run_pay_wait;              /* result frames the autosave waited on it */
+
+static void run_reconcile(void)
+{
+    if (run_reconciled || !run_state_ok || run_state.run.over) return;
+    run_reconciled = 1;
+    struct moa_run_progress *r = &run_state.run;
+    const unsigned owed = r->points > r->p_card ? (unsigned)(r->points - r->p_card) : 0u;
+    unsigned parts = 0;
+    if (owed) psx_mod_write_word(RUN_CREDITS, psx_mod_read_word(RUN_CREDITS) + owed);
+    for (unsigned m = 0; m < MOA_RUN_PRIZES; m++) {
+        const uint8_t bit = (uint8_t)(1u << m), ix = r->prize_ix[m];
+        if (!(r->prizes & bit) || (r->prize_saved & bit) || ix == MOA_RUN_PRIZE_P) continue;
+        const uint8_t have = psx_mod_read_byte(RUN_OWNED + ix);
+        psx_mod_write_byte(RUN_OWNED + ix, (uint8_t)(have + (ix >= 157u && ix < 209u ? 2u : 1u)));
+        parts++;
+    }
+    r->p_paid = r->points;
+    if (owed || parts) {
+        run_save_pending = 1;
+        (void)moa_run_save(run_file_path(), &run_state);
+    }
+    run_log("load: P %u, %u P and %u prize part(s) not on the card added", (unsigned)r->points, owed, parts);
+}
+
+/* ---- prize picks ---------------------------------------------------------------
+ *
+ * After wins 1, 3, 6, 9, 12, 18 and 24: three boxes to pick one from, drawn
+ * over the live game (dimmed) where the renderer can (psx_mod_set_overlay_image),
+ * else as the loading picture. A box is a frame/internal category (HEAD, CORE,
+ * ARMS, LEGS, BOOSTER, FCS, GENERATOR) or a weapon type (the part's type text:
+ * GRENADE LAUNCHER, SMALL MISSILE, LASERBLADE, weapon arms by theirs), each with
+ * at least one part the player can get: a real part, not owned, not on sale and
+ * not in any of this attempt's restocks (so a restock stays 8 new parts). About
+ * half the rolls swap one box for P (+2 up to win 9, +3 after). Taking a box
+ * gives a random part of it (back weapons: a pair, as the game does), then a
+ * picture of the part until a button. The options come from the seed, the
+ * attempt and the milestone, so a reopen shows the same three. Shown at the
+ * arena screen or the hub, never in a fight; after the restock picture. */
+#define RUN_PAD_UP    0x0010u
+#define RUN_PAD_DOWN  0x0040u
+static const uint8_t k_prize_wins[MOA_RUN_PRIZES] = MOA_RUN_PRIZE_WINS;
+enum { G_HEAD, G_CORE, G_ARMS, G_LEGS, G_BOOST, G_FCS, G_GEN, G_WARMS, G_HAND, G_BACK, G_BLADE, G_COUNT };
+static const struct { uint8_t tab; int8_t arm_unit; const char *label; } k_prize_group[G_COUNT] = {
+    { 0, -1, "HEAD" }, { 1, -1, "CORE" }, { 3, 1, "ARMS" }, { 2, -1, "LEGS" },
+    { 7, -1, "BOOSTER" }, { 8, -1, "FCS" }, { 9, -1, "GENERATOR" },
+    { 3, 0, NULL }, { 4, -1, NULL }, { 5, -1, NULL }, { 6, -1, NULL },   /* NULL: by type */
+};
+#define RUN_TYPE_AT 0x12u
+
+struct run_prize_opt { char label[17]; int8_t group; char type[19]; uint8_t p; };
+static struct run_prize_opt run_prize_opt[3];
+static int run_prize_n;
+static int run_prize_stage;               /* 0 none, 1 choosing, 2 the prize shown */
+static int run_prize_m;                   /* the milestone up */
+static int run_prize_cur;
+static int run_prize_where;               /* 1: at the arena screen or the hub (not a fight) */
+static int run_prize_overlay;             /* shown over the live game */
+static int run_prize_armed;
+static uint32_t run_prize_frames;
+static uint16_t run_prize_held;
+
+static void run_prize_reset(void)
+{
+    run_reconciled = 0;
+    run_pay_due = 0;
+    run_pay_wait = 0;
+    run_prize_stage = 0;
+    run_prize_where = 0;
+    (void)psx_mod_set_overlay_image(NULL, 0, 0);
+}
+
+static void run_text_at(uint32_t at, unsigned n, char *out)
+{
+    unsigned k = 0;
+    for (; k < n; k++) {
+        const uint8_t c = psx_mod_read_byte(at + k);
+        if (c < 32u || c > 126u) break;
+        out[k] = (char)c;
+    }
+    while (k && out[k - 1] == ' ') k--;
+    out[k] = 0;
+}
+
+/* Parts a prize may give, by group (and type). */
+struct run_prize_part { uint16_t ix; uint8_t tab, row; char type[19]; int8_t group; };
+static unsigned run_prize_pool(struct run_prize_part *out, unsigned max)
+{
+    static struct run_pool_part list[RUN_RESTOCKS][RUN_RESTOCK_PARTS];
+    unsigned nl[RUN_RESTOCKS];
+    uint8_t restock[256];
+    memset(restock, 0, sizeof restock);
+    run_restock_lists(list, nl);
+    for (unsigned k = 0; k < RUN_RESTOCKS; k++)
+        for (unsigned i = 0; i < nl[k]; i++) restock[list[k][i].ix] = 1;
+    unsigned n = 0;
+    for (int g = 0; g < G_COUNT; g++) {
+        const unsigned t = k_prize_group[g].tab;
+        unsigned row = 0;
+        for (uint32_t r = k_run_tables[t].addr; r < k_run_tables[t].end && n < max;
+             r += k_run_tables[t].stride, row++) {
+            const uint32_t ix = k_run_tables[t].base + row;
+            if (ix > 255u || restock[ix] || !run_row_real(r) || !psx_mod_read_word(r + RUN_PRICE_AT) ||
+                psx_mod_read_byte(RUN_OWNED + ix) || psx_mod_read_byte(RUN_STOCK + ix))
+                continue;
+            struct run_prize_part *e = &out[n];
+            run_text_at(r + RUN_TYPE_AT, 18, e->type);
+            if (!e->type[0] || e->type[0] == '-') continue;
+            if (k_prize_group[g].arm_unit >= 0 &&
+                (strcmp(e->type, "ARM UNIT") == 0) != (k_prize_group[g].arm_unit == 1))
+                continue;
+            e->ix = (uint16_t)ix; e->tab = (uint8_t)t; e->row = (uint8_t)row; e->group = (int8_t)g;
+            n++;
+        }
+    }
+    return n;
+}
+
+static int run_prize_matches(const struct run_prize_part *e, const struct run_prize_opt *o)
+{
+    return e->group == o->group && (k_prize_group[o->group].label || strcmp(e->type, o->type) == 0);
+}
+
+static uint64_t run_prize_rng(unsigned m, uint64_t salt)
+{
+    return run_state.lineup.seed ^ (0x5052495Aull * (m + 1u)) ^ salt ^
+           (0x9E3779B97F4A7C15ull * (uint64_t)(run_state.run.attempt + 1u));
+}
+
+/* The three boxes of milestone m. */
+static void run_prize_roll(unsigned m)
+{
+    static struct run_prize_part pool[256];
+    const unsigned np = run_prize_pool(pool, 256);
+    uint64_t rng = run_prize_rng(m, 0);
+    int groups[G_COUNT], ng = 0;
+    for (int g = 0; g < G_COUNT; g++)
+        for (unsigned i = 0; i < np; i++) if (pool[i].group == g) { groups[ng++] = g; break; }
+    for (int i = 0; i < ng; i++) {                       /* shuffle */
+        const int j = i + (int)moa_run_below(&rng, (uint32_t)(ng - i));
+        const int t = groups[i]; groups[i] = groups[j]; groups[j] = t;
+    }
+    run_prize_n = 0;
+    for (int i = 0; i < ng && run_prize_n < 3; i++) {
+        struct run_prize_opt *o = &run_prize_opt[run_prize_n];
+        memset(o, 0, sizeof *o);
+        o->group = (int8_t)groups[i];
+        if (k_prize_group[o->group].label) {
+            snprintf(o->label, sizeof o->label, "%s", k_prize_group[o->group].label);
+        } else {
+            /* a type of this group, not a label already up */
+            const char *types[64]; unsigned nt = 0;
+            for (unsigned k = 0; k < np && nt < 64; k++) {
+                if (pool[k].group != o->group) continue;
+                int dup = 0;
+                for (unsigned t = 0; t < nt; t++) dup |= strcmp(types[t], pool[k].type) == 0;
+                for (int b = 0; b < run_prize_n; b++) dup |= strncmp(run_prize_opt[b].label, pool[k].type, 16) == 0;
+                if (!dup) types[nt++] = pool[k].type;
+            }
+            if (!nt) continue;
+            snprintf(o->type, sizeof o->type, "%s", types[moa_run_below(&rng, nt)]);
+            snprintf(o->label, sizeof o->label, "%s", o->type);
+        }
+        run_prize_n++;
+    }
+    const uint8_t pay = k_prize_wins[m] <= 9u ? 2u : 3u;
+    if (run_prize_n < 3 || moa_run_below(&rng, 2) == 0) {
+        const int at = run_prize_n < 3 ? run_prize_n++ : (int)moa_run_below(&rng, 3);
+        memset(&run_prize_opt[at], 0, sizeof run_prize_opt[at]);
+        run_prize_opt[at].group = -1;
+        run_prize_opt[at].p = pay;
+        snprintf(run_prize_opt[at].label, sizeof run_prize_opt[at].label, "+%u P", pay);
+    }
+}
+
+static void run_prize_hide(void)
+{
+    (void)psx_mod_set_overlay_image(NULL, 0, 0);
+    if (!run_prize_overlay) psx_mod_set_loading_screen(NULL, 0);
+}
+
+/* Up on the screen: over the live game if the renderer can, else as the
+ * loading picture (drawn opaque). */
+static int run_prize_present(int choosing, const char *title, const char *line,
+                             const struct moa_screen_tile *tile)
+{
+    int ww = 0, wh = 0, w = 0, h = 0;
+    psx_mod_window_size(&ww, &wh);
+    for (int pass = 0; pass < 2; pass++) {
+        const int see = pass == 0;
+        const char *labels[3];
+        for (int i = 0; i < run_prize_n; i++) labels[i] = run_prize_opt[i].label;
+        const uint32_t *px = choosing
+            ? moa_screen_render_choice(ww, wh, title, line, labels, run_prize_n, run_prize_cur,
+                                       "UP / DOWN  CHOOSE     X  TAKE", see, &w, &h)
+            : moa_screen_render_tiles(ww, wh, title, line, tile, tile ? 1 : 0,
+                                      "PRESS ANY BUTTON", see, &w, &h);
+        if (!px) return 0;
+        if (see && psx_mod_set_overlay_image(px, w, h)) { run_prize_overlay = 1; return 1; }
+        if (!see) {
+            run_prize_overlay = 0;
+            psx_mod_set_loading_screen("ROGUE ARENA  Prize", -1);
+            psx_mod_set_loading_image(px, w, h);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void run_prize_draw_choice(void)
+{
+    char title[32], line[48];
+    snprintf(title, sizeof title, "PRIZE  RANK %u", (unsigned)(MOA_RUN_SLOTS - k_prize_wins[run_prize_m]));
+    snprintf(line, sizeof line, "CHOOSE ONE   YOU HAVE %u P", (unsigned)psx_mod_read_word(RUN_CREDITS));
+    if (!run_prize_present(1, title, line, NULL)) { run_prize_stage = 0; run_log("prize: no picture"); }
+}
+
+static int run_prize_due(void)
+{
+    for (unsigned m = 0; m < MOA_RUN_PRIZES; m++)
+        if (run_state.run.wins >= k_prize_wins[m] && !(run_state.run.prizes & (1u << m))) return (int)m;
+    return -1;
+}
+
+static void run_prize_open(int m)
+{
+    if (!run_show_font()) return;
+    run_prize_m = m;
+    run_prize_roll((unsigned)m);
+    if (!run_prize_n) return;
+    run_prize_cur = 0;
+    run_prize_stage = 1;
+    run_prize_armed = 0;
+    run_prize_frames = 0;
+    run_prize_held = 0xFFFFu;
+    run_prize_draw_choice();
+    if (run_prize_stage)
+        run_log("prize %d (win %u): %s / %s / %s%s", m, k_prize_wins[m], run_prize_opt[0].label,
+                run_prize_n > 1 ? run_prize_opt[1].label : "-", run_prize_n > 2 ? run_prize_opt[2].label : "-",
+                run_prize_overlay ? "" : " (loading picture)");
+}
+
+/* The box taken: the part or P, booked in the run file at once. */
+static void run_prize_take(void)
+{
+    const struct run_prize_opt *o = &run_prize_opt[run_prize_cur];
+    struct moa_run_progress *r = &run_state.run;
+    const unsigned m = (unsigned)run_prize_m;
+    static struct moa_screen_tile tile;
+    static uint32_t thumb[RUN_THUMB * RUN_THUMB];
+    static char name[19], cat[19];
+    char title[32], line[48];
+    memset(&tile, 0, sizeof tile);
+    snprintf(title, sizeof title, "PRIZE  RANK %u", (unsigned)(MOA_RUN_SLOTS - k_prize_wins[m]));
+    if (o->p) {
+        r->points = (uint8_t)(r->points + o->p);
+        r->p_paid = (uint8_t)(r->p_paid + o->p);
+        psx_mod_write_word(RUN_CREDITS, psx_mod_read_word(RUN_CREDITS) + o->p);
+        r->prize_ix[m] = MOA_RUN_PRIZE_P;
+        snprintf(line, sizeof line, "+%u P   YOU HAVE %u P", o->p, (unsigned)psx_mod_read_word(RUN_CREDITS));
+        run_log("prize %u: +%u P", m, o->p);
+    } else {
+        static struct run_prize_part pool[256];
+        const unsigned np = run_prize_pool(pool, 256);
+        unsigned hits = 0;
+        for (unsigned i = 0; i < np; i++) hits += run_prize_matches(&pool[i], o);
+        if (!hits) { run_log("prize %u: nothing left in %s", m, o->label); return; }
+        uint64_t rng = run_prize_rng(m, 0x50415254ull * (uint64_t)(run_prize_cur + 1));
+        unsigned pick = moa_run_below(&rng, hits);
+        const struct run_prize_part *e = NULL;
+        for (unsigned i = 0; i < np; i++)
+            if (run_prize_matches(&pool[i], o) && pick-- == 0) { e = &pool[i]; break; }
+        const uint32_t row = k_run_tables[e->tab].addr + (uint32_t)e->row * k_run_tables[e->tab].stride;
+        const int pair = e->ix >= 157u && e->ix < 209u;
+        psx_mod_write_byte(RUN_OWNED + e->ix, (uint8_t)(psx_mod_read_byte(RUN_OWNED + e->ix) + (pair ? 2u : 1u)));
+        r->prize_ix[m] = (uint8_t)e->ix;
+        run_text_at(row, 18, name);
+        snprintf(cat, sizeof cat, "%s", o->type[0] ? o->type : k_run_tables[e->tab].label);
+        const char *dir = getenv("PSX_MOA_MODELS_DIR");
+        tile.category = cat;
+        tile.name = name;
+        tile.label = pair ? "NEW PAIR" : "NEW PART";
+        tile.thumb = dir && dir[0] && moa_acv_has_part_models(dir) && run_part_thumb(dir, e->tab, e->row, thumb)
+                   ? thumb : NULL;
+        snprintf(line, sizeof line, "ADDED TO YOUR GARAGE");
+        psx_mod_counter_add("moa.run.prize_part", 1);
+        run_log("prize %u: %s (index %u)%s", m, name, (unsigned)e->ix, pair ? ", a pair" : "");
+    }
+    r->prizes |= (uint8_t)(1u << m);
+    (void)moa_run_save(run_file_path(), &run_state);
+    run_save_pending = 1;
+    run_prize_stage = 2;
+    run_prize_armed = 0;
+    run_prize_frames = 0;
+    if (!run_prize_present(0, title, line, o->p ? NULL : &tile)) { run_prize_stage = 0; run_prize_hide(); }
+}
+
+/* Per frame. */
+static void run_prize_frame(void)
+{
+    if (!run_prize_stage) {
+        if (!run_at_hub || run_autopilot || run_fade || !run_state_ok || run_state.run.over ||
+            run_show_on || run_show_rank || !run_prize_where || psx_mod_read_byte(RUN_FIGHT_DONE) ||
+            psx_mod_read_word(k_run_tables[0].addr) != 0x302D4448u)
+            return;
+        const int m = run_prize_due();
+        if (m >= 0) run_prize_open(m);
+        return;
+    }
+    psx_mod_write_half(RUN_PAD_BUFFER + 2u, 0xFFFFu);       /* the game sees nothing pressed */
+    if (!run_prize_overlay) psx_mod_set_loading_screen("ROGUE ARENA  Prize", -1);
+    const uint16_t b = psx_mod_host_pad_buttons(0);          /* active low */
+    const uint16_t down = (uint16_t)(run_prize_held & ~b);   /* newly pressed */
+    run_prize_held = b;
+    run_prize_frames++;
+    if (b == 0xFFFFu) run_prize_armed = 1;
+    if (!run_prize_armed || run_prize_frames < 20u || !down) return;
+    if (run_prize_stage == 2) {
+        run_prize_stage = 0;
+        run_prize_hide();
+        run_log("prize: closed");
+        return;
+    }
+    if (down & (RUN_PAD_UP | RUN_PAD_DOWN)) {
+        run_prize_cur = (run_prize_cur + ((down & RUN_PAD_UP) ? run_prize_n - 1 : 1)) % run_prize_n;
+        run_prize_draw_choice();
+    } else if (down & RUN_PAD_X) {
+        run_prize_take();
+    }
+}
+
 static void run_maybe_return(void);
 
 static void run_hub_entry(struct CPUState *cpu, uint32_t address)
@@ -887,6 +1240,7 @@ static void run_hub_entry(struct CPUState *cpu, uint32_t address)
     if (!run_on() || psx_mod_read_word(address) != RUN_SIG_HUB_RESUME) return;
     if (run_state_ok && run_state.run.over) { run_loss_wait = 0; run_maybe_return(); return; }
     run_reach_hub("moa.run.hub_reached");
+    run_prize_where = 1;
     if (run_state_ok) {
         run_apply_prices();
         run_restock_catch_up("hub");
@@ -904,6 +1258,10 @@ static uint8_t run_rank_now(uint32_t st)
 static void run_autosave(struct CPUState *cpu)
 {
     if (!run_save_pending) return;
+    /* The win's 1 P comes with the game's payout: save once it is paid (or
+     * after about 5 s of arena screen, should the payout never run). */
+    if (run_pay_due && ++run_pay_wait < 300u) return;
+    run_pay_due = 0;
     run_save_pending = 0;
     if (psx_mod_read_word(RUN_SAVE) != RUN_SIG_SAVE) {
         psx_mod_counter_add("moa.run.save_skip_code", 1);
@@ -920,6 +1278,11 @@ static void run_autosave(struct CPUState *cpu)
     const uint32_t ok = psx_mod_call_guest(cpu, RUN_SAVE, cpu->gpr[31], 0u, 0u, 0u, 0u);
     psx_mod_write_byte(letter_at, old_letter);
     psx_mod_counter_add((ok & 0xFFu) ? "moa.run.save_ok" : "moa.run.save_fail", 1);
+    if (ok & 0xFFu) {                       /* the card now holds all P paid and every prize */
+        run_state.run.p_card = run_state.run.p_paid;
+        run_state.run.prize_saved = run_state.run.prizes;
+        (void)moa_run_save(run_file_path(), &run_state);
+    }
     run_log("autosave: result %u (list letter was 0x%02X, count %u)",
             (unsigned)(ok & 0xFFu), old_letter, (unsigned)count);
 }
@@ -996,6 +1359,7 @@ static void run_result_entry(struct CPUState *cpu, uint32_t address)
     }
     if (!psx_mod_read_byte(RUN_FIGHT_DONE)) {
         run_result_seen = 0;
+        run_prize_where = 1;                   /* the arena screen: prizes may open */
         run_autosave(cpu);                     /* the result is applied now */
         return;
     }
@@ -1027,18 +1391,21 @@ static void run_result_entry(struct CPUState *cpu, uint32_t address)
     }
     (void)run_book_win(who, "arena screen");             /* nothing if the fight booked it */
     if (!run_win_screen) return;
-    /* P is the game's credits: the run's P less the 1 the prize screen pays.
-     * If the credits weren't the run's P before the waiting win(s), say so
-     * (more than one: a win booked in a fight that never reached this screen). */
-    const uint32_t had = run_state.run.points - 1u;
-    const uint32_t before = run_state.run.points - run_win_screen;
+    /* The game's prize screen pays this win's 1 P. Any other P not yet in the
+     * credits (a win booked in a fight that never reached this screen) is
+     * added here. Added, never set: the credits are what shopping left. */
     run_win_screen = 0;
+    struct moa_run_progress *r = &run_state.run;
+    const uint32_t owed = r->points > r->p_paid ? (uint32_t)(r->points - r->p_paid) : 1u;
     const uint32_t credits = psx_mod_read_word(RUN_CREDITS);
-    if (credits != before) psx_mod_counter_add("moa.run.credits_mismatch", 1);
-    psx_mod_write_word(RUN_CREDITS, had);                 /* the game pays the 1 */
+    psx_mod_write_word(RUN_CREDITS, credits + owed - 1u);
+    r->p_paid = r->points;
+    (void)moa_run_save(run_file_path(), &run_state);
     run_pay = 1;
-    run_log("win: P %u -> %u (credits were %u)", (unsigned)had,
-            (unsigned)run_state.run.points, (unsigned)credits);
+    run_pay_due = 1;
+    run_pay_wait = 0;
+    run_log("win: credits %u + %u (P earned %u)", (unsigned)credits, (unsigned)owed,
+            (unsigned)r->points);
     run_save_pending = 1;                                 /* restocks: at the hub (run_restock_catch_up) */
 }
 
@@ -1062,6 +1429,7 @@ static void run_payout_entry(struct CPUState *cpu, uint32_t address)
     }
     const uint32_t was = psx_mod_read_word(tab + 8u * who);
     psx_mod_write_word(tab + 8u * who, run_pay);
+    run_pay_due = 0;
     run_log("payout: %u (stock %u), credits %u", (unsigned)run_pay, (unsigned)was,
             (unsigned)psx_mod_read_word(RUN_CREDITS));
     run_pay = 0;
@@ -1430,6 +1798,7 @@ static void run_sampler_entry(struct CPUState *cpu, uint32_t address)
 {
     (void)cpu;
     if (!run_on() || !run_at_hub || psx_mod_read_word(address) != RUN_SIG_SAMPLER) return;
+    run_prize_where = 0;                          /* in a fight: no prize screen */
     run_maybe_return();
     /* The fight's own result, before the retry/exit choice (a retry never
      * reaches the arena screen's result routine). Logged on each change so a
@@ -1465,6 +1834,7 @@ static void run_frame_hook(void)
         psx_mod_counter_add("moa.run.arena_unlocked", 1);
     }
     run_show_frame();
+    run_prize_frame();
     if (run_loss_wait) run_loss_wait--;      /* the return itself is made in a guest hook */
     if (run_autopilot && run_stage == STAGE_BACK) {
         if (++run_frames - run_back_start >= (run_direct ? RUN_DIRECT_HOLD : RUN_BACK_FRAMES))

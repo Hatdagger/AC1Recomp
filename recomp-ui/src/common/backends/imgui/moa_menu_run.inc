@@ -210,10 +210,10 @@ static void draw_run_page(LauncherModel* m, const Gfx& g, const Input& in) {
 
     panel(g, 24.0f, 248.0f, 592.0f, 168.0f, "RULES");
     text(g, 38.0f, 264.0f, 11.0f, kText,
-         "A random legal AC and one arena of 49 opponents drawn from every arena, "
-         "easiest first; you start at the bottom. Each win pays 1 P to spend in "
-         "the shop. There is no leaving a fight, and one loss ends the run. The "
-         "run is played from its own memory card; your saves are not touched.", 560.0f);
+         "A random legal AC and 49 opponents from every arena, easiest first; you "
+         "start at the bottom. Each win pays 1 P for the shop, and wins 1, 3, 6, 9, "
+         "12, 18 and 24 give a prize pick. No leaving a fight; one loss ends the "
+         "run. It plays from its own memory card; your saves are not touched.", 560.0f);
     text(g, 38.0f, 308.0f, 9.0f, kDim, kRunNotice, 560.0f);
     text(g, 38.0f, 340.0f, 11.0f, kDim, "PROJECT PHANTASMA");
     text(g, 220.0f, 340.0f, 11.0f, phantasma_installed(m) ? kOn : kDim,

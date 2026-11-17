@@ -349,9 +349,22 @@ const uint32_t *moa_screen_render(int win_w, int win_h, const char *status,
 }
 
 /* ---- part tiles (moa_screen_render_tiles) ---------------------------------- */
+/* The steel backdrop at half brightness, or (see-through) a dark veil the
+ * live game shows through. */
+static void backdrop(uint32_t *buf, int W, int see_through)
+{
+    for (int y = 0; y < s_h; y++)
+        for (int x = 0; x < W; x++) {
+            if (see_through) { buf[y * W + x] = 0xB4101216u; continue; }
+            const uint32_t c = tile_px(x & 63, y & 63);
+            buf[y * W + x] = rgb((int)((c >> 16) & 255) / 2, (int)((c >> 8) & 255) / 2, (int)(c & 255) / 2);
+        }
+}
+
 const uint32_t *moa_screen_render_tiles(int win_w, int win_h, const char *title,
                                         const char *line, const struct moa_screen_tile *tile,
-                                        int count, const char *footer, int *out_w, int *out_h)
+                                        int count, const char *footer, int see_through,
+                                        int *out_w, int *out_h)
 {
     static uint32_t *buf;
     static int bw;
@@ -373,11 +386,7 @@ const uint32_t *moa_screen_render_tiles(int win_w, int win_h, const char *title,
     const int keep_w = s_w, keep_h = s_h;
     s_w = W; s_h = CANVAS_H;
     const int cx = W / 2;
-    for (int y = 0; y < s_h; y++)
-        for (int x = 0; x < W; x++) {
-            const uint32_t c = tile_px(x & 63, y & 63);
-            buf[y * W + x] = rgb((int)((c >> 16) & 255) / 2, (int)((c >> 8) & 255) / 2, (int)(c & 255) / 2);
-        }
+    backdrop(buf, W, see_through);
     const uint32_t grey = rgb(150, 156, 168), white = rgb(235, 238, 242);
     const uint32_t gold = rgb(255, 200, 80), blue = rgb(90, 170, 255);
     if (title) text(buf, NULL, title, cx, 56, 3, white);
@@ -407,6 +416,69 @@ const uint32_t *moa_screen_render_tiles(int win_w, int win_h, const char *title,
         }
         if (t->name) text(buf, NULL, t->name, x0 + tw / 2, y0 + 182, 1, white);
         if (t->label) text(buf, NULL, t->label, x0 + tw / 2, y0 + 208, 2, gold);
+    }
+    if (footer) text(buf, NULL, footer, cx, CANVAS_H - 40, 2, grey);
+    s_w = keep_w; s_h = keep_h;
+    s_dirty = 1;
+    *out_w = W; *out_h = CANVAS_H;
+    return buf;
+}
+
+/* ---- choice boxes (moa_screen_render_choice) -------------------------------- */
+const uint32_t *moa_screen_render_choice(int win_w, int win_h, const char *title,
+                                         const char *line, const char *const *label,
+                                         int count, int cursor, const char *footer,
+                                         int see_through, int *out_w, int *out_h)
+{
+    static uint32_t *buf;
+    static int bw;
+    *out_w = *out_h = 0;
+    if (!s_font_ok) return NULL;
+    int W = CONTENT_W;
+    if (win_w > 0 && win_h > 0) W = (int)((int64_t)CANVAS_H * win_w / win_h);
+    if (W < CONTENT_W) W = CONTENT_W;
+    if (W > MAX_W) W = MAX_W;
+    W &= ~1;
+    if (W != bw || !buf) {
+        free(buf);
+        buf = (uint32_t *)malloc((size_t)W * CANVAS_H * 4u);
+        bw = buf ? W : 0;
+        if (!buf) return NULL;
+    }
+    const int keep_w = s_w, keep_h = s_h;            /* borrow fill()/text(), as the tiles do */
+    s_w = W; s_h = CANVAS_H;
+    const int cx = W / 2;
+    backdrop(buf, W, see_through);
+    const uint32_t grey = rgb(170, 176, 188), white = rgb(235, 238, 242);
+    if (title) text(buf, NULL, title, cx, 56, 3, white);
+    fill(buf, cx - 300, 84, cx + 300, 86, rgb(70, 74, 82));
+    if (line) text(buf, NULL, line, cx, 110, 2, grey);
+    if (count > 4) count = 4;
+    /* One width for every box: the longest label at scale 3, plus margins. */
+    const int scale = 3;
+    int longest = 8;
+    for (int i = 0; i < count; i++) {
+        const int n = label[i] ? (int)strlen(label[i]) : 0;
+        if (n > longest) longest = n > 16 ? 16 : n;
+    }
+    const int bwid = longest * FONT_W * scale + 2 * 40, bh = 76, gap = 22;
+    const int total = count * bh + (count - 1) * gap;
+    int y0 = 190 + (CANVAS_H - 190 - 90 - total) / 2;
+    for (int i = 0; i < count; i++, y0 += bh + gap) {
+        const int x0 = cx - bwid / 2, x1 = cx + bwid / 2, y1 = y0 + bh;
+        const int on = i == cursor;
+        fill(buf, x0, y0, x1, y1, on ? rgb(22, 40, 70) : rgb(8, 10, 16));
+        frame_rect(buf, x0, y0, x1, y1, 2, on ? rgb(130, 200, 255) : rgb(60, 90, 130));
+        frame_rect(buf, x0 + 5, y0 + 5, x1 - 5, y1 - 5, 1, on ? rgb(70, 120, 180) : rgb(28, 40, 58));
+        if (on) {                                      /* the cursor: a marker each side */
+            for (int k = 0; k < 9; k++) {
+                fill(buf, x0 - 26 + k, y0 + bh / 2 - (9 - k), x0 - 25 + k, y0 + bh / 2 + (9 - k), rgb(255, 200, 80));
+                fill(buf, x1 + 25 - k, y0 + bh / 2 - (9 - k), x1 + 26 - k, y0 + bh / 2 + (9 - k), rgb(255, 200, 80));
+            }
+        }
+        char s[17];
+        snprintf(s, sizeof s, "%s", label[i] ? label[i] : "");
+        text(buf, NULL, s, cx, y0 + bh / 2, scale, on ? white : rgb(120, 150, 185));
     }
     if (footer) text(buf, NULL, footer, cx, CANVAS_H - 40, 2, grey);
     s_w = keep_w; s_h = keep_h;

@@ -1,6 +1,7 @@
 /* Master of Arena: Arena Run. See moa_arena_run.h. */
 #include "moa_arena_run.h"
 
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -361,14 +362,26 @@ void moa_run_lose(struct moa_run_state *s)
     s->run.over = 1;
 }
 
+/* Version 5 ended after the AC name (the progress block padded to 64). */
+#define RUN_V5_BYTES (offsetof(struct moa_run_state, run) + 64u)
+
 int moa_run_load(const char *path, struct moa_run_state *s)
 {
     FILE *f = fopen(path, "rb");
     if (!f) return 0;
+    memset(s, 0, sizeof *s);
     const size_t got = fread(s, 1, sizeof *s, f);
     fclose(f);
-    if (got != sizeof *s || s->magic != MOA_RUN_MAGIC || s->version != MOA_RUN_VERSION)
+    if (s->magic != MOA_RUN_MAGIC) return 0;
+    if (s->version == 5u && got == RUN_V5_BYTES) {
+        /* A run from before prizes: its card is taken to hold all its P. */
+        s->version = MOA_RUN_VERSION;
+        s->run.p_paid = s->run.p_card = s->run.points;
+        s->run.prizes = s->run.prize_saved = 0;
+        memset(s->run.prize_ix, 0, sizeof s->run.prize_ix);
+    } else if (got != sizeof *s || s->version != MOA_RUN_VERSION) {
         return 0;
+    }
     return s->run.over ? 2 : 1;                       /* a lost run: Retry only */
 }
 

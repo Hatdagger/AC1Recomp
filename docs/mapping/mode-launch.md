@@ -175,6 +175,23 @@ putting together and testing. In order:
    0x80097EA0 at load), music 0x8003EA29, 0x8003EA94 = 0, mode = 2, 0x8003EA7E = 1.
 5. Return from the menu (0x801B1CC8 = 1 inside the menu loop, or skip the menu call).
 
+**Where direct VS goes (decided 2026-11-17):** into the netplay and AI Battle code, as one
+shared routine, not as a separate feature. All three versus paths already pass through the
+same VS menu and only differ in the mode byte the menu leaves behind:
+
+| User | Mode byte at the end | Engine | Today |
+|---|---|---|---|
+| Plain VS | 2 | 209 split screen | menu by hand |
+| Netplay (`moa_link_netplay.c`) | 1 (set by its hook on `0x800B0CB4`) | 208 link | players use the VS menu |
+| AI Battle (`moa_ai_battle.c`) | 3 | 210 arena | scripted menu presses in fast forward, hidden screen |
+
+The shared routine = steps 1–5 above, with the mode byte as a parameter. For netplay both
+peers must run it with the same inputs (host's and guest's builds and the stage agreed in
+the lobby) so the simulation stays identical. For AI Battle it replaces the scripted
+DATA LOAD / SELECT MAP presses (the build comes from the card instead of a session memory
+card). After the fight 0x8003EA7E = 1 brings the player back to the VS menu, where the
+existing "return to launcher" logic already takes over.
+
 **Scenario — Load Save / New Game without the title:** set mode = 0 and the Scenario
 values from `0x800AB500`, then run the LOAD GAME state (`0x800AC8E8`) — card screens still
 show — or, for a true skip, put the save into RAM ourselves and call `0x800552C0` (open the

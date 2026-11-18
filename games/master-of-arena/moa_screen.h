@@ -107,6 +107,12 @@ struct moa_screen_prize_row {
     const char *cost;         /* "3 P", "+1 P" */
     const uint32_t *thumb;    /* 128 x 128, or NULL */
     int locked;
+    /* A set's picture cycling through its parts: `thumb_next` is wiped in
+     * over `thumb` from the top, `wipe` rows of it shown (0..128) under a
+     * bright scan line; `dots` (2..3) small marks under the picture, `dot_on`
+     * lit. */
+    const uint32_t *thumb_next;
+    int wipe, dots, dot_on;
 };
 struct moa_screen_prize {
     const char *title, *line;

@@ -1323,6 +1323,12 @@ static struct run_offer run_offer[3];
 static int run_offer_n;
 static uint32_t run_offer_thumb[3][RUN_THUMB * RUN_THUMB];
 static int run_offer_has_thumb[3];
+static uint32_t run_offer_xthumb[3][2][RUN_THUMB * RUN_THUMB];   /* a set's other parts */
+static int run_offer_has_xthumb[3][2];
+/* A set's picture: each part held RUN_SET_HOLD frames, then the next wiped in
+ * from the top over RUN_SET_WIPE frames (a scan line, like the garage's monitor). */
+#define RUN_SET_HOLD 96u
+#define RUN_SET_WIPE 16u
 static struct moa_parts run_parts;
 
 static int run_prize_stage;               /* PZ_* */
@@ -1697,10 +1703,34 @@ static void run_prize_roll(unsigned win)
     }
     const char *dir = getenv("PSX_MOA_MODELS_DIR");
     const int models = dir && dir[0] && moa_acv_has_part_models(dir);
-    for (int i = 0; i < run_offer_n; i++)
+    for (int i = 0; i < run_offer_n; i++) {
         run_offer_has_thumb[i] = models && run_part_thumb(dir, run_offer[i].cat, run_offer[i].id, run_offer_thumb[i]);
+        for (int k = 0; k < 2; k++)
+            run_offer_has_xthumb[i][k] = models && k < run_offer[i].xn &&
+                run_part_thumb(dir, run_offer[i].xcat[k], run_offer[i].xid[k], run_offer_xthumb[i][k]);
+    }
     run_log("prize: %d offer(s)%s%s", run_offer_n, run_state.run.reroll_win == win + 1u ? " (re-rolled)" : "",
             models ? "" : " (no model install: no pictures)");
+}
+
+/* Offer i's pictures (a set: the arms, then its gun and blade), n of them. */
+static int run_offer_pics(int i, const uint32_t *pic[3])
+{
+    int n = 0;
+    if (run_offer_has_thumb[i]) pic[n++] = run_offer_thumb[i];
+    for (int k = 0; k < run_offer[i].xn && k < 2; k++)
+        if (run_offer_has_xthumb[i][k]) pic[n++] = run_offer_xthumb[i][k];
+    return n;
+}
+
+/* Where a cycling set picture is at frame t: showing part *k, the next
+ * wiped in over `*wipe` rows (0 = none). 1 = mid-wipe or just finished one. */
+static int run_set_anim(uint32_t t, int n, int *k, int *wipe)
+{
+    const uint32_t per = RUN_SET_HOLD + RUN_SET_WIPE, u = t % per;
+    *k = (int)((t / per) % (uint32_t)n);
+    *wipe = u < RUN_SET_HOLD ? 0 : (int)((u - RUN_SET_HOLD + 1u) * (uint32_t)RUN_THUMB / RUN_SET_WIPE);
+    return u >= RUN_SET_HOLD || (u == 0u && t > 0u);
 }
 
 static int run_reroll_can(void)
@@ -1729,6 +1759,17 @@ static int run_prize_draw(void)
         row[i].cost = o->cost_s;
         row[i].thumb = run_offer_has_thumb[i] ? run_offer_thumb[i] : NULL;
         row[i].locked = o->cost > credits;
+        const uint32_t *pic[3];
+        const int np = o->xn ? run_offer_pics(i, pic) : 0;
+        if (np >= 2) {
+            int k, wipe;
+            (void)run_set_anim(run_prize_frames, np, &k, &wipe);
+            row[i].thumb = pic[k];
+            row[i].thumb_next = wipe ? pic[(k + 1) % np] : NULL;
+            row[i].wipe = wipe;
+            row[i].dots = np;
+            row[i].dot_on = wipe > RUN_THUMB / 2 ? (k + 1) % np : k;
+        }
     }
     row[run_offer_n].name = "PASS";
     row[run_offer_n].cost = "+1 P";
@@ -1953,6 +1994,12 @@ static void run_prize_frame(void)
     const uint16_t down = (uint16_t)(run_prize_held & ~b);   /* newly pressed */
     run_prize_held = b;
     run_prize_frames++;
+    if (run_prize_stage == PZ_CHOOSE)                        /* a set's picture cycling */
+        for (int i = 0; i < run_offer_n; i++) {
+            const uint32_t *pic[3];
+            int k, wipe, np = run_offer[i].xn ? run_offer_pics(i, pic) : 0;
+            if (np >= 2 && run_set_anim(run_prize_frames, np, &k, &wipe)) { (void)run_prize_draw(); break; }
+        }
     if (b == 0xFFFFu) run_prize_armed = 1;
     if (!run_prize_armed || run_prize_frames < 20u || !down) return;
     const int up = (down & RUN_PAD_UP) != 0, dn = (down & RUN_PAD_DOWN) != 0;

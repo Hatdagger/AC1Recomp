@@ -583,6 +583,7 @@ const uint32_t *moa_screen_render_list(int win_w, int win_h, const struct moa_sc
 }
 
 /* ---- prize screen (moa_screen_render_prize) --------------------------------- */
+static uint32_t blend_px(uint32_t d, uint32_t r, uint32_t g, uint32_t b, uint32_t a);
 static uint32_t dim_px(uint32_t p, int num, int den)
 {
     const uint32_t r = ((p >> 16) & 255u) * (uint32_t)num / (uint32_t)den;
@@ -670,11 +671,32 @@ const uint32_t *moa_screen_render_prize(int win_w, int win_h, const struct moa_s
             const int tx = x0 + 6, ty = y0 + (h - 128) / 2;
             fill(buf, tx, ty, tx + 128, ty + 128, rgb(4, 5, 8));
             if (r->thumb) {
-                for (int y = 0; y < 128; y++)
+                const int wipe = r->thumb_next ? (r->wipe < 0 ? 0 : r->wipe > 128 ? 128 : r->wipe) : 0;
+                for (int y = 0; y < 128; y++) {
+                    const uint32_t *src = y < wipe ? r->thumb_next : r->thumb;
                     for (int x = 0; x < 128; x++) {
-                        const uint32_t q = r->thumb[y * 128 + x];
+                        const uint32_t q = src[y * 128 + x];
                         if (q >> 24) buf[(ty + y) * W + tx + x] = r->locked ? dim_px(0xFF000000u | q, 2, 5) : 0xFF000000u | q;
                     }
+                }
+                if (wipe > 0 && wipe < 128) {             /* the scan line, with a soft glow under it */
+                    for (int x = 0; x < 128; x++) {
+                        uint32_t *d = &buf[(ty + wipe) * W + tx + x];
+                        *d = blend_px(*d, 200, 240, 255, 230);
+                        if (wipe + 1 < 128) { d += W; *d = blend_px(*d, 130, 200, 255, 150); }
+                        if (wipe + 2 < 128) { d += W; *d = blend_px(*d, 90, 160, 230, 70); }
+                        if (wipe > 1) { d = &buf[(ty + wipe - 1) * W + tx + x]; *d = blend_px(*d, 130, 200, 255, 110); }
+                    }
+                }
+                if (r->dots > 1) {                        /* which part of the set is showing */
+                    const int n = r->dots > 3 ? 3 : r->dots, dw = 10, dg = 8;
+                    const int dx0 = tx + 64 - (n * dw + (n - 1) * dg) / 2, dy = ty + 128 - 9;
+                    for (int k = 0; k < n; k++) {
+                        const int a = dx0 + k * (dw + dg);
+                        fill(buf, a - 1, dy - 1, a + dw + 1, dy + 5, rgb(4, 5, 8));
+                        fill(buf, a, dy, a + dw, dy + 4, k == r->dot_on ? gold : rgb(60, 70, 86));
+                    }
+                }
             } else {
                 text(buf, NULL, "?", tx + 64, ty + 64, 3, rgb(60, 64, 72));
             }

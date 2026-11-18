@@ -398,6 +398,8 @@ static int run_fixes;
 
 /* Hang watch state (see "hang watch" below). */
 #define RUN_WATCH_FRAMES     (60u * 45u)   /* the replay and result screens fit well inside */
+#define RUN_WATCH_LOAD       (60u * 15u)   /* a fight runs ~4 s after its AI is applied; players
+                                            * closed hung loads after ~25 s, before 45 s */
 static int run_watch_phase;               /* 0 off, 1 loading a fight, 2 after a fight */
 static uint32_t run_watch_count;
 static unsigned run_watch_dumps;
@@ -2267,6 +2269,8 @@ static void run_ghost_save(uint8_t who)
  * and writes RAM + VRAM beside the run file (<run>.hang-<phase>.ram/.vram). */
 extern const uint16_t *gpu_get_vram(void);
 
+static uint32_t run_watch_limit(void) { return run_watch_phase == 1 ? RUN_WATCH_LOAD : RUN_WATCH_FRAMES; }
+
 static void run_watch_dump(void)
 {
     static const char *const k_phase[3] = { "", "loading a fight", "after a fight" };
@@ -2274,7 +2278,7 @@ static void run_watch_dump(void)
     moa_btrace_recent(calls, sizeof calls);
     run_log("hang watch: %s for %u s: disc queue write %u read %u, fight done %u won %u lost %u, "
             "title flags %u/%u, prize where %d, data fixes queued %d",
-            k_phase[run_watch_phase], (unsigned)(RUN_WATCH_FRAMES / 60u),
+            k_phase[run_watch_phase], (unsigned)(run_watch_limit() / 60u),
             (unsigned)psx_mod_read_word(RUN_D_CDQ_WRITE), (unsigned)psx_mod_read_word(RUN_D_CDQ_READ),
             (unsigned)psx_mod_read_byte(RUN_FIGHT_DONE), (unsigned)psx_mod_read_half(RUN_FIGHT_WON),
             (unsigned)psx_mod_read_half(RUN_FIGHT_WON + 2u),
@@ -2308,7 +2312,7 @@ static void run_frame_hook(void)
     run_check_session();
     if (!run_on()) return;
     run_apply_fixes();
-    if (run_watch_phase && run_at_hub && ++run_watch_count == RUN_WATCH_FRAMES) run_watch_dump();
+    if (run_watch_phase && run_at_hub && ++run_watch_count == run_watch_limit()) run_watch_dump();
     if (run_at_hub && psx_mod_read_byte(RUN_ARENA_LOCK)) {
         psx_mod_write_byte(RUN_ARENA_LOCK, 0);
         psx_mod_counter_add("moa.run.arena_unlocked", 1);

@@ -1,11 +1,19 @@
 import sys, glob, os
 from PIL import Image
 src, outdir = sys.argv[1], sys.argv[2]
+# Brightest channel of each tile after dimming (0-255). The stock hub tile tops out
+# at 48; a little above that keeps the belt colour readable but in the background.
+HUB_MAX = 64
+def dim(im):
+    px = list(im.get_flattened_data()); mx = max(max(c) for c in px)
+    k = min(1.0, HUB_MAX / mx)
+    q = lambda v: min(248, int(round(v * k / 8)) * 8)
+    o = Image.new('RGB', im.size); o.putdata([(q(r), q(g), q(b)) for r, g, b in px]); return o
 files = sorted(f for f in glob.glob(os.path.join(src, '[01]*.png')))
 assert len(files) == 11, files
 belts = []; blobs = []
 for f in files:
-    im = Image.open(f).convert('RGB'); assert im.size == (64, 64)
+    im = dim(Image.open(f).convert('RGB')); assert im.size == (64, 64)
     cols = sorted({c for c in im.get_flattened_data()}, key=lambda c: (sum(c), c))
     assert len(cols) <= 16
     cols += [cols[-1]] * (16 - len(cols))
@@ -30,7 +38,8 @@ for f in files:
     back.putdata(out); assert list(back.get_flattened_data()) == px, name
 L = []
 L.append('/* Generated from hub-rank-tiles.zip (belt/) by tiles2c.py. Do not edit by hand.')
-L.append(' * 11 hub background tiles, karate belt colours by arena rank.')
+L.append(' * 11 hub background tiles, karate belt colours by arena rank, dimmed so the')
+L.append(' * brightest channel is %d/255 (stock tile: 48).' % HUB_MAX)
 L.append(' * Each tile: 64x64, PS1 4-bit (2048 bytes, 32 bytes per row, left pixel in the low')
 L.append(' * nibble) + 16-colour 15-bit palette, written like the stock hub tile (MENU_TIM 0,')
 L.append(' * TIM at 0x9260): black = 0x0000 (see-through), every other colour has bit 15 set. */')

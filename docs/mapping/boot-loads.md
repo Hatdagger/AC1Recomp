@@ -218,7 +218,7 @@ weapon blocks MoveImage → (768,448), (0,493), (0,494). Then stage (player bloc
   | WEL_T (14) / WER_T (15) / BWL_T (12) / BWR_T (13) / BST_T (11) | +5 / +4 / +6 / +7 / +12, skipped if 255 |
 
   Each `*_T` archive holds 16 complete texture sets (CORE_T 176 = 11 × 16, HEAD_T 288 = 18 × 16,
-  ARMS_T 24 × 16, LEG_T 40 × 16). **v = 0 (146 of 158 opponents)**: set 0, colours built from
+  ARMS_T 24 × 16, LEG_T 40 × 16). **v = 0 (all but 12 opponent records)**: set 0, colours built from
   the record's paint at +16 (`0x800C14AC`, LoadImage into the AC CLUT rows). **v ≠ 0 (12
   opponents, v 1–15)**: a pre-painted set, colours = **MENU_TIM 26 + 4v + record byte 15**
   (CLUT row 486 + rows 488–490).

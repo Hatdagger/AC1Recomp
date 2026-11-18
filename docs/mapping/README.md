@@ -213,7 +213,7 @@ Boot chat → Rogue Arena work (2026-11-17, after reading `rogue-arena-49` up to
 
 Boot chat → Rogue Arena work (2026-11-18):
 - The arena screen loads the **opponent's textures** in `0x800C0D14(records, n)` from its
-  64-byte arena record, between two `0x800C0E7C` swaps; 12 of the 158 opponents use a
+  64-byte arena record, between two `0x800C0E7C` swaps; 12 opponent records use a
   pre-painted texture set (record byte 14). Any direct arena launch or custom opponent must
   replay it (`boot-loads.md` §7).
 

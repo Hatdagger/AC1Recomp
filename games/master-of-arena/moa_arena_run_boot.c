@@ -38,6 +38,7 @@
 #include <string.h>
 
 #include "moa_arena_run.h"
+#include "moa_hub_rank_bg.h"
 #include "moa_ac_view.h"
 #include "moa_screen.h"
 #include "moa_run_record.h"
@@ -329,6 +330,15 @@ static const uint32_t k_run_d_card_finish[] = {
 #define RUN_D_SIG_HUB_OPEN   0x27BDFFB8u  /* addiu sp,sp,-72 */
 #define RUN_D_HUB_INPUT      0x80055848u
 #define RUN_D_SIG_HUB_INPUT  0x27BDFFC0u  /* addiu sp,sp,-64 */
+/* Hub background by rank (karate belts, moa_hub_rank_bg.c). The hub's
+ * background is a 64x64 4-bit tile + 16 colours that both hub opens put into
+ * VRAM from these RAM copies (LoadImage at 0x800553AC/BC and 0x800572D8/E8);
+ * the screens opened from the hub store VRAM back into them. Writing the
+ * copies at each hub open shows our tile. */
+#define RUN_HUB_OPEN_B       0x800571D0u  /* the other hub open (called from 0x800AC2CC) */
+#define RUN_SIG_HUB_OPEN_B   0x27BDFFC8u  /* addiu sp,sp,-56 */
+#define RUN_HUB_TILE         0x8004ACA8u  /* -> VRAM (416,0,16,64) */
+#define RUN_HUB_TILE_CLUT    0x8004B6F0u  /* -> VRAM (368,225,16,1) */
 #define RUN_D_PAD            0x801B1CB8u  /* +0x18 new presses, +0x1C the mask it must lack */
 
 static int run_enabled = -1;
@@ -343,6 +353,7 @@ static int run_direct_press;               /* X still to press at the hub */
 static int run_direct_failed;              /* wanted, but could not start: menu presses */
 static int run_quiet(void);
 static int run_direct_hub_due;             /* the hub still to open (queue draining) */
+static int run_hub_tile_last = -1;         /* tile last logged */
 static uint32_t run_direct_hub_wait;
 static uint32_t run_direct_buf;            /* guest buffer for the save */
 /* At the hub: one O press (one menu back), at normal speed so the hub's
@@ -418,6 +429,7 @@ static void run_check_session(void)
     snprintf(last, sizeof last, "%s", e);
     run_enabled = -1;
     run_autopilot = run_at_hub = 0;
+    run_hub_tile_last = -1;
     run_ticks = run_frames = run_fade = 0;
     memset(&run_state, 0, sizeof run_state);
     run_state_ok = 0;
@@ -642,6 +654,33 @@ static int run_direct_boot(struct CPUState *cpu)
     return 1;
 }
 
+/* Put the tile for the current rank (50 - wins) into the hub's RAM copies. */
+static void run_hub_tile(void)
+{
+    if (!run_on() || !run_state_ok) return;
+    const unsigned wins = run_state.run.wins < MOA_RUN_SLOTS ? run_state.run.wins : MOA_RUN_SLOTS - 1u;
+    const int rank = (int)(MOA_RUN_SLOTS - wins);
+    const uint8_t *pix;
+    const uint16_t *clut;
+    const int t = moa_hub_rank_tile(rank, &pix, &clut);
+    for (uint32_t i = 0; i < 2048u; i += 4u)
+        psx_mod_write_word(RUN_HUB_TILE + i, (uint32_t)pix[i] | (uint32_t)pix[i + 1u] << 8 |
+                                             (uint32_t)pix[i + 2u] << 16 | (uint32_t)pix[i + 3u] << 24);
+    for (uint32_t i = 0; i < 16u; i += 2u)
+        psx_mod_write_word(RUN_HUB_TILE_CLUT + 2u * i, (uint32_t)clut[i] | (uint32_t)clut[i + 1u] << 16);
+    if (t != run_hub_tile_last) {
+        run_hub_tile_last = t;
+        run_log("hub: rank %d, %s belt", rank, moa_hub_rank_belt(rank));
+    }
+}
+
+static void run_hub_open_entry(struct CPUState *cpu, uint32_t address)
+{
+    (void)cpu;
+    const uint32_t sig = address == RUN_HUB_OPEN_B ? RUN_SIG_HUB_OPEN_B : RUN_D_SIG_HUB_OPEN;
+    if (psx_mod_read_word(address) == sig) run_hub_tile();
+}
+
 /* From the menu's controller sampling, every menu frame of the boot. */
 static void run_direct_hub_frame(struct CPUState *cpu)
 {
@@ -653,6 +692,7 @@ static void run_direct_hub_frame(struct CPUState *cpu)
         run_log("direct: hub open code not in memory, the menus take over");
         return;
     }
+    run_hub_tile();                         /* in case a direct call skips the entry hook */
     const uint32_t hub = psx_mod_call_guest(cpu, RUN_D_HUB_OPEN, cpu->gpr[31], 0, 0, 0, 0);
     if (hub >= 0x80000000u && hub < 0x80200000u) psx_mod_write_byte(hub + RUN_HUB_ENTRY, RUN_HUB_ARENA);
     run_log("direct: hub opened on Arena (frame %u, waited %u frames for the disc queue%s)",
@@ -2310,6 +2350,8 @@ PSX_MOD_CONSTRUCTOR(moa_arena_run_boot_register)
     (void)psx_game_register_offline_function_entry(RUN_D_HUB_INPUT, run_hub_input_entry);
     (void)psx_game_register_offline_function_filter(RUN_MOVIE_PLAY, run_movie_filter);
     (void)psx_game_register_offline_function_entry(RUN_HUB_RESUME, run_hub_entry);
+    (void)psx_game_register_offline_function_entry(RUN_D_HUB_OPEN, run_hub_open_entry);
+    (void)psx_game_register_offline_function_entry(RUN_HUB_OPEN_B, run_hub_open_entry);
     (void)psx_game_register_offline_function_entry(RUN_NEWGAME_FRAME, run_newgame_entry);
     (void)psx_game_register_offline_function_entry(RUN_RESULT, run_result_entry);
     (void)psx_game_register_offline_function_entry(RUN_PAYOUT, run_payout_entry);

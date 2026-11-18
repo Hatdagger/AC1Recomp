@@ -53,6 +53,8 @@
 #define QS_SLOT_DEFAULTS   0x80083130u
 #define QS_EMPTY_SLOTS     0x80067244u  /* (1) */
 #define QS_AC_TEXTURES     0x800822B0u  /* queue the garage AC's part textures */
+#define QS_MENU_ALLOC      0x800583A0u  /* menu heap: (bytes) -> buffer in main RAM */
+#define QS_MENU_FREE       0x800583F8u  /* (buffer) */
 #define QS_DISC_BUSY       0x800589DCu  /* non-zero (low 16 bits) = disc queue still loading */
 #define QS_DISC_WAIT_MAX   20000000u    /* safety cap: each check runs a little game time */
 #define QS_HUB_OPEN        0x800552C0u
@@ -63,6 +65,11 @@
 
 #define QS_LOAD_IMAGE      0x8002C75Cu  /* boot exe */
 #define QS_MOVE_IMAGE      0x8002C81Cu
+#define QS_STORE_IMAGE     0x8002C7BCu  /* (rect, dst) */
+#define QS_HUB_CLUT_RECT   0x800D460Cu  /* (416,0,16,64): MENU_TIM 0 colours */
+#define QS_HUB_CLUT_SAVE   0x8004ACA8u
+#define QS_HUB_ROW_RECT    0x800D4614u  /* (368,225,16,1) */
+#define QS_HUB_ROW_SAVE    0x8004B6F0u
 #define QS_DRAW_SYNC       0x8002C4B0u
 #define QS_EMBLEM_RECT     0x800CC070u
 #define QS_CLUT_RECT       0x800CC078u
@@ -86,7 +93,9 @@ static const struct { uint32_t at, word; } k_code[] = {
     { QS_HUB_OPEN,       0x27BDFFB8u }, { QS_NEW_TASK,      0x00804021u },
     { QS_TIM_QUEUE,      0x27BDFFD8u }, { QS_NEWGAME_STATE, 0x27BDFFD0u },
     { 0x800ACA0Cu,       0x27BDFFE8u }, { QS_LOAD_N,        0x2402004Eu },
-    { QS_DISC_BUSY,      0x27BDFFE8u },
+    { QS_DISC_BUSY,      0x27BDFFE8u }, { QS_MENU_ALLOC,     0x27BDFFE0u },
+    { QS_MENU_FREE,      0x27BDFFE8u },
+    { QS_HUB_CLUT_RECT,  0x000001A0u }, { QS_HUB_ROW_RECT,   0x00E10170u },  /* RECT x,y */
     { QS_LOAD_COPY,      0x244C6FB0u },
 };
 
@@ -122,7 +131,6 @@ static const uint32_t k_after_load[] = {
 enum { QS_NONE = 0, QS_LOAD, QS_NEW, QS_TITLE };
 static int qs_mode = -1;
 static int qs_done;                 /* the direct start ran (or was given up) */
-static uint32_t qs_buf;             /* guest copy of the save, for LoadImage */
 
 static void qs_session(void)
 {
@@ -197,24 +205,73 @@ static int qs_read_save(uint8_t save[SAVE_BYTES])
     return sum == want;
 }
 
+/* A new game's save state (as moa_card_to_save now writes it). */
+static const struct { uint16_t at, n; uint8_t b[64]; } k_new_game[] = {
+#include "moa_arena_run_save.inc"
+};
+
+/* Saves the launcher made before moa_card_to_save wrote a new game's state
+ * left these blocks all zero. Mission progress +3232 (0x8004AC50, copied to
+ * the mission screen's table 0x8019F7A8): T+1 = 0 means "reopen slot 0's
+ * briefing", so MISSIONS skipped the mission source picker; the game's own
+ * new value is -1. Arena opponent counts +3553 (0x8004B67D = 0x8004B5A0 +
+ * 221, from 0x800D5A08 by 0x800BA854) and the arena lock +3562: zero means
+ * empty arenas. +3607 (0x8004B6AB) is the rest of the arena state. A game
+ * save never has any of them all zero, so only those blocks are filled. */
+static void qs_repair_save(uint8_t save[SAVE_BYTES])
+{
+    static const uint16_t blocks[] = { 3232, 3553, 3607 };
+    for (size_t k = 0; k < sizeof k_new_game / sizeof k_new_game[0]; k++) {
+        int want = 0;
+        for (size_t j = 0; j < sizeof blocks / sizeof blocks[0]; j++)
+            want |= k_new_game[k].at == blocks[j];
+        if (!want) continue;
+        const uint16_t at = k_new_game[k].at;
+        const uint16_t n = at == 3232 ? 44 : k_new_game[k].n;   /* the whole progress block */
+        int zero = 1;
+        for (uint16_t i = 0; i < n; i++) zero &= save[at + i] == 0;
+        if (!zero) continue;
+        memcpy(save + at, k_new_game[k].b, k_new_game[k].n);
+        qs_log(at == 3232 ? "moa.start.load_repaired_progress" : "moa.start.load_repaired_arena");
+    }
+}
+
 /* LOAD GAME: §3, §4a steps 2-4. */
 static int qs_load(struct CPUState *cpu)
 {
     static uint8_t save[SAVE_BYTES];
     if (!qs_read_save(save)) { qs_log("moa.start.load_bad_save"); return 0; }
-    if (!qs_buf) qs_buf = psx_mod_alloc_guest_memory(SAVE_BYTES, 4u);
-    if (!qs_buf) { qs_log("moa.start.no_guest_memory"); return 0; }
-    for (uint32_t i = 0; i < SAVE_BYTES; i += 4u)
-        psx_mod_write_word(qs_buf + i, (uint32_t)save[i] | (uint32_t)save[i + 1] << 8 |
-                                       (uint32_t)save[i + 2] << 16 | (uint32_t)save[i + 3] << 24);
+    qs_repair_save(save);
     qs_scenario(cpu);
+    /* The title branch of the menu entry keeps two strips of MENU_TIM 0's
+     * colours (StoreImage at 0x800A6EB4 / 0x800A6EC8) and the hub open puts
+     * them back (LoadImage at 0x800553AC / 0x800553BC). On a fresh boot the
+     * hub opened here before that store, so it put back zeros: black hub
+     * background. Store them now, from the MENU_TIM 0 just loaded. */
+    call(cpu, QS_STORE_IMAGE, QS_HUB_CLUT_RECT, QS_HUB_CLUT_SAVE, 0);
+    call(cpu, QS_STORE_IMAGE, QS_HUB_ROW_RECT, QS_HUB_ROW_SAVE, 0);
+    call(cpu, QS_DRAW_SYNC, 0, 0, 0);
     /* LOAD ('N' path), after its card read */
     for (size_t k = 0; k < sizeof k_unpack / sizeof k_unpack[0]; k++)
         for (uint32_t i = 0; i < k_unpack[k].bytes; i++)
             psx_mod_write_byte(k_unpack[k].dst + i, save[k_unpack[k].from + i]);
-    call(cpu, QS_LOAD_IMAGE, QS_EMBLEM_RECT, qs_buf + EMBLEM_AT, 0);
-    call(cpu, QS_LOAD_IMAGE, QS_CLUT_RECT, qs_buf + CLUT_AT, 0);
-    call(cpu, QS_DRAW_SYNC, 0, 0, 0);
+    /* The emblem and its colours go to VRAM by DMA, which reaches main RAM
+     * only: mod memory (psx_mod_alloc_guest_memory, 0x81000000) folds onto
+     * low RAM there, and the game's next SAVE stored that (code) back as the
+     * emblem. The save goes through a menu heap buffer instead, as LOAD's
+     * own card buffer does, and is freed at once. */
+    const uint32_t buf = call(cpu, QS_MENU_ALLOC, SAVE_BYTES, 0, 0);
+    if (buf >= 0x80000000u && buf + SAVE_BYTES <= 0x80200000u) {
+        for (uint32_t i = 0; i < SAVE_BYTES; i += 4u)
+            psx_mod_write_word(buf + i, (uint32_t)save[i] | (uint32_t)save[i + 1] << 8 |
+                                        (uint32_t)save[i + 2] << 16 | (uint32_t)save[i + 3] << 24);
+        call(cpu, QS_LOAD_IMAGE, QS_EMBLEM_RECT, buf + EMBLEM_AT, 0);
+        call(cpu, QS_LOAD_IMAGE, QS_CLUT_RECT, buf + CLUT_AT, 0);
+        call(cpu, QS_DRAW_SYNC, 0, 0, 0);
+        call(cpu, QS_MENU_FREE, buf, 0, 0);
+    } else {
+        qs_log("moa.start.load_no_emblem_buffer");
+    }
     for (size_t i = 0; i < sizeof k_after_load / sizeof k_after_load[0]; i++)
         call(cpu, k_after_load[i], 0, 0, 0);
     psx_mod_write_byte(QS_MAIL_SHOWN, 1);

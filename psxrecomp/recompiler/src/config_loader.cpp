@@ -751,6 +751,25 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
             }
             rt.video_window_width = static_cast<int>(n);
         }
+        if (video.contains("fullscreen")) {
+            const toml::value& fs = toml::find(video, "fullscreen");
+            int value = -1;
+            if (fs.is_string()) {
+                const std::string mode = fs.as_string().str;
+                if (mode == "off" || mode == "windowed") value = 0;
+                else if (mode == "borderless")           value = 1;
+                else if (mode == "exclusive")            value = 2;
+            } else if (fs.is_integer()) {
+                const auto n = fs.as_integer();
+                if (n >= 0 && n <= 2) value = static_cast<int>(n);
+            }
+            if (value < 0) {
+                throw std::runtime_error(
+                    "[video] fullscreen must be \"off\", \"borderless\", "
+                    "\"exclusive\" or 0..2");
+            }
+            rt.video_fullscreen = value;
+        }
         if (video.contains("antialiasing")) {
             rt.video_antialiasing = toml::find<bool>(video, "antialiasing");
         }

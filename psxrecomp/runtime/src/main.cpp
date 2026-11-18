@@ -17600,6 +17600,9 @@ int main(int argc, char** argv) {
             if (gc.runtime.video_window_width > 0) {
                 g_video_win_w = gc.runtime.video_window_width;
             }
+            /* [video] fullscreen: the title's first-run default; the
+             * player's settings.toml (applied later) overrides it. */
+            g_fullscreen       = gc.runtime.video_fullscreen;
             g_video_aa         = gc.runtime.video_antialiasing;
             g_video_post_aa    = gc.runtime.video_antialiasing_mode;
             g_video_ss_milli   = gc.runtime.video_supersample_milli;

@@ -12,6 +12,7 @@
 
 #include "cdrom.h"
 #include "cdrom_irq.h"
+#include "cdrom_read_gate.h"
 #include "cdrom_lid.h"
 #include "dma.h"
 #include "spu.h"
@@ -596,7 +597,7 @@ static int apply_read_speed(int delay) {
      * whole-sector/Form2 bit (0x20) alone as realtime media: Tomba's normal
      * asset loads use mode 0xA0, so including 0x20 here made the CD Speed mod
      * configure divisor=32 while every actual data-read deadline stayed 1x/2x. */
-    if (xa_stream_active || (mode_reg & 0x48u)) return delay;
+    if (cdrom_read_mode_is_realtime(mode_reg, xa_stream_active)) return delay;
     if (s_warm_route_active) return warm_route_period();
     return apply_speed(delay);
 }
@@ -2675,7 +2676,8 @@ static int warm_route_consumer_blocked(void) {
  * near-instant while the guest keeps up and degrade toward guest speed
  * when it does not.
  *
- * XA/streaming modes are excluded by the same gates as apply_read_speed:
+ * XA/streaming modes are excluded by the same gate as apply_read_speed
+ * (cdrom_read_mode_is_realtime, cdrom_read_gate.h):
  * those paths run at authentic cadence anyway, and pausing fictional disc
  * time is only sound when the cadence IS fictional. */
 static uint64_t s_accel_consumer_waits;
@@ -2688,7 +2690,9 @@ static int authentic_sector_period(void) {
 }
 
 static int accelerated_read_active(void) {
-    if (xa_stream_active || (mode_reg & 0x68u)) return 0;
+    /* The SAME gate as apply_read_speed (cdrom_read_gate.h): every read that
+     * runs faster than hardware gets the flow control. */
+    if (cdrom_read_mode_is_realtime(mode_reg, xa_stream_active)) return 0;
     return g_disc_speed_divisor != 1;   /* 0 = instant, >1 = divided */
 }
 

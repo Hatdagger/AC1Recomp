@@ -26,6 +26,21 @@ from code unless marked `?`. Related: `mode-launch.md` (how each mode is started
    The game waits with `0x800589DC` (non-zero = still busy) before it relies on them. A direct
    start that runs the same routines from a hook must let the menu loop drain the queue (or
    wait) before it opens the next screen.
+4. **Anything sent to VRAM must sit in main RAM.** LoadImage / StoreImage go by DMA, which
+   only reaches main RAM (0x80000000 … 0x801FFFFF). Mod memory from `psx_mod_alloc_guest_memory`
+   (0x81000000) folds onto low RAM there, so an upload from it sends whatever code sits at the
+   folded address (seen as a garbled emblem, which the game's next SAVE then wrote back to the
+   card). Copy the data into a menu heap buffer first (`0x800583A0(bytes)` → buffer,
+   `0x800583F8(buffer)` frees it), as LOAD's own card buffer does. In code: `moa_quick_start.c`.
+5. **Hooks on menu code run only if listed.** A mod hook on a routine in a disc-loaded module
+   (menu, engines) is only called if its address is in `game.toml` `[recompiler]
+   mod_function_entry_funcs` (and the code is regenerated). Unlisted, the hook silently never
+   fires. Rogue Arena's old X-at-hub hook `0x80055848` was missing for this reason.
+6. **A save made outside the game needs its list summary.** The DATA SAVE / LOAD list reads a
+   summary before the checksummed range (menu save writer `0x80071ED8` … `0x80071FAC`): +0x184
+   AC and pilot names (36 bytes, as at +0x1CC), +0x1A8 u16 sorties, +0x1AC u32 credits. Left
+   zero, the list shows the save with no name until the game saves over it. In code:
+   `save_summary()` in `moa_card.c`. A new game's state is needed too (§9a).
 
 ## Load routines (to read the tables below)
 
@@ -241,7 +256,8 @@ save). `moa_card_to_save` starts from it since branch `load-game-fixes`.
 
 - Hub background black after the direct LOAD GAME: the hub open restores the two MENU_TIM 0
   strips the title branch stores (0x800A6EB4 / 0x800A6EC8); the direct start opens the hub
-  before that store. Fix on `load-game-fixes` (store them after the SCENARIO pictures), untested.
+  before that store. Fix (store them after the SCENARIO pictures) merged in 3a8e581 with the
+  mission picker fix (§9a); both waiting for the user's test of master.
 - Which arena-screen routine queues the opponent's textures.
 - VS menu: the one MENU_TIM entry loaded from a variable in `0x800B15D8`.
 - `0x80067244(1)`: loads fallback files for empty slots. Exact entries not listed.

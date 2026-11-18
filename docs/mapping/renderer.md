@@ -29,7 +29,7 @@ cadence from Armored-CoreR). Next: read FDAT 209 (needs the `ma-work` disc pack)
 | Widescreen is offered with the GTE game mode | `game.toml` `[widescreen] offer = true, gte_game_mode = true` | repo |
 | **Frame cadence: at most 22 frames a second.** One logic step per frame; the frame end does `DrawSync(0)`, waits until 715 scanlines (root counter 1, `0x80016724`) have passed since the last frame start, swaps buffers, starts the next OT. No `VSync` wait in the fight loop | frame-end wait `slti 0x2CB`: VS (209) `0x8005C080`, arena (210) `0x8005E2D0`, link (208) `0x8005CED4`, missions (207) `0x8005D2CC`, replay (211) `0x8005C624` | Armored-CoreR `gen1-timing.md` |
 | Camera as measured: eye / look-at pairs per player (VS) `0x801A9A88`, eye copies `0x800441D8`. Projection: one view H 320 on 320×240, centre (160, 120); **VS: two side-by-side 160×240 halves, H 160 each, centre row 115** | | Armored-CoreR `gen1-engine-map.md` |
-| Rotation-matrix builders in the main program: RotMatrix (Rz·Ry·Rx order as the model export) `0x80029F94`, a Ry·Rx·Rz version `0x8002A224` | | Armored-CoreR `gen1-models.md` |
+| Rotation-matrix builder in the main program: RotMatrix `0x80029F94`, M = Rx·Ry·Rz (the order the model export uses); a Ry·Rx·Rz version `0x8002A224` that nothing calls | | Armored-CoreR `gen1-models.md` |
 
 ### Main program routines the engines call (named 2026-11-18)
 

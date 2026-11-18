@@ -429,6 +429,13 @@ static int run_music_fight;
 static void run_boot_black_up(void);
 /* The direct boot started the menu song: no fast forward, so it is heard. */
 static int run_boot_music;
+/* The arena screen's result routine ran this frame with the result applied
+ * (it saves and drives the restock's way back to the hub). After a win the
+ * game soon leaves it for the opponent list, where it never runs: then the
+ * menu's controller hook saves and the frame hook drives the way back. */
+static int run_result_ran;
+static void run_autosave(struct CPUState *cpu);
+static void run_to_hub_frame(void);
 static void run_log(const char *fmt, ...);
 static uint32_t run_boot_black_frames, run_boot_black_after;
 /* Overlay hub (step 1; see "overlay hub" near the end of the file). */
@@ -573,7 +580,7 @@ static void run_check_session(void)
     run_end_frames = 0;
     run_boot_black = 0;
     run_boot_black_frames = run_boot_black_after = 0;
-    run_music_fight = run_boot_music = 0;
+    run_music_fight = run_boot_music = run_result_ran = 0;
     moa_music_reset(run_log);
     run_end_held = 0xFFFFu;
     run_sent = run_told = 0;
@@ -1019,7 +1026,15 @@ static void run_menu_input_entry(struct CPUState *cpu, uint32_t address)
     run_idle = 0;
     if (run_on()) {
         const uint32_t w = psx_mod_read_word(address);
-        if (w == RUN_SIG_INPUT_A || w == RUN_SIG_INPUT_B) moa_music_menu_frame(cpu);
+        if (w == RUN_SIG_INPUT_A || w == RUN_SIG_INPUT_B) {
+            moa_music_menu_frame(cpu);
+            /* Test 9 hang (restock win, 1ad4e38): the save waited for the
+             * arena screen's result routine, which had stopped running (the
+             * game was on the opponent list under the cover), so the restock's
+             * way back to the hub never began. Save from here too. */
+            if (run_save_pending && run_at_hub && !run_autopilot && !psx_mod_read_byte(RUN_FIGHT_DONE))
+                run_autosave(cpu);
+        }
     }
     if (run_overlay_up() && run_on()) {
         const uint32_t w = psx_mod_read_word(address);
@@ -1920,6 +1935,7 @@ static void run_result_entry(struct CPUState *cpu, uint32_t address)
         run_prize_where = 1;                   /* the arena screen: prizes may open */
         run_autosave(cpu);                     /* the result is applied now */
         run_to_hub_frame();
+        run_result_ran = 1;
         return;
     }
     if (run_result_seen) return;
@@ -3775,6 +3791,9 @@ static void run_frame_hook(void)
     run_prize_frame();
     if (run_loss_wait) run_loss_wait--;      /* the return itself is made in a guest hook */
     run_end_frame();
+    if (run_to_hub && !run_result_ran && run_at_hub && !psx_mod_read_byte(RUN_FIGHT_DONE))
+        run_to_hub_frame();
+    run_result_ran = 0;
     run_hx_frame();
     run_boot_black_frame();
     run_cover_frame();

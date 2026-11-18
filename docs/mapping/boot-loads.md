@@ -221,10 +221,27 @@ with the textures the menu left in VRAM, which is rule 2.
 In code: `games/master-of-arena/moa_quick_start.c` replays the Load Save and New Game rows for
 the launcher's START GAME menu (LOAD GAME / NEW GAME / LAUNCH GAME with FULL BOOT).
 
+## 9a. What a save must hold besides the AC (2026-11-17)
+
+LOAD copies the save into RAM unchanged, so a save made outside the game must carry a new
+game's state, not zeros:
+- **+3232, 44 bytes → 0x8004AC50** (mission progress). After the unpack, `0x800941F4` resets
+  the mission screen's table T = 0x8019F7A8 and `0x80093BC4` copies 0x8004AC50 back over
+  T+0…T+43. **T+1 = the slot whose briefing reopens at once (-1 = none).** Zero there means
+  "slot 0", so MISSIONS skips the list start (and the mod's mission source picker). New game:
+  FF FF 00 00 01 (T+0 = -1, T+1 = -1, chapter 0, T+4 = 1).
+- **+3553 → 0x8004B67D = 0x8004B5A0 + 221**: opponent counts of the 9 arenas (from
+  0x800D5A08: 50 10 10 10 10 16 31 10 20), **+3562 → 0x8004B686 = arena lock (2)**. Zero =
+  empty arenas. +3607 → 0x8004B6AB: the rest of the arena state.
+- +896: shop stock (1 = on sale, cleared when bought).
+The full list is `games/master-of-arena/moa_arena_run_save.inc` (read from a fresh NEW GAME
+save). `moa_card_to_save` starts from it since branch `load-game-fixes`.
+
 ## 10. Open
 
-- Hub background missing after the Rogue Arena direct boot: is it the same cause (AC
-  textures), or MENU_TIM 1/4 still queued when the hub draws? Check with the fix branch.
+- Hub background black after the direct LOAD GAME: the hub open restores the two MENU_TIM 0
+  strips the title branch stores (0x800A6EB4 / 0x800A6EC8); the direct start opens the hub
+  before that store. Fix on `load-game-fixes` (store them after the SCENARIO pictures), untested.
 - Which arena-screen routine queues the opponent's textures.
 - VS menu: the one MENU_TIM entry loaded from a variable in `0x800B15D8`.
 - `0x80067244(1)`: loads fallback files for empty slots. Exact entries not listed.

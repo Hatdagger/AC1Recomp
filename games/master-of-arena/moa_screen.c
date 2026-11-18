@@ -826,6 +826,157 @@ const uint32_t *moa_screen_render_prize(int win_w, int win_h, const struct moa_s
     return buf;
 }
 
+/* ---- PART SPECS (moa_screen_render_specs) ----------------------------------- */
+static void specs_header(uint32_t *buf, int W, int x0, int y0, int x1, const struct moa_screen_spec_side *sd, int right)
+{
+    const uint32_t grey = rgb(170, 176, 188), white = rgb(235, 238, 242), gold = rgb(255, 200, 80);
+    char s[60];
+    /* the tab over the window */
+    if (sd->head) {
+        snprintf(s, sizeof s, "%s", sd->head);
+        const int tw = text_width(s, 1) + 24;
+        fill(buf, x0, y0 - 24, x0 + tw, y0, right ? rgb(130, 200, 255) : rgb(60, 90, 130));
+        text_left(buf, s, x0 + 12, y0 - 12, 1, right ? rgb(8, 12, 20) : white);
+    }
+    const int tx = x0 + 10, ty = y0 + 10;
+    fill(buf, tx, ty, tx + 128, ty + 128, rgb(4, 5, 8));
+    if (sd->thumb) {
+        for (int y = 0; y < 128; y++)
+            for (int x = 0; x < 128; x++) {
+                const uint32_t q = sd->thumb[y * 128 + x];
+                if (q >> 24) buf[(ty + y) * W + tx + x] = 0xFF000000u | q;
+            }
+    } else if (sd->icon) {
+        text(buf, NULL, sd->icon, tx + 64, ty + 64 + 16, 4, gold);
+    } else {
+        text(buf, NULL, sd->name ? "?" : "-", tx + 64, ty + 64, 3, rgb(60, 64, 72));
+    }
+    const int lx = tx + 128 + 16;
+    if (sd->category) { snprintf(s, sizeof s, "%s", sd->category); text_left(buf, s, lx, ty + 18, 1, grey); }
+    snprintf(s, sizeof s, "%.18s", sd->name ? sd->name : "EMPTY SLOT");
+    text_left(buf, s, lx, ty + 56, (int)strlen(s) * 16 <= x1 - lx - 10 ? 2 : 1, sd->name ? white : rgb(110, 120, 136));
+    if (sd->cost) { snprintf(s, sizeof s, "%s", sd->cost); text_left(buf, s, lx, ty + 100, 3, gold); }
+}
+
+const uint32_t *moa_screen_render_specs(int win_w, int win_h, const struct moa_screen_specs *p,
+                                        int see_through, int *out_w, int *out_h)
+{
+    static uint32_t *buf;
+    static int bw;
+    *out_w = *out_h = 0;
+    if (!s_font_ok || !p) return NULL;
+    int W = CONTENT_W;
+    if (win_w > 0 && win_h > 0) W = (int)((int64_t)CANVAS_H * win_w / win_h);
+    if (W < CONTENT_W) W = CONTENT_W;
+    if (W > MAX_W) W = MAX_W;
+    W &= ~1;
+    if (W != bw || !buf) {
+        free(buf);
+        buf = (uint32_t *)malloc((size_t)W * CANVAS_H * 4u);
+        bw = buf ? W : 0;
+        if (!buf) return NULL;
+    }
+    const int keep_w = s_w, keep_h = s_h;
+    s_w = W; s_h = CANVAS_H;
+    const int cx = W / 2;
+    backdrop(buf, W, see_through);
+    if (!see_through) vignette(buf, W, CANVAS_H);
+    const uint32_t grey = rgb(170, 176, 188), white = rgb(235, 238, 242), gold = rgb(255, 200, 80);
+    const uint32_t green = rgb(110, 220, 120), red = rgb(235, 90, 80), dim = rgb(110, 120, 136);
+    if (p->title) text(buf, NULL, p->title, cx, 40, 3, white);
+    fill(buf, cx - 300, 66, cx + 300, 68, rgb(70, 74, 82));
+    if (p->line) text(buf, NULL, p->line, cx, 86, 1, gold);
+    const int top = 124;
+    char s[128];
+    int bottom;
+    if (p->single) {
+        /* one wide window: picture, name, then what it does */
+        const int x0 = cx - 456, x1 = cx + 456;
+        const int n = p->notes_n > 9 ? 9 : p->notes_n;
+        const int y1 = top + 152 + n * 30 + 14;
+        fill(buf, x0, top, x1, y1, rgb(8, 10, 16));
+        frame_rect(buf, x0, top, x1, y1, 2, rgb(226, 186, 112));
+        specs_header(buf, W, x0, top, x1, &p->right, 1);
+        fill(buf, x0 + 10, top + 146, x1 - 10, top + 147, rgb(50, 58, 72));
+        for (int i = 0; i < n; i++) {
+            const int y = top + 166 + i * 30;
+            const int sub = p->notes[i][0] == '\t';         /* a tab: a grey line under the one before */
+            snprintf(s, sizeof s, "%s", p->notes[i] + sub);
+            if (!sub) fill(buf, x0 + 26, y - 3, x0 + 32, y + 3, gold);
+            const int lx = x0 + (sub ? 64 : 44);
+            text_left(buf, s, lx, y, !sub && (int)strlen(s) * 16 <= x1 - lx - 20 ? 2 : 1, sub ? rgb(170, 182, 198) : white);
+        }
+        bottom = y1;
+    } else {
+        /* two windows: fitted now | new, the rows lined up */
+        const int ww = 440, gap = 32;
+        const int lx0 = cx - gap / 2 - ww, lx1 = cx - gap / 2, rx0 = cx + gap / 2, rx1 = cx + gap / 2 + ww;
+        const int n = p->rows > 11 ? 11 : p->rows, rh = 24;
+        const int y1 = top + 156 + n * rh + 10;
+        fill(buf, lx0, top, lx1, y1, rgb(8, 10, 16));
+        frame_rect(buf, lx0, top, lx1, y1, 2, rgb(60, 90, 130));
+        fill(buf, rx0, top, rx1, y1, rgb(14, 24, 42));
+        frame_rect(buf, rx0, top, rx1, y1, 2, rgb(130, 200, 255));
+        specs_header(buf, W, lx0, top, lx1, &p->left, 0);
+        specs_header(buf, W, rx0, top, rx1, &p->right, 1);
+        fill(buf, lx0 + 10, top + 146, lx1 - 10, top + 147, rgb(50, 58, 72));
+        fill(buf, rx0 + 10, top + 146, rx1 - 10, top + 147, rgb(50, 58, 72));
+        /* "->" between the windows */
+        text(buf, NULL, ">", cx, top + 74, 3, gold);
+        for (int i = 0; i < n; i++) {
+            const struct moa_screen_spec_row *r = &p->row[i];
+            const int y = top + 166 + i * rh;
+            if (i & 1) {                                  /* zebra rows */
+                fill(buf, lx0 + 4, y - rh / 2, lx1 - 4, y + rh / 2, rgb(14, 17, 24));
+                fill(buf, rx0 + 4, y - rh / 2, rx1 - 4, y + rh / 2, rgb(20, 32, 52));
+            }
+            for (int side = 0; side < 2; side++) {
+                const int a = side ? rx0 : lx0, b = side ? rx1 : lx1;
+                const char *v = side ? r->right : r->left;
+                snprintf(s, sizeof s, "%s", r->label ? r->label : "");
+                text_left(buf, s, a + 16, y, 1, grey);
+                snprintf(s, sizeof s, "%s", v && v[0] ? v : "-");
+                uint32_t c = v && v[0] ? white : dim;
+                int vx = b - 16;
+                if (side && r->delta && r->delta[0]) {
+                    char d[24];
+                    snprintf(d, sizeof d, "%s", r->delta);
+                    const uint32_t dc = r->better > 0 ? green : r->better < 0 ? red : dim;
+                    text_left(buf, d, vx - text_width(d, 1), y, 1, dc);
+                    vx -= text_width(d, 1) + 14;
+                }
+                if (side && r->better) c = r->better > 0 ? green : red;
+                text_left(buf, s, vx - text_width(s, 1), y, 1, c);
+            }
+        }
+        bottom = y1;
+    }
+    /* the shop text, under the windows */
+    if (p->text_n > 0) {
+        const int n = p->text_n > 3 ? 3 : p->text_n;
+        int sc = 2;
+        for (int i = 0; i < n; i++) if (text_width(p->text[i], 2) > 900) sc = 1;
+        const int lh = sc == 2 ? 34 : 22;
+        const int by0 = bottom + 16, by1 = by0 + 20 + n * lh;
+        fill(buf, cx - 456, by0, cx + 456, by1, rgb(6, 8, 12));
+        frame_rect(buf, cx - 456, by0, cx + 456, by1, 1, rgb(40, 60, 90));
+        for (int i = 0; i < n; i++) {
+            snprintf(s, sizeof s, "%s", p->text[i]);
+            text(buf, NULL, s, cx, by0 + 10 + lh / 2 + i * lh, sc, rgb(200, 210, 222));
+        }
+        bottom = by1;
+    }
+    if (p->totals) {
+        snprintf(s, sizeof s, "%s", p->totals);
+        text(buf, NULL, s, cx, bottom + 22, 1, p->totals_bad ? red : grey);
+    }
+    if (p->footer) text(buf, NULL, p->footer, cx, CANVAS_H - 34, 2, grey);
+    s_w = keep_w; s_h = keep_h;
+    s_dirty = 1;
+    *out_w = W; *out_h = CANVAS_H;
+    return buf;
+}
+
 /* ---- victory screen (moa_screen_render_victory) ---------------------------- */
 /* Fighting-game style: solid black bars, a band in the belt's colour with the
  * belt pattern in it, the beaten AC on its back on the right (dark, smoking),

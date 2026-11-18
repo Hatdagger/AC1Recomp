@@ -133,6 +133,43 @@ struct moa_screen_prize {
 const uint32_t *moa_screen_render_prize(int win_w, int win_h, const struct moa_screen_prize *p,
                                         int see_through, int *out_w, int *out_h);
 
+/* PART SPECS (triangle on a prize or a saved part): two windows side by side,
+ * the part fitted now on the left and the new one on the right, the same stat
+ * rows in both (the new values green when better, red when worse, with the
+ * difference), the part's shop text under them, and a line of AC totals.
+ * `single`: one wide window instead (sets and upgrades), its `notes` the
+ * lines that say what it does. */
+struct moa_screen_spec_row {
+    const char *label;        /* "WEIGHT" */
+    const char *left, *right; /* "1,240"; NULL or "" = "-" */
+    const char *delta;        /* "+120" beside the right value, or NULL */
+    int better;               /* +1 right is better, -1 worse, 0 the same / not comparable */
+};
+struct moa_screen_spec_side {
+    const char *head;         /* "FITTED NOW", "PRIZE 1 OF 3" */
+    const char *category;     /* "BACK WEAPON  MISSILE" */
+    const char *name;         /* "WM-S40/1"; NULL = an empty slot */
+    const uint32_t *thumb;    /* 128 x 128, or NULL */
+    const char *icon;         /* no thumb: this text, large ("H+") */
+    const char *cost;         /* "3 P" (right side) */
+};
+struct moa_screen_specs {
+    const char *title, *line;
+    int single;
+    struct moa_screen_spec_side left, right;     /* single: right only */
+    const struct moa_screen_spec_row *row;
+    int rows;
+    const char *const *text;  /* the shop text, one entry per line */
+    int text_n;
+    const char *const *notes; /* single: what it does, one entry per line */
+    int notes_n;
+    const char *totals;       /* AC totals with it fitted (NULL: none) */
+    int totals_bad;           /* 1: the totals line in red (over a limit) */
+    const char *footer;
+};
+const uint32_t *moa_screen_render_specs(int win_w, int win_h, const struct moa_screen_specs *p,
+                                        int see_through, int *out_w, int *out_h);
+
 /* The victory screen after a run win (fighting-game style). winner and
  * loser: RGBA renders (rows top first, transparent background) of the
  * player's AC and of the beaten one (drawn on its back); either may be NULL.

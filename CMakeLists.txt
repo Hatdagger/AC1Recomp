@@ -159,6 +159,8 @@ if(TARGET psx-master-of-arena)
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_chime.c"
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_sfx.c"
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_vs_sound.c"
+        # Overlay clicks and the equip sound from the game's menu bank (private voice).
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_ui_sound.c"
         # VS screen portraits rendered between fights, off the game thread.
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_render_queue.c"
         # Rogue Arena music: the game's menu song around the run's screens, and

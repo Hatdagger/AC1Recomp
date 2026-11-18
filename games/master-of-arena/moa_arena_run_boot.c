@@ -43,6 +43,7 @@
 #include "moa_ac_view.h"
 #include "moa_chime.h"
 #include "moa_vs_sound.h"
+#include "moa_ui_sound.h"
 #include "moa_render_queue.h"
 #include "moa_music.h"
 #include "moa_screen.h"
@@ -507,11 +508,44 @@ static void run_backdrop_frame(void);
 #define RUN_MENU_VAB         0x801B1A80u
 #define RUN_LOADING_SCREEN   0x80012348u  /* exe: the loading picture before an engine */
 #define RUN_MUSIC_START      0x80064F24u  /* menu: the menu song's start (moa_music.cpp) */
-enum { RUN_SE_BACK = 0, RUN_SE_CURSOR = 1, RUN_SE_OK = 2 };
+enum { RUN_SE_BACK = 0, RUN_SE_CURSOR = 1, RUN_SE_OK = 2, RUN_SE_EQUIP = 3 };
 static int run_se_queue = -1;
 static uint32_t run_se_age;               /* frames queued; dropped after a few (no menu running) */
 static int run_se_own;
-static void run_se(int tone) { run_se_queue = tone; run_se_age = 0; }
+/* User 14:40: the clicks came late after the boot and not at all on the loss
+ * screen (no menu running to play them). They are now the same samples from
+ * the menu bank on the disc, played on our own voice the moment the key is
+ * pressed (moa_ui_sound.c); the game's menu is only the fallback while the
+ * bank isn't read yet. RUN_SE_EQUIP: the garage's equip sound (user 14:40). */
+static void run_se(int k)
+{
+    static const int k_ui[4] = { MOA_UI_BACK, MOA_UI_CURSOR, MOA_UI_OK, MOA_UI_EQUIP };
+    if (moa_ui_sound_ready() && moa_ui_sound_play(k_ui[k & 3])) { run_se_queue = -1; return; }
+    run_se_queue = k == RUN_SE_EQUIP ? RUN_SE_OK : k;
+    run_se_age = 0;
+}
+/* The menu bank (GG/MS/MENU_VAB.T: entry 0 the header, 1 the samples), once,
+ * at the run's first frame. */
+static void run_ui_sounds(void)
+{
+    static int tried;
+    if (tried || moa_ui_sound_ready()) return;
+    tried = 1;
+    uint32_t lba = 0, size = 0;
+    uint8_t head[2048];
+    if (!psx_mod_disc_file_extent("GG/MS/MENU_VAB.T", &lba, &size) || !lba ||
+        !psx_mod_read_disc_sectors(lba, 1u, head)) { run_log("ui sounds: MENU_VAB.T not found (the game's menu plays them)"); return; }
+    const uint32_t s0 = (uint32_t)head[2] | (uint32_t)head[3] << 8, s1 = (uint32_t)head[4] | (uint32_t)head[5] << 8,
+                   s2 = (uint32_t)head[6] | (uint32_t)head[7] << 8;
+    uint8_t *vh = s1 > s0 && s1 - s0 < 16u ? (uint8_t *)malloc((size_t)(s1 - s0) * 2048u) : NULL;
+    uint8_t *vb = s2 > s1 && s2 - s1 < 256u ? (uint8_t *)malloc((size_t)(s2 - s1) * 2048u) : NULL;
+    const int ok = vh && vb && psx_mod_read_disc_sectors(lba + s0, s1 - s0, vh) &&
+                   psx_mod_read_disc_sectors(lba + s1, s2 - s1, vb) &&
+                   moa_ui_sound_build(vh, (s1 - s0) * 2048u, vb, (s2 - s1) * 2048u);
+    free(vh);
+    free(vb);
+    run_log("ui sounds: %s", ok ? "ready (own voice)" : "not made (the game's menu plays them)");
+}
 #define RUN_SLOW(n) (run_disc_slow == 1 ? (n) * 4u : (n))
 
 static void run_watch(int phase)
@@ -1315,12 +1349,13 @@ static void run_reconcile(int refresh)
 #define RUN_PAD_RIGHT 0x0020u
 #define RUN_PAD_DOWN  0x0040u
 #define RUN_PAD_LEFT  0x0080u
+#define RUN_PAD_TRIANGLE 0x1000u
 #define RUN_BACK_DETAIL 0x800D21D4u            /* back weapon details, 24 bytes by back id */
 #define RUN_TYPE_AT   0x12u
 #define RUN_MENU_FROM 0x800CE690u              /* the part tables ... */
 #define RUN_MENU_TO   0x800D2774u              /* ... to the end of the weapon details */
 
-enum { PZ_OFF = 0, PZ_CHOOSE, PZ_ASK };
+enum { PZ_OFF = 0, PZ_CHOOSE, PZ_ASK, PZ_SPECS };
 enum { ASK_EQUIP0 = 0, ASK_EQUIP1, ASK_SAVE, ASK_BACK };
 static const char *const k_tier_tag[3] = { "CHEAP", "MID", "EXPENSIVE" };
 
@@ -1520,14 +1555,14 @@ static void run_plus_sync(const char *why)
 #define RUN_INCOME_COST      6u                /* +1 P PER WIN: its price, */
 #define RUN_INCOME_ODDS      4u                /* offered on 1 screen in this many, */
 #define RUN_INCOME_MAX       3u                /* bought this often at most */
-/* HUMAN PLUS: once per attempt, as the expensive offer; more often once the
- * player can pay for it. Level 9 is the builder's full level (moa_card.h): it
+/* HUMAN PLUS: once per attempt, as the expensive offer (user 14:40: 13 P,
+ * 1 screen in 13).
+ * Level 9 is the builder's full level (moa_card.h): it
  * covers every mapped effect (built-in radar, cannons fired standing at 4+,
  * the energy boost at 6+); the byte after it waives the load / energy limits
  * (stat-block.md, ram-map-gameshark.md: 0x8003EAC8 level, 0x8003EACA). */
-#define RUN_HPLUS_COST      10u
-#define RUN_HPLUS_ODDS       8u                /* 1 screen in this many below its price, */
-#define RUN_HPLUS_ODDS_RICH  3u                /* this many once the player has it */
+#define RUN_HPLUS_COST      13u                /* user 14:40: 13 P, */
+#define RUN_HPLUS_ODDS      13u                /* on 1 prize screen in 13 */
 #define RUN_SET_PART_MAX     4u
 
 /* Back weapon `id` makes two-legged ACs crouch to fire (cannons; energy
@@ -1735,11 +1770,10 @@ static void run_prize_draw_offers(unsigned win, uint64_t salt, const uint8_t (*e
         }
     }
     /* HUMAN PLUS: now and then as the expensive offer (not with an ARMS SET),
-     * once per attempt; more likely once the player has the P for it. */
+     * once per attempt. */
     int hp_up = 0;
     if (!has_set && !run_state.run.plus &&
-        moa_run_below(&rng, psx_mod_read_word(RUN_CREDITS) >= RUN_HPLUS_COST ? RUN_HPLUS_ODDS_RICH
-                                                                          : RUN_HPLUS_ODDS) == 0u) {
+        moa_run_below(&rng, RUN_HPLUS_ODDS) == 0u) {
         struct run_offer *o = NULL;
         for (int i = 0; i < run_offer_n; i++) if (run_offer[i].band == 2u) o = &run_offer[i];
         if (!o && run_offer_n < 3) o = &run_offer[run_offer_n++];
@@ -1833,8 +1867,335 @@ static void run_prize_hide(void)
 
 /* The screen, over the live game if the renderer can, else as the loading
  * picture. 0 = could not be drawn. */
+/* ---- PART SPECS (triangle; user 2026-11-18 14:40) -----------------------------
+ * Triangle on a prize (or a saved part in SWAP PARTS) opens two windows: the
+ * part fitted in that slot now on the left, the new one on the right, the
+ * same rows in both (the menu tables' stats, parts-tables.md), the new values
+ * green / red against the old with the difference, and the part's shop text
+ * from the disc under them (MIS.T entry 385: one 76-byte line per part, in the
+ * owned table's order, "\r\n" written out where the shop breaks the line).
+ * Sets and upgrades get one window saying what they do. Up / down moves to
+ * the next prize with the windows open. */
+#define RUN_DESC_ENTRY  385u
+#define RUN_DESC_LINE    76u
+#define RUN_DESC_BYTES  20480u
+static uint8_t run_desc[RUN_DESC_BYTES];
+static int run_desc_ok;
+#define RUN_WD_HAND   0x800D1F64u     /* weapon detail, 24 bytes, by hand ID */
+#define RUN_WD_BACK   0x800D21D4u     /*  ... by back ID */
+#define RUN_WD_WARMS  0x800D1DE4u     /*  ... by weapon arms ID - 12 */
+
+static void run_descs_read(void)
+{
+    static int tried;
+    if (tried || run_desc_ok) return;
+    tried = 1;
+    uint32_t lba = 0, size = 0;
+    uint8_t head[2048];
+    if (!psx_mod_disc_file_extent("GG/MS/MIS.T", &lba, &size) || !lba || !psx_mod_read_disc_sectors(lba, 1u, head)) {
+        run_log("specs: MIS.T not found, no shop text"); return;
+    }
+    const uint32_t k = RUN_DESC_ENTRY;
+    const uint32_t a = (uint32_t)head[2 + 2 * k] | (uint32_t)head[3 + 2 * k] << 8;
+    const uint32_t b = (uint32_t)head[4 + 2 * k] | (uint32_t)head[5 + 2 * k] << 8;
+    if (b <= a || (b - a) * 2048u > RUN_DESC_BYTES) { run_log("specs: shop text entry looks wrong (%u..%u)", a, b); return; }
+    run_desc_ok = psx_mod_read_disc_sectors(lba + a, b - a, run_desc);
+    run_log("specs: shop text %s", run_desc_ok ? "read" : "not read");
+}
+
+/* Part (cat, id)'s shop text as up to 3 lines. The number of lines. */
+static int run_desc_lines(int cat, uint8_t id, char out[3][76])
+{
+    if (!run_desc_ok || cat < 0 || cat >= MOA_CAT__COUNT) return 0;
+    const uint32_t ix = k_run_tables[cat].base + id;
+    if ((ix + 1u) * RUN_DESC_LINE > RUN_DESC_BYTES) return 0;
+    const char *t = (const char *)run_desc + ix * RUN_DESC_LINE;
+    int n = 0, k = 0;
+    for (unsigned i = 0; i < RUN_DESC_LINE - 2u && n < 3; i++) {
+        const char c = t[i];
+        if (c == '\\' && i + 3u < RUN_DESC_LINE && t[i + 1] == 'r' && t[i + 2] == '\\' && t[i + 3] == 'n') {
+            out[n][k] = 0; if (k) n++; k = 0; i += 3; continue;
+        }
+        if (c == '\r' || c == '\n' || c == 0) break;
+        if (k < 75) out[n][k++] = (char)((unsigned char)c >= 32u && (unsigned char)c < 127u ? c : ' ');
+    }
+    if (n < 3) { while (k && out[n][k - 1] == ' ') k--; out[n][k] = 0; if (k) n++; }
+    return n;
+}
+
+/* One stat of a part: its value, and which way is better (+1 more, -1 less, 0 text). */
+struct run_stat { const char *label; int better; int text; };
+enum { ST_WEIGHT, ST_DRAIN, ST_AP, ST_DEF_S, ST_DEF_E, ST_RADAR, ST_RADAR_R, ST_COMPUTER, ST_ARM_LOAD,
+       ST_SLOTS, ST_LOAD, ST_SPEED, ST_TURN, ST_STAB, ST_POWER, ST_BOOST_D, ST_OUTPUT, ST_CAP, ST_RED,
+       ST_LOCKS, ST_AREA, ST_ATTACK, ST_AMMO, ST_RANGE, ST_RELOAD, ST_EPS, ST_MISS_LOCK, ST_KIND,
+       ST_IMPACT, ST_MISS_RADAR, ST__N };
+static const struct run_stat k_run_stat[ST__N] = {
+    { "WEIGHT", -1, 0 }, { "ENERGY DRAIN", -1, 0 }, { "AP", 1, 0 }, { "SHELL DEFENSE", 1, 0 },
+    { "ENERGY DEFENSE", 1, 0 }, { "RADAR", 0, 1 }, { "RADAR RANGE", 1, 0 }, { "COMPUTER", 0, 1 },
+    { "ARM LOAD", 1, 0 }, { "OPTION SLOTS", 1, 0 }, { "LOAD", 1, 0 }, { "SPEED", 1, 0 },
+    { "TURNING", 1, 0 }, { "STABILITY", 1, 0 }, { "BOOST POWER", 1, 0 }, { "BOOST DRAIN", -1, 0 },
+    { "OUTPUT", 1, 0 }, { "CAPACITY", 1, 0 }, { "RED ZONE", -1, 0 }, { "LOCK TARGETS", 1, 0 },
+    { "LOCK AREA", 0, 1 }, { "ATTACK", 1, 0 }, { "AMMO", 1, 0 }, { "RANGE", 1, 0 },
+    { "RELOAD TIME", -1, 0 }, { "ENERGY PER SHOT", -1, 0 }, { "MISSILE LOCKS", 1, 0 },
+    { "AMMO TYPE", 0, 1 }, { "IMPACT", 1, 0 }, { "MISSILES ON RADAR", 0, 1 },
+};
+static const char *const k_run_computer[3] = { "STANDARD", "DETAILED", "ROUGH" };
+static const char *const k_run_area[5] = { "STANDARD", "SIDEWAY", "LENGTHWAY", "WIDE & SHALLOW", "NARROW & DEEP" };
+
+static uint32_t run_u16(const uint8_t *p) { return (uint32_t)p[0] | (uint32_t)p[1] << 8; }
+
+/* The rows a part of `cat` shows (the same for the old and the new part). */
+static int run_stat_rows(int cat, uint8_t id, int warms, int radar, int out[ST__N])
+{
+    int n = 0;
+    out[n++] = ST_WEIGHT;
+    out[n++] = cat == MOA_CAT_GEN ? ST_OUTPUT : ST_DRAIN;
+    switch (cat) {
+    case MOA_CAT_HEAD: out[n++] = ST_AP; out[n++] = ST_DEF_S; out[n++] = ST_DEF_E; out[n++] = ST_RADAR;
+                       out[n++] = ST_RADAR_R; out[n++] = ST_COMPUTER; break;
+    case MOA_CAT_CORE: out[n++] = ST_AP; out[n++] = ST_DEF_S; out[n++] = ST_DEF_E; out[n++] = ST_ARM_LOAD;
+                       out[n++] = ST_SLOTS; break;
+    case MOA_CAT_LEGS: out[n++] = ST_AP; out[n++] = ST_DEF_S; out[n++] = ST_DEF_E; out[n++] = ST_LOAD;
+                       out[n++] = ST_SPEED; out[n++] = ST_TURN; out[n++] = ST_STAB; break;
+    case MOA_CAT_ARMS: out[n++] = ST_AP; out[n++] = ST_DEF_S; out[n++] = ST_DEF_E;
+                       if (warms) { out[n++] = ST_ATTACK; out[n++] = ST_AMMO; out[n++] = ST_RANGE; out[n++] = ST_RELOAD; out[n++] = ST_KIND; }
+                       break;
+    case MOA_CAT_HAND: case MOA_CAT_BACK:
+        if (radar) { out[n++] = ST_RADAR_R; out[n++] = ST_MISS_RADAR; break; }
+        out[n++] = ST_ATTACK; out[n++] = ST_AMMO; out[n++] = ST_RANGE; out[n++] = ST_RELOAD;
+        out[n++] = ST_EPS; out[n++] = ST_MISS_LOCK; out[n++] = ST_KIND; break;
+    case MOA_CAT_BLADE: out[n++] = ST_ATTACK; out[n++] = ST_IMPACT; break;
+    case MOA_CAT_BOOST: out[n++] = ST_POWER; out[n++] = ST_BOOST_D; break;
+    case MOA_CAT_FCS:   out[n++] = ST_LOCKS; out[n++] = ST_AREA; break;
+    case MOA_CAT_GEN:   out[n++] = ST_CAP; out[n++] = ST_RED; break;
+    }
+    (void)id;
+    return n;
+}
+
+/* Stat `st` of part (cat, id): the number (and 1), or text in `txt` (and 2); 0 = none. */
+static int run_stat_of(int cat, uint8_t id, int st, long *v, char *txt, size_t cap)
+{
+    const struct moa_part *q = moa_parts_find(&run_parts, cat, id);
+    if (!q || id == 255u || (cat == MOA_CAT_HAND && id == 0u)) return 0;
+    const uint8_t *r = q->raw;
+    uint32_t wd = 0;                                       /* weapon detail record */
+    if (cat == MOA_CAT_HAND) wd = RUN_WD_HAND + 24u * id;
+    else if (cat == MOA_CAT_BACK) wd = RUN_WD_BACK + 24u * id;
+    else if (cat == MOA_CAT_ARMS && id >= 12u) wd = RUN_WD_WARMS + 24u * (uint32_t)(id - 12u);
+    switch (st) {
+    case ST_WEIGHT: *v = q->weight; return 1;
+    case ST_DRAIN: *v = q->drain; return 1;
+    case ST_OUTPUT: *v = run_u16(r + 0x2A); return 1;
+    case ST_AP: *v = q->ap; return 1;
+    case ST_DEF_S: *v = q->def_shell; return 1;
+    case ST_DEF_E: *v = q->def_energy; return 1;
+    case ST_RADAR: snprintf(txt, cap, "%s", run_u16(r + 0x36) ? "YES" : "NO"); return 2;
+    case ST_RADAR_R: *v = (long)(cat == MOA_CAT_HEAD ? run_u16(r + 0x38) : run_u16(r + 0x2E)) / 10; return 1;
+    case ST_COMPUTER: snprintf(txt, cap, "%s", r[0x32] < 3 ? k_run_computer[r[0x32]] : "?"); return 2;
+    case ST_ARM_LOAD: *v = run_u16(r + 0x32); return 1;
+    case ST_SLOTS: *v = run_u16(r + 0x36); return 1;
+    case ST_LOAD: *v = run_u16(r + 0x32); return 1;
+    case ST_SPEED: *v = run_u16(r + 0x36); return 1;
+    case ST_TURN: *v = run_u16(r + 0x38); return 1;
+    case ST_STAB: *v = run_u16(r + 0x40); return 1;
+    case ST_POWER: *v = run_u16(r + 0x2C); return 1;
+    case ST_BOOST_D: *v = run_u16(r + 0x2E); return 1;
+    case ST_CAP: *v = run_u16(r + 0x2C); return 1;
+    case ST_RED: *v = run_u16(r + 0x2E); return 1;
+    case ST_LOCKS: *v = r[0x2C]; return 1;
+    case ST_AREA: snprintf(txt, cap, "%s", r[0x2D] < 5 ? k_run_area[r[0x2D]] : "?"); return 2;
+    case ST_IMPACT: *v = run_u16(r + 0x32); return 1;
+    case ST_MISS_RADAR: snprintf(txt, cap, "%s", r[0x30] & 1u ? "SHOWN" : "NOT SHOWN"); return 2;
+    case ST_ATTACK:
+        if (cat == MOA_CAT_BLADE) { *v = run_u16(r + 0x30); return 1; }
+        if (!wd) return 0;
+        *v = psx_mod_read_half(wd + 0x14u); return 1;
+    case ST_AMMO: if (!wd) return 0; *v = psx_mod_read_half(wd + 0x08u); return 1;
+    case ST_RANGE: if (!wd) return 0; *v = psx_mod_read_half(wd + 0x0Eu); return 1;
+    case ST_RELOAD: if (!wd) return 0; *v = psx_mod_read_byte(wd + 0x11u); return 1;
+    case ST_EPS: if (!wd) return 0; *v = psx_mod_read_half(wd + 0x0Au); return 1;
+    case ST_MISS_LOCK:
+        if (!wd || psx_mod_read_byte(wd) != 1u) return 0;   /* missiles only */
+        *v = psx_mod_read_byte(wd + 0x10u); return 1;
+    case ST_KIND:
+        if (!wd) return 0;
+        snprintf(txt, cap, "%s", psx_mod_read_byte(wd + 0x12u) & 0x20u ? "ENERGY" : "SOLID");
+        return 2;
+    }
+    return 0;
+}
+
+static void run_num(long v, char *out, size_t cap)
+{
+    char t[24];
+    snprintf(t, sizeof t, "%ld", v < 0 ? -v : v);
+    const size_t n = strlen(t);
+    size_t k = 0;
+    if (v < 0 && k + 1 < cap) out[k++] = '-';
+    for (size_t i = 0; i < n && k + 1 < cap; i++) {
+        out[k++] = t[i];
+        if ((n - 1 - i) % 3u == 0 && i + 1 < n && k + 1 < cap) out[k++] = ',';
+    }
+    out[k] = 0;
+}
+
+/* The screen for offer `o` (a prize or a saved part). `thumb`: its picture,
+ * `head`: the right window's tab. Strings live in static storage. */
+static void run_specs_build(const struct run_offer *o, const uint32_t *thumb, const char *head,
+                            struct moa_screen_specs *sp)
+{
+    static struct moa_screen_spec_row row[ST__N];
+    static char val[ST__N][2][24], dlt[ST__N][16];
+    static char lname[19], lcat[56], rcat[56], rname[19], rcost[8], totals[128], lhead[24];
+    static char desc[3][76], notes[10][120];
+    static const char *tx[3], *nt[10];
+    static uint32_t lthumb[RUN_THUMB * RUN_THUMB];
+    memset(sp, 0, sizeof *sp);
+    sp->title = "PART SPECS";
+    snprintf(rname, sizeof rname, "%s", o->name);
+    snprintf(rcat, sizeof rcat, "%s", o->category);
+    snprintf(rcost, sizeof rcost, "%s", o->cost_s);
+    sp->right.head = head; sp->right.name = rname; sp->right.category = rcat; sp->right.cost = o->cost_s[0] ? rcost : NULL;
+    sp->right.thumb = thumb;
+    sp->footer = "UP / DOWN  NEXT PRIZE     TRIANGLE / O  CLOSE";
+    uint8_t now[13];
+    run_garage_rec(now);
+    int nn = 0;
+    if (o->hplus || o->income || o->xn) {                 /* one window: what it does */
+        sp->single = 1;
+        if (o->hplus) {
+            sp->right.icon = "H+";
+            static const char *const k_hp[] = {
+                "NO LOAD LIMITS: LEGS AND ARMS CARRY ANY WEIGHT",
+                "NO ENERGY LIMIT: ANY GENERATOR RUNS ANY PARTS",
+                "BUILT-IN RADAR WHEN NO RADAR IS FITTED",
+                "TWO-LEGGED ACS FIRE BACK CANNONS STANDING",
+                "BOOSTING DRAINS HALF, ENERGY REFILLS TWICE AS FAST",
+                "FOR THE REST OF THIS ATTEMPT (A RETRY TAKES IT AWAY)",
+            };
+            for (unsigned i = 0; i < sizeof k_hp / sizeof k_hp[0]; i++) snprintf(notes[nn++], sizeof notes[0], "%s", k_hp[i]);
+        } else if (o->income) {
+            sp->right.icon = "+1P";
+            const unsigned now_p = 1u + run_state.run.income;
+            snprintf(notes[nn++], sizeof notes[0], "EVERY WIN PAYS 1 P MORE FROM NOW ON");
+            snprintf(notes[nn++], sizeof notes[0], "A WIN PAYS %u P NOW, %u P WITH THIS", now_p, now_p + 1u);
+            snprintf(notes[nn++], sizeof notes[0], "PAYS ITS %u P BACK AFTER %u WINS", (unsigned)o->cost, (unsigned)o->cost);
+            snprintf(notes[nn++], sizeof notes[0], "BOUGHT %u OF %u TIMES THIS ATTEMPT", (unsigned)run_state.run.income, RUN_INCOME_MAX);
+        } else {                                            /* a set: each part, a line of its shop text */
+            snprintf(rname, sizeof rname, "ARMS SET");
+            for (int k = 0; k <= o->xn && nn < 8; k++) {
+                const int c = k ? o->xcat[k - 1] : o->cat;
+                const uint8_t id = k ? o->xid[k - 1] : o->id;
+                const char *cat = k ? o->xcategory[k - 1] : o->category;
+                if (strncmp(cat, "ARMS SET  ", 10) == 0) cat += 10;
+                snprintf(notes[nn++], sizeof notes[0], "%s  %s", k ? o->xname[k - 1] : o->name, cat);
+                char d[3][76];
+                const int nd = run_desc_lines(c, id, d);
+                if (nd) {                                     /* its shop text, on one line */
+                    char j[160] = "\t";
+                    for (int i = 0; i < nd; i++) snprintf(j + strlen(j), sizeof j - strlen(j), "%s%s", i ? " " : "", d[i]);
+                    snprintf(notes[nn++], sizeof notes[0], "%s", j);
+                }
+            }
+            if (o->put_lost[0][0]) snprintf(notes[nn++], sizeof notes[0], "REPLACES %s (GONE FOR GOOD)", o->put_lost[0]);
+        }
+        for (int i = 0; i < nn; i++) nt[i] = notes[i];
+        sp->notes = nt; sp->notes_n = nn;
+        return;
+    }
+    /* Two windows: what sits in the slot it goes into now. */
+    const int slot = o->nput ? o->put_slot[0] : -1;
+    const int lc = slot >= 0 ? moa_record_cat(slot) : o->cat;
+    const uint8_t lid = slot >= 0 ? now[slot] : 255u;
+    const struct moa_part *lq = (lid != 255u && !(lc == MOA_CAT_HAND && lid == 0u)) ? moa_parts_find(&run_parts, lc, lid) : NULL;
+    snprintf(lhead, sizeof lhead, "%s", o->nput >= 2 ? "FITTED NOW  LEFT" : "FITTED NOW");
+    sp->left.head = lhead;
+    if (lq) {
+        struct run_offer tmp;
+        memset(&tmp, 0, sizeof tmp);
+        tmp.cat = (uint8_t)lc; tmp.id = lid;
+        run_offer_label(&tmp, lq);
+        snprintf(lname, sizeof lname, "%s", lq->name);
+        snprintf(lcat, sizeof lcat, "%s", tmp.category);
+        sp->left.name = lname; sp->left.category = lcat;
+        const char *dir = getenv("PSX_MOA_MODELS_DIR");
+        if (dir && dir[0] && moa_acv_has_part_models(dir) && run_part_thumb(dir, lc, lid, lthumb)) sp->left.thumb = lthumb;
+    } else {
+        snprintf(lcat, sizeof lcat, "%s", k_run_tables[o->cat].label);
+        sp->left.category = lcat;
+    }
+    int rows[ST__N];
+    const int warms = o->cat == MOA_CAT_ARMS && (o->id >= 12u || (lq && lid >= 12u));
+    const int radar = (o->cat == MOA_CAT_BACK && run_is_radar(o->id));
+    const int n = run_stat_rows(o->cat, o->id, warms, radar, rows);
+    int nr = 0;
+    for (int i = 0; i < n; i++) {
+        const struct run_stat *st = &k_run_stat[rows[i]];
+        long a = 0, b = 0;
+        char ta[24] = "", tb[24] = "";
+        const int ka = lq ? run_stat_of(lc, lid, rows[i], &a, ta, sizeof ta) : 0;
+        const int kb = run_stat_of(o->cat, o->id, rows[i], &b, tb, sizeof tb);
+        if (!ka && !kb) continue;
+        struct moa_screen_spec_row *r = &row[nr];
+        memset(r, 0, sizeof *r);
+        r->label = st->label;
+        if (ka == 1) run_num(a, val[nr][0], sizeof val[nr][0]); else snprintf(val[nr][0], sizeof val[nr][0], "%s", ta);
+        if (kb == 1) run_num(b, val[nr][1], sizeof val[nr][1]); else snprintf(val[nr][1], sizeof val[nr][1], "%s", tb);
+        r->left = val[nr][0]; r->right = val[nr][1];
+        if (ka == 1 && kb == 1 && a != b) {
+            char d[20];
+            run_num(b - a, d, sizeof d);
+            snprintf(dlt[nr], sizeof dlt[nr], "%s%s", b > a ? "+" : "", d);
+            r->delta = dlt[nr];
+            r->better = st->better ? ((b > a) == (st->better > 0) ? 1 : -1) : 0;
+        }
+        nr++;
+    }
+    sp->row = row; sp->rows = nr;
+    const int nd = run_desc_lines(o->cat, o->id, desc);
+    for (int i = 0; i < nd; i++) tx[i] = desc[i];
+    sp->text = tx; sp->text_n = nd;
+    /* the AC with it fitted, against the AC now */
+    if (o->nput) {
+        struct moa_build_check c0, c1;
+        const int plus = run_plus_on();
+        moa_build_check(&run_parts, now, plus, &c0);
+        moa_build_check(&run_parts, o->put_rec[0], plus, &c1);
+        char w0[16], w1[16];
+        run_num(c0.weight, w0, sizeof w0); run_num(c1.weight, w1, sizeof w1);
+        const int lp0 = c0.leg_max ? c0.leg_load * 100 / c0.leg_max : 0, lp1 = c1.leg_max ? c1.leg_load * 100 / c1.leg_max : 0;
+        const int ep0 = c0.output ? c0.drain * 100 / c0.output : 0, ep1 = c1.output ? c1.drain * 100 / c1.output : 0;
+        snprintf(totals, sizeof totals, "YOUR AC:  WEIGHT %s > %s     LEGS CARRY %d%% > %d%%     ENERGY USED %d%% > %d%%%s",
+                 w0, w1, lp0, lp1, ep0, ep1, plus ? "   (HUMAN PLUS: NO LIMITS)" : "");
+        sp->totals = totals;
+        sp->totals_bad = !plus && (lp1 > 100 || ep1 > 100);
+    }
+}
+
+static int run_specs_show(const struct moa_screen_specs *sp, int *overlay)
+{
+    int ww = 0, wh = 0, w = 0, h = 0;
+    psx_mod_window_size(&ww, &wh);
+    const uint32_t *px = moa_screen_render_specs(ww, wh, sp, 0, &w, &h);
+    if (!px) return 0;
+    if (psx_mod_set_overlay_image(px, w, h)) { *overlay = 1; return 1; }
+    *overlay = 0;
+    psx_mod_set_loading_screen("ROGUE ARENA  Part specs", -1);
+    psx_mod_set_loading_image(px, w, h);
+    return 1;
+}
+
 static int run_prize_draw(void)
 {
+    if (run_prize_stage == PZ_SPECS && run_prize_cur < run_offer_n) {
+        struct moa_screen_specs sp;
+        char hd[24];
+        snprintf(hd, sizeof hd, "PRIZE %d OF %d", run_prize_cur + 1, run_offer_n);
+        run_specs_build(&run_offer[run_prize_cur], run_offer_has_thumb[run_prize_cur] ? run_offer_thumb[run_prize_cur] : NULL, hd, &sp);
+        sp.line = NULL;
+        return run_specs_show(&sp, &run_prize_overlay);
+    }
     const uint32_t credits = psx_mod_read_word(RUN_CREDITS);
     struct moa_screen_prize_row row[4];
     memset(row, 0, sizeof row);
@@ -1874,7 +2235,7 @@ static int run_prize_draw(void)
     p.row = row;
     p.count = run_offer_n + 1;
     p.cursor = run_prize_cur;
-    p.footer = "ARROWS  CHOOSE     X  TAKE";
+    p.footer = "ARROWS  CHOOSE     X  TAKE     TRIANGLE  SPECS";
     p.alt_name = rerolled ? "RE-ROLLED" : "RE-ROLL";
     p.alt_cost = rerolled ? NULL : "1 P";
     p.alt_locked = !run_reroll_can();
@@ -2128,6 +2489,24 @@ static void run_prize_frame(void)
     if (b == 0xFFFFu) run_prize_armed = 1;
     if (!run_prize_armed || run_prize_frames < 20u || !down) return;
     const int up = (down & RUN_PAD_UP) != 0, dn = (down & RUN_PAD_DOWN) != 0;
+    if (run_prize_stage == PZ_SPECS) {                       /* PART SPECS: up / down, close */
+        if ((up || dn) && run_offer_n > 1) {
+            run_se(RUN_SE_CURSOR);
+            run_prize_cur = (run_prize_cur + (up ? run_offer_n - 1 : 1)) % run_offer_n;
+            (void)run_prize_draw();
+        } else if (down & (RUN_PAD_TRIANGLE | RUN_PAD_CIRCLE)) {
+            run_se(RUN_SE_BACK);
+            run_prize_stage = PZ_CHOOSE;
+            (void)run_prize_draw();
+        }
+        return;
+    }
+    if (run_prize_stage == PZ_CHOOSE && (down & RUN_PAD_TRIANGLE) && run_prize_cur < run_offer_n) {
+        run_se(RUN_SE_OK);
+        run_prize_stage = PZ_SPECS;
+        (void)run_prize_draw();
+        return;
+    }
     if (run_prize_stage == PZ_ASK) {
         if (up || dn) {
             run_se(RUN_SE_CURSOR);
@@ -2149,7 +2528,7 @@ static void run_prize_frame(void)
                 (void)run_prize_draw();
                 return;
             }
-            run_se(RUN_SE_OK);
+            run_se(k == ASK_SAVE || run_offer[run_prize_cur].income || run_offer[run_prize_cur].hplus ? RUN_SE_OK : RUN_SE_EQUIP);
             run_prize_take(k == ASK_SAVE ? -1 : k - ASK_EQUIP0);
         }
         return;
@@ -3427,7 +3806,7 @@ static void run_end_frame(void)
 #define RUN_STAGE_P2         0x8004578Du
 #define RUN_HX_GO_GIVE_UP    900u         /* frames for the hub to open a pick (from the list: O first) */
 #define RUN_HX_NEXT_GIVE_UP  900u         /* frames for the fight to start */
-enum { HX_OFF = 0, HX_MENU, HX_STAGES, HX_NEXT, HX_BUSY, HX_SWAP, HX_SWAP_ASK };
+enum { HX_OFF = 0, HX_MENU, HX_STAGES, HX_NEXT, HX_BUSY, HX_SWAP, HX_SWAP_ASK, HX_SWAP_SPECS };
 enum { HXR_NEXT = 0, HXR_SWAP, HXR_STAGE, HXR_GARAGE, HXR_COUNT };   /* SHOP gone: parts come from the prize screen */
 #define RUN_HX_STAGE_OWN     0u
 #define RUN_HX_STAGE_RANDOM  255u
@@ -3663,8 +4042,8 @@ static int run_sw_draw(void)
     p.row = row;
     p.count = k + 1;
     p.cursor = run_sw_cur < run_sw_n ? run_sw_cur - run_sw_top : k;
-    p.footer = run_sw_n > RUN_SW_ROWS ? "UP / DOWN  CHOOSE (MORE BELOW)     X  EQUIP     O  BACK"
-                                      : "UP / DOWN  CHOOSE     X  EQUIP     O  BACK";
+    p.footer = run_sw_n > RUN_SW_ROWS ? "UP/DOWN  MORE BELOW   X  EQUIP   TRIANGLE  SPECS   O  BACK"
+                                      : "UP/DOWN  CHOOSE   X  EQUIP   TRIANGLE  SPECS   O  BACK";
     if (run_hx == HX_SWAP_ASK && run_sw_cur < run_sw_n) {
         const struct run_offer *o = &run_sw_part[run_sw_cur];
         for (int i = 0; i < run_sw_ask_n; i++)
@@ -3740,6 +4119,25 @@ static void run_sw_input(uint16_t down)
 {
     const int up = (down & RUN_PAD_UP) != 0, dn = (down & RUN_PAD_DOWN) != 0;
     const int ok = (down & (RUN_PAD_X | RUN_PAD_START)) != 0, back = (down & RUN_PAD_CIRCLE) != 0;
+    if (run_hx == HX_SWAP_SPECS) {                     /* PART SPECS: up / down, close */
+        if ((up || dn) && run_sw_n > 1) {
+            run_se(RUN_SE_CURSOR);
+            run_sw_cur = (run_sw_cur + (up ? run_sw_n - 1 : 1)) % run_sw_n;
+            if (run_sw_cur < run_sw_top) run_sw_top = run_sw_cur;
+            if (run_sw_cur >= run_sw_top + RUN_SW_ROWS) run_sw_top = run_sw_cur - RUN_SW_ROWS + 1;
+        } else if (down & (RUN_PAD_TRIANGLE | RUN_PAD_CIRCLE)) {
+            run_se(RUN_SE_BACK);
+            run_hx = HX_SWAP;
+        } else return;
+        (void)run_hx_draw();
+        return;
+    }
+    if (run_hx == HX_SWAP && (down & RUN_PAD_TRIANGLE) && run_sw_cur < run_sw_n) {
+        run_se(RUN_SE_OK);
+        run_hx = HX_SWAP_SPECS;
+        (void)run_hx_draw();
+        return;
+    }
     if (run_hx == HX_SWAP_ASK) {
         if (up || dn) {
             run_se(RUN_SE_CURSOR);
@@ -3748,7 +4146,7 @@ static void run_sw_input(uint16_t down)
             run_se(RUN_SE_BACK);
             run_hx = HX_SWAP;
         } else if (ok) {
-            run_se(RUN_SE_OK);
+            run_se(RUN_SE_EQUIP);
             run_sw_equip(run_sw_ask_put[run_sw_ask_cur]);
             run_hx = HX_SWAP;
             (void)run_sw_prepare();                    /* the AC changed: what fits now */
@@ -3787,7 +4185,22 @@ static void run_sw_input(uint16_t down)
 static int run_hx_draw(void)
 {
     if (run_vs) return 1;                              /* the VS screen has the picture */
-    if (run_hx == HX_SWAP || run_hx == HX_SWAP_ASK) {
+    if (run_hx == HX_SWAP_SPECS && run_sw_cur < run_sw_n) {    /* PART SPECS of a saved part */
+        static uint32_t th[RUN_THUMB * RUN_THUMB];
+        const struct run_offer *o = &run_sw_part[run_sw_cur];
+        const char *mdir = getenv("PSX_MOA_MODELS_DIR");
+        const int ok = mdir && mdir[0] && moa_acv_has_part_models(mdir) && run_part_thumb(mdir, o->cat, o->id, th);
+        struct moa_screen_specs sp;
+        char hd[24];
+        snprintf(hd, sizeof hd, "SAVED %d OF %d", run_sw_cur + 1, run_sw_n);
+        run_specs_build(o, ok ? th : NULL, hd, &sp);
+        sp.right.cost = NULL;
+        if (!run_sw_fits[run_sw_cur]) { sp.totals = run_sw_why[run_sw_cur]; sp.totals_bad = 1; }
+        sp.footer = "UP / DOWN  NEXT PART     TRIANGLE / O  CLOSE";
+        if (!run_specs_show(&sp, &run_hx_overlay)) return 0;
+        return 1;
+    }
+    if (run_hx == HX_SWAP || run_hx == HX_SWAP_ASK || run_hx == HX_SWAP_SPECS) {
         if (!run_sw_draw()) return 0;
         run_hx_overlay = 1;
         return 1;
@@ -4042,7 +4455,7 @@ static void run_hx_frame(void)
         else if (++run_hx_rep >= 18u && (run_hx_rep - 18u) % 5u == 0u) down |= (uint16_t)(held & (RUN_PAD_UP | RUN_PAD_DOWN));
     }
     if (!down) return;
-    if (run_hx == HX_SWAP || run_hx == HX_SWAP_ASK) { run_sw_input(down); return; }
+    if (run_hx == HX_SWAP || run_hx == HX_SWAP_ASK || run_hx == HX_SWAP_SPECS) { run_sw_input(down); return; }
     const int up = (down & RUN_PAD_UP) != 0, dn = (down & RUN_PAD_DOWN) != 0;
     if (run_hx == HX_STAGES) {
         if (up || dn) {
@@ -4392,6 +4805,7 @@ static int32_t run_vs_fight_at = -1;      /* frame the fight ran, -1 not yet */
 static int32_t run_vs_shut_at = -1;       /* frame the shutters started, -1 not yet */
 static int run_vs_overlay;                /* drawn as the overlay (else the loading picture) */
 static unsigned run_vs_shots, run_vs_key;
+static unsigned run_vs_shots_n;           /* shots this time: one per beaten AC slashed, 0..3 */
 static int run_vs_door;
 static uint8_t *run_vs_you_px, *run_vs_foe_px, *run_vs_mini_px[VS_MAX_MINI];
 static uint32_t run_vs_emblem[64 * 64];
@@ -4720,6 +5134,7 @@ static void run_vs_open(void)
     run_vs_frames = 0;
     run_vs_fight_at = run_vs_shut_at = -1;
     run_vs_shots = 0;
+    run_vs_shots_n = beaten < 3 ? (unsigned)beaten : 3u;   /* user 14:40: none beaten, a silent count */
     run_vs_door = 0;
     run_vs_key++;
     psx_mod_counter_add("moa.run.vs_screen", 1);
@@ -4772,10 +5187,13 @@ static void run_vs_frame(void)
         if (sh >= (early ? MOA_VS_SHUTTER_MEET + 0.10f : VS_FADE_AT + VS_FADE_LEN)) { run_vs_close("the fight runs"); return; }
     }
     if (run_vs_frames > RUN_SLOW(60u * 60u)) { run_vs_close("timed out"); return; }
-    /* Sounds: shots on counts 3, 2, 1; the shutters' slam on the meet. */
+    /* Sounds: one shot with each slash (the last 1-3 counts, as many as ACs
+     * beaten in the belt, at most 3; none beaten = silent); the shutters' slam
+     * on the meet. */
     if (sh < 0.0f) {
-        while (run_vs_shots < 3u && t >= VS_C0 + (2.0f + (float)run_vs_shots) * VS_STEP) {
-            if (moa_vs_sound_shot(run_vs_shots == 2u)) psx_mod_counter_add("moa.run.vs_shot", 1);
+        while (run_vs_shots < run_vs_shots_n &&
+               t >= VS_C0 + (float)(2u + (3u - run_vs_shots_n) + run_vs_shots) * VS_STEP) {
+            if (moa_vs_sound_shot(run_vs_shots + 1u == run_vs_shots_n)) psx_mod_counter_add("moa.run.vs_shot", 1);
             run_vs_shots++;
         }
     } else if (!run_vs_door && sh >= MOA_VS_SHUTTER_MEET - MOA_VS_DOOR_PEAK) {
@@ -5029,6 +5447,8 @@ static void run_frame_hook(void)
     if (!run_on()) return;
     run_apply_fixes();
     run_disc_frame();
+    run_ui_sounds();
+    run_descs_read();
     run_backdrop_frame();
     if (run_se_queue >= 0 && ++run_se_age > 6u) run_se_queue = -1;   /* no menu to play it */
     if (run_watch_phase && run_at_hub && ++run_watch_count == run_watch_limit()) run_watch_dump();

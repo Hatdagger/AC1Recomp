@@ -7,7 +7,8 @@ natively (the custom-engine road).
 
 Disc: USA disc 1 (SLUS-01030 v1.0). Written 2026-11-18 from the repo (master) and the
 framework docs in `psxrecomp/docs`. Nothing below is measured yet unless it says where it came
-from. Status: lane claimed 2026-11-18; plan only, nothing measured yet.
+from. Status: lane claimed 2026-11-18; step 1 started (main program routines named, frame
+cadence from Armored-CoreR). Next: read FDAT 209 (needs the `ma-work` disc pack).
 
 ## 1. What we already have
 
@@ -26,6 +27,39 @@ from. Status: lane claimed 2026-11-18; plan only, nothing measured yet.
 | Stage files: FDAT 5s+1 and 5s+4 (VS), 5s+2 and 5s+4 (arena), s = stage | loads: VS `0x80055AA8` / `0x80055AC8`, arena `0x80056330` / `0x80056350` | `boot-loads.md` §8 |
 | HUD sight routine (lock box, aiming guide) | `0x800576E0` | `stat-block.md` "Lock-on" |
 | Widescreen is offered with the GTE game mode | `game.toml` `[widescreen] offer = true, gte_game_mode = true` | repo |
+| **Frame cadence: at most 22 frames a second.** One logic step per frame; the frame end does `DrawSync(0)`, waits until 715 scanlines (root counter 1, `0x80016724`) have passed since the last frame start, swaps buffers, starts the next OT. No `VSync` wait in the fight loop | frame-end wait `slti 0x2CB`: VS (209) `0x8005C080`, arena (210) `0x8005E2D0`, link (208) `0x8005CED4`, missions (207) `0x8005D2CC`, replay (211) `0x8005C624` | Armored-CoreR `gen1-timing.md` |
+| Camera as measured: eye / look-at pairs per player (VS) `0x801A9A88`, eye copies `0x800441D8`. Projection: one view H 320 on 320×240, centre (160, 120); **VS: two side-by-side 160×240 halves, H 160 each, centre row 115** | | Armored-CoreR `gen1-engine-map.md` |
+| Rotation-matrix builders in the main program: RotMatrix (Rz·Ry·Rx order as the model export) `0x80029F94`, a Ry·Rx·Rz version `0x8002A224` | | Armored-CoreR `gen1-models.md` |
+
+### Main program routines the engines call (named 2026-11-18)
+
+The fight engines draw through these (the main program itself calls almost none of them, so
+in an engine a `jal` to one of these addresses names the call). Named from PsyQ's debug strings
+in `SLUS_010.30` ("DrawOTag(%08x)..." etc.) and, for the GTE ones, from which GTE control
+registers they write. Only 51 GTE commands are in the main program: the 3D transform code
+lives in the engines.
+
+| Routine | Address | How named |
+|---|---|---|
+| `VSync(mode)` | `0x8002A714` | VBlank count `0x8003E618`; its wait `0x8002A88C` prints "VSync: timeout" |
+| `ResetGraph` / `SetGraphDebug` / `DrawSyncCallback` | `0x8002C058` / `0x8002C2A8` / `0x8002C3B8` | strings |
+| `DrawSync(mode)` | `0x8002C4B0` | string |
+| `LoadImage` / `MoveImage` | `0x8002C75C` / `0x8002C81C` | strings (LoadImage matches `boot-loads.md`) |
+| `ClearOTag` / `ClearOTagR` | `0x8002C8D4` / `0x8002C99C` | strings |
+| **`DrawOTag(ot)`** | **`0x8002CAA4`** | string |
+| **`PutDrawEnv(env)`** | **`0x8002CB14`** | string |
+| `DrawOTagEnv(ot, env)` | `0x8002CBD4` | string |
+| **`PutDispEnv(env)`** | **`0x8002CCE0`** | string |
+| `SetDefDrawEnv` / `SetDefDispEnv` `?` | `0x80011F94` / `0x80011FF0` | called as (env, 0, 240, 320, 240) by the main program's picture screen `0x80012348`, right before PutDispEnv / PutDrawEnv |
+| `InitGeom` | `0x80028DE4` | writes H, OFX/OFY, DQA/DQB, ZSF3/ZSF4 |
+| `SetRotMatrix` / `SetTransMatrix` | `0x80029B24` / `0x80029BB4` | 12 / 8 instructions writing GTE R (regs 0–4) / TR (5–7) |
+| `SetGeomOffset(x, y)` / **`SetGeomScreen(h)`** | `0x80029D24` / `0x80029D48` | GTE OFX/OFY / H. Split screen must change these per view |
+| `SetDQA` / `SetDQB` | `0x80029CCC` / `0x80029CD8` | depth cueing (fog) |
+| Matrix multiplies (load GTE R, then MVMVA) | `0x80029448`, `0x80029648`, `0x800297A4`, `0x80029904`, `0x80029954`, `0x800290C4`, `0x80029E98`, `0x80029EF0` | not told apart yet |
+| VBlank callback | `0x800166A0` | counts VBlanks at `0x80043C74`, then `0x80017340`, then the hook at `0x80043C78` if set |
+| VBlanks since a0 / VBlank count | `0x800166FC` / `0x80016710` | read `0x80043C74` |
+| Scanlines since a0 (the frame-time wait) | `0x80016724` | `GetRCnt(RCntCNT1)` (`0x8002B600`), 16-bit wrap |
+| `DrawSync(0)` then `VSync(0)` | `0x80016678` | |
 
 ## 2. What the mapping switches on (the payoff)
 
@@ -50,7 +84,8 @@ framework's bloom and post shaders (`POST_EFFECTS.md`; config settings).
 VS (FDAT 209) first: it is the battle lane's test setup and both units are under direct control.
 Then the other engines look for the same routines (§4).
 
-1. **Frame anatomy.** From the VS main loop's "draw both views": the scene render (the link
+1. **Frame anatomy.** Known so far: the cadence and the frame-end wait (§1), the library
+   routines (§1). Still to read in FDAT 209, from the VS main loop's "draw both views": the scene render (the link
    engine's is `0x80067FE4`; find VS's), the buffer record (link `0x8019D4F0`), DRAWENV / DISPENV,
    where `DrawOTag` and `PutDispEnv` run, the VSync wait, how many VBlanks one step takes, the OT
    address and size, the primitive buffer. How split-screen draws two views (two OTs or one?).
@@ -103,6 +138,10 @@ Lane claimed in `README.md` 2026-11-18. Borders:
 
 ## 6. Watch out for
 
+- **The frame period is not a whole number of VBlanks.** 715 scanlines is about 2.72 NTSC fields,
+  so stock frames stay on screen for 3, 3, 2, 3… VBlanks (uneven), and heavy frames run longer.
+  The render-pass planner counts whole VBlanks per frame: the plugin must work out each frame's
+  period from the flips it sees. In-between frames would lift ~22 fps to 60+ and even out that judder.
 - **Performance:** render passes re-run the game's draw code, which costs CPU. The Steam Deck
   already struggles (15–17 fps in the AppImage), so in-between frames may be a desktop feature
   until the Deck runs the stock game at full speed.

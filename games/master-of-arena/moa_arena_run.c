@@ -183,6 +183,9 @@ int moa_run_lineup(const struct moa_run_source *src, int nsrc, int phantasma,
     for (int i = 0; i < nsrc; ++i) {
         if (src[i].band == MOA_BAND_PHANTASMA && !phantasma) continue;
         for (int r = 0; r + 1 < src[i].entries; ++r) {   /* the last is the player's */
+            /* Main arena rank 1, Hustler One / Nine-Ball, is fought in the
+             * story, never in the arena: not in the run. */
+            if (src[i].arena == 0 && r == 0) continue;
             struct cand c = { { src[i].arena, (uint8_t)r }, moa_run_score(&src[i], r),
                               (uint32_t)moa_run_next(&rng) };
             if (src[i].band == MOA_BAND_SUB) subs[nsub++] = c; else rest[nrest++] = c;

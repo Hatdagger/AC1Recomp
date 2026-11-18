@@ -88,6 +88,12 @@ struct moa_screen_list {
     const char *const *value;    /* NULL, or one per row (NULL entries allowed) */
     int count, cursor, top, visible, marked;
     const char *footer;
+    /* Optional picture beside the rows (the stage list): 0xAARRGGBB, drawn
+     * 3x; with no picture, `pic_text` large in an empty box. `pic_caption`
+     * under it. Rows move left to make room when either is set. */
+    const uint32_t *pic;
+    int pic_w, pic_h;
+    const char *pic_text, *pic_caption;
 };
 const uint32_t *moa_screen_render_list(int win_w, int win_h, const struct moa_screen_list *l,
                                        int see_through, int *out_w, int *out_h);
@@ -163,6 +169,7 @@ struct moa_screen_specs {
     int text_n;
     const char *const *notes; /* single: what it does, one entry per line */
     int notes_n;
+    int notes_cols;           /* the first this many notes in two columns (0: none) */
     const char *totals;       /* AC totals with it fitted (NULL: none) */
     int totals_bad;           /* 1: the totals line in red (over a limit) */
     const char *footer;

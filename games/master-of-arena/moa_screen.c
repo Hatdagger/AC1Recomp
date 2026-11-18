@@ -546,14 +546,34 @@ const uint32_t *moa_screen_render_list(int win_w, int win_h, const struct moa_sc
     int top = l->top;
     if (top > l->count - vis) top = l->count - vis;
     if (top < 0) top = 0;
-    const int rh = 50, gap = 8, rw = 640;
+    const int has_pic = (l->pic && l->pic_w > 0 && l->pic_h > 0) || l->pic_text;
+    const int rh = 50, gap = 8, rw = has_pic ? 440 : 640;
+    const int pw = has_pic ? (l->pic ? l->pic_w * 3 : 312) : 0, ph = has_pic ? (l->pic ? l->pic_h * 3 : 300) : 0;
+    const int pgap = has_pic ? 40 : 0;
     const int area_y0 = lines ? y + 22 : 150, area_y1 = CANVAS_H - 80;
     const int total = vis * rh + (vis > 0 ? (vis - 1) * gap : 0);
     int y0 = area_y0 + (area_y1 - area_y0 - total) / 2;
     if (y0 < area_y0) y0 = area_y0;
-    const int x0 = cx - rw / 2, x1 = cx + rw / 2;
+    const int x0 = cx - (rw + pgap + pw) / 2 + 13, x1 = x0 + rw;
+    if (has_pic) {                                   /* the picture beside the rows */
+        const int px0 = x1 + pgap, py0 = y0 + (total - ph - 34) / 2 > area_y0 ? y0 + (total - ph - 34) / 2 : area_y0;
+        fill(buf, px0 - 6, py0 - 6, px0 + pw + 6, py0 + ph + 6, rgb(8, 10, 16));
+        frame_rect(buf, px0 - 6, py0 - 6, px0 + pw + 6, py0 + ph + 6, 2, rgb(130, 200, 255));
+        if (l->pic) {
+            for (int yy = 0; yy < ph; yy++) {
+                const int sy = py0 + yy;
+                if (sy < 0 || sy >= CANVAS_H) continue;
+                const uint32_t *src = l->pic + (size_t)(yy / 3) * l->pic_w;
+                uint32_t *dst = buf + (size_t)sy * W + px0;
+                for (int xx = 0; xx < pw; xx++) if (px0 + xx >= 0 && px0 + xx < W) dst[xx] = src[xx / 3] | 0xFF000000u;
+            }
+        } else {
+            text(buf, NULL, l->pic_text, px0 + pw / 2, py0 + ph / 2, 6, rgb(120, 150, 185));
+        }
+        if (l->pic_caption) text(buf, NULL, l->pic_caption, px0 + pw / 2, py0 + ph + 30, 2, gold);
+    }
     if (top > 0)                                     /* more above */
-        for (int k = 0; k < 10; k++) fill(buf, cx - k, y0 - 22 + k, cx + k + 1, y0 - 21 + k, grey);
+        for (int k = 0; k < 10; k++) fill(buf, (x0 + x1) / 2 - k, y0 - 22 + k, (x0 + x1) / 2 + k + 1, y0 - 21 + k, grey);
     for (int i = 0; i < vis; i++) {
         const int r = top + i, ry = y0 + i * (rh + gap), on = r == l->cursor;
         fill(buf, x0, ry, x1, ry + rh, on ? rgb(22, 40, 70) : rgb(8, 10, 16));
@@ -573,7 +593,7 @@ const uint32_t *moa_screen_render_list(int win_w, int win_h, const struct moa_sc
     }
     if (top + vis < l->count) {                      /* more below */
         const int yb = y0 + total + 12;
-        for (int k = 0; k < 10; k++) fill(buf, cx - (9 - k), yb + k, cx + (9 - k) + 1, yb + k + 1, grey);
+        for (int k = 0; k < 10; k++) fill(buf, (x0 + x1) / 2 - (9 - k), yb + k, (x0 + x1) / 2 + (9 - k) + 1, yb + k + 1, grey);
     }
     if (l->footer) text(buf, NULL, l->footer, cx, CANVAS_H - 40, 2, grey);
     s_w = keep_w; s_h = keep_h;
@@ -892,16 +912,30 @@ const uint32_t *moa_screen_render_specs(int win_w, int win_h, const struct moa_s
     if (p->single) {
         /* one wide window: picture, name, then what it does */
         const int x0 = cx - 456, x1 = cx + 456;
-        const int n = p->notes_n > 9 ? 9 : p->notes_n;
-        const int y1 = top + 152 + n * 30 + 14;
+        const int nc = p->notes_cols > 0 && p->notes_cols <= p->notes_n ? p->notes_cols : 0;
+        const int crow = (nc + 1) / 2;                  /* lines the two columns take */
+        int n = crow + p->notes_n - nc;
+        if (n > 9) n = 9;
+        const int ch = 46, cy = crow * (ch - 30);       /* column rows: name, then what it does under it */
+        const int y1 = top + 152 + n * 30 + cy + 14;
         fill(buf, x0, top, x1, y1, rgb(8, 10, 16));
         frame_rect(buf, x0, top, x1, y1, 2, rgb(226, 186, 112));
         specs_header(buf, W, x0, top, x1, &p->right, 1);
         fill(buf, x0 + 10, top + 146, x1 - 10, top + 147, rgb(50, 58, 72));
-        for (int i = 0; i < n; i++) {
-            const int y = top + 166 + i * 30;
-            const int sub = p->notes[i][0] == '\t';         /* a tab: a grey line under the one before */
-            snprintf(s, sizeof s, "%s", p->notes[i] + sub);
+        for (int i = 0; i < nc && i / 2 < 9; i++) {       /* two columns: "NAME  what it does" */
+            const int y = top + 166 + (i / 2) * ch, cx0 = (i & 1) ? (x0 + x1) / 2 + 4 : x0;
+            snprintf(s, sizeof s, "%s", p->notes[i]);
+            char *what = strstr(s, "  ");
+            if (what) { *what = 0; what += 2; }
+            fill(buf, cx0 + 26, y - 3, cx0 + 32, y + 3, gold);
+            text_left(buf, s, cx0 + 44, y, 2, white);
+            if (what) text_left(buf, what, cx0 + 64, y + 20, 1, rgb(170, 182, 198));
+        }
+        for (int i = crow; i < n; i++) {
+            const int y = top + 166 + i * 30 + cy;
+            const char *nt = p->notes[nc + i - crow];
+            const int sub = nt[0] == '\t';                  /* a tab: a grey line under the one before */
+            snprintf(s, sizeof s, "%s", nt + sub);
             if (!sub) fill(buf, x0 + 26, y - 3, x0 + 32, y + 3, gold);
             const int lx = x0 + (sub ? 64 : 44);
             text_left(buf, s, lx, y, !sub && (int)strlen(s) * 16 <= x1 - lx - 20 ? 2 : 1, sub ? rgb(170, 182, 198) : white);

@@ -3325,8 +3325,8 @@ static void run_end_frame(void)
 #define RUN_STAGE_P2         0x8004578Du
 #define RUN_HX_GO_GIVE_UP    900u         /* frames for the hub to open a pick (from the list: O first) */
 #define RUN_HX_NEXT_GIVE_UP  900u         /* frames for the fight to start */
-enum { HX_OFF = 0, HX_MENU, HX_STAGES, HX_NEXT, HX_BUSY };
-enum { HXR_NEXT = 0, HXR_STAGE, HXR_GARAGE, HXR_COUNT };   /* SHOP gone: parts come from the prize screen */
+enum { HX_OFF = 0, HX_MENU, HX_STAGES, HX_NEXT, HX_BUSY, HX_SWAP, HX_SWAP_ASK };
+enum { HXR_NEXT = 0, HXR_SWAP, HXR_STAGE, HXR_GARAGE, HXR_COUNT };   /* SHOP gone: parts come from the prize screen */
 #define RUN_HX_STAGE_OWN     0u
 #define RUN_HX_STAGE_RANDOM  255u
 static const struct { uint8_t id; const char *name; } k_hx_stage[] = {
@@ -3428,17 +3428,278 @@ static void run_hx_foe_text(void)
     else snprintf(run_hx_foe, sizeof run_hx_foe, "NEXT  RANK %u", rank);
 }
 
+static int run_hx_draw(void);
+/* ---- SWAP PARTS (hub overlay; design "Saved parts and swapping") ---------------
+ *
+ * The parts saved for later on the prize screen (run file saved[], owned-
+ * table indices), three at a time in the prize screen's look, then BACK.
+ * A part that fits the AC as it is now (run_offer_fit: the game's fitting
+ * rules and checks, nothing knocked off but the part it replaces) can be
+ * equipped: the part it replaces is gone for good (owned count down), the
+ * saved one leaves the list. One that does not fit is dimmed, with why. */
+#define RUN_SW_ROWS 3
+static int run_sw_n, run_sw_cur, run_sw_top, run_sw_ask_cur, run_sw_ask_n;
+static int run_sw_ask_put[3];                  /* a place (0/1), -1 BACK */
+static struct run_offer run_sw_part[MOA_RUN_SAVED_MAX];
+static int run_sw_fits[MOA_RUN_SAVED_MAX];
+static char run_sw_why[MOA_RUN_SAVED_MAX][40];
+static uint32_t run_sw_thumb[RUN_SW_ROWS][RUN_THUMB * RUN_THUMB];
+static int run_sw_thumb_of[RUN_SW_ROWS] = { -1, -1, -1 };   /* owned index drawn there, -1 none */
+static int run_sw_thumb_ok[RUN_SW_ROWS];
+
+/* An owned-table index to its part (category, id). 1 = found. */
+static int run_ix_part(int ix, int *cat, uint8_t *id)
+{
+    int best = -1;
+    for (int c = 0; c < MOA_CAT__COUNT; c++)
+        if ((int)k_run_tables[c].base <= ix && (best < 0 || k_run_tables[c].base > k_run_tables[best].base)) best = c;
+    if (best < 0 || ix - (int)k_run_tables[best].base > 255) return 0;
+    *cat = best;
+    *id = (uint8_t)(ix - (int)k_run_tables[best].base);
+    return 1;
+}
+
+/* Why (cat, id) can't go on `now`, in a few words. */
+static void run_sw_reason(int cat, uint8_t id, const uint8_t now[13], int plus, char *out, size_t cap)
+{
+    static const int8_t k_slot[MOA_CAT__COUNT] = { 1, 0, 3, 2, 4, 6, 5, 12, 8, 9 };
+    if ((cat == MOA_CAT_HAND || cat == MOA_CAT_BLADE) && now[2] != 255u && now[2] >= 12u) {
+        snprintf(out, cap, "NEEDS REGULAR ARMS");
+        return;
+    }
+    if (cat == MOA_CAT_BOOST && now[3] != 255u && now[3] >= 27u) {
+        snprintf(out, cap, "CATERPILLARS TAKE NO BOOSTER");
+        return;
+    }
+    uint8_t rec[13];
+    memcpy(rec, now, 13);
+    rec[k_slot[cat]] = id;
+    moa_build_fit(rec);
+    struct moa_build_check c;
+    moa_build_check(&run_parts, rec, plus, &c);
+    snprintf(out, cap, "%s", c.leg_over ? "TOO HEAVY FOR THE LEGS" : c.arm_over ? "TOO HEAVY FOR THE ARMS"
+                            : c.energy_over ? "NOT ENOUGH ENERGY" : c.slots_over ? "NO OPTION SLOTS LEFT"
+                            : c.missing_booster ? "NEEDS A BOOSTER" : "WON'T FIT THIS AC");
+}
+
+/* The list against the AC as it is now. 0 = the part tables are not in memory. */
+static int run_sw_prepare(void)
+{
+    if (!run_parts_read()) return 0;
+    uint8_t now[13];
+    run_garage_rec(now);
+    const int plus = run_plus_on();
+    const struct moa_run_progress *r = &run_state.run;
+    run_sw_n = 0;
+    for (unsigned i = 0; i < r->saved_n && i < MOA_RUN_SAVED_MAX; i++) {
+        struct run_offer *o = &run_sw_part[run_sw_n];
+        int cat;
+        uint8_t id;
+        memset(o, 0, sizeof *o);
+        if (!run_ix_part(r->saved[i], &cat, &id)) continue;
+        const struct moa_part *q = moa_parts_find(&run_parts, cat, id);
+        if (!q) continue;
+        o->cat = (uint8_t)cat;
+        o->id = id;
+        run_offer_label(o, q);
+        run_sw_fits[run_sw_n] = run_offer_fit(cat, id, now, plus, o);
+        run_sw_why[run_sw_n][0] = 0;
+        if (!run_sw_fits[run_sw_n]) run_sw_reason(cat, id, now, plus, run_sw_why[run_sw_n], sizeof run_sw_why[0]);
+        run_sw_n++;
+    }
+    if (run_sw_cur > run_sw_n) run_sw_cur = run_sw_n;
+    if (run_sw_top > run_sw_cur) run_sw_top = run_sw_cur;
+    if (run_sw_cur < run_sw_n && run_sw_cur >= run_sw_top + RUN_SW_ROWS) run_sw_top = run_sw_cur - RUN_SW_ROWS + 1;
+    if (run_sw_top > run_sw_n - RUN_SW_ROWS) run_sw_top = run_sw_n > RUN_SW_ROWS ? run_sw_n - RUN_SW_ROWS : 0;
+    return 1;
+}
+
+static int run_sw_draw(void)
+{
+    const char *mdir = getenv("PSX_MOA_MODELS_DIR");
+    const int models = mdir && mdir[0] && moa_acv_has_part_models(mdir);
+    struct moa_screen_prize_row row[RUN_SW_ROWS + 1];
+    memset(row, 0, sizeof row);
+    char tag[RUN_SW_ROWS][40];
+    int k = 0;
+    for (; k < RUN_SW_ROWS && run_sw_top + k < run_sw_n; k++) {
+        const int i = run_sw_top + k;
+        const struct run_offer *o = &run_sw_part[i];
+        const int ix = (int)k_run_tables[o->cat].base + o->id;
+        if (run_sw_thumb_of[k] != ix) {            /* the window moved: draw that part */
+            run_sw_thumb_ok[k] = models && run_part_thumb(mdir, o->cat, o->id, run_sw_thumb[k]);
+            run_sw_thumb_of[k] = ix;
+        }
+        /* Under the name: what it replaces (the first part, +n more). */
+        if (!run_sw_fits[i]) tag[k][0] = 0;
+        else if (o->nput >= 2) snprintf(tag[k], sizeof tag[k], "LEFT OR RIGHT SLOT");
+        else if (!o->put_lost[0][0]) snprintf(tag[k], sizeof tag[k], "INTO AN EMPTY SLOT");
+        else {
+            int more = 0;
+            const char *c = strchr(o->put_lost[0], ',');
+            for (const char *q = o->put_lost[0]; *q; q++) more += *q == ',';
+            snprintf(tag[k], sizeof tag[k], "REPLACES %.*s", c ? (int)(c - o->put_lost[0]) : 18, o->put_lost[0]);
+            if (more) snprintf(tag[k] + strlen(tag[k]), sizeof tag[k] - strlen(tag[k]), " +%d", more);
+        }
+        row[k].tag = tag[k];
+        row[k].category = o->category;
+        row[k].name = o->name;
+        row[k].cost = run_sw_fits[i] ? "EQUIP" : "NO FIT";
+        row[k].thumb = run_sw_thumb_ok[k] ? run_sw_thumb[k] : NULL;
+        row[k].locked = !run_sw_fits[i];
+        row[k].locked_why = run_sw_fits[i] ? NULL : run_sw_why[i];
+    }
+    row[k].name = "BACK";
+    char line[64], ask_title[48], ask_line[112];
+    const char *ask[3];
+    if (!run_sw_n) snprintf(line, sizeof line, "NO SAVED PARTS");
+    else snprintf(line, sizeof line, "SAVED PARTS  %d OF %d", run_sw_cur < run_sw_n ? run_sw_cur + 1 : run_sw_n, run_sw_n);
+    struct moa_screen_prize p;
+    memset(&p, 0, sizeof p);
+    p.title = "SWAP PARTS";
+    p.line = line;
+    p.row = row;
+    p.count = k + 1;
+    p.cursor = run_sw_cur < run_sw_n ? run_sw_cur - run_sw_top : k;
+    p.footer = run_sw_n > RUN_SW_ROWS ? "UP / DOWN  CHOOSE (MORE BELOW)     X  EQUIP     O  BACK"
+                                      : "UP / DOWN  CHOOSE     X  EQUIP     O  BACK";
+    if (run_hx == HX_SWAP_ASK && run_sw_cur < run_sw_n) {
+        const struct run_offer *o = &run_sw_part[run_sw_cur];
+        for (int i = 0; i < run_sw_ask_n; i++)
+            ask[i] = run_sw_ask_put[i] < 0 ? "BACK" : o->nput < 2 ? "EQUIP NOW"
+                   : o->put_slot[run_sw_ask_put[i]] == 6 ? "EQUIP LEFT" : "EQUIP RIGHT";
+        snprintf(ask_title, sizeof ask_title, "EQUIP %s", o->name);
+        if (o->nput >= 2)
+            snprintf(ask_line, sizeof ask_line, "LEFT REPLACES %s   RIGHT REPLACES %s", o->put_lost[0], o->put_lost[1]);
+        else if (o->put_lost[0][0])
+            snprintf(ask_line, sizeof ask_line, "REPLACES  %s  (GONE FOR GOOD)", o->put_lost[0]);
+        else
+            snprintf(ask_line, sizeof ask_line, "GOES INTO AN EMPTY SLOT");
+        p.ask = ask;
+        p.ask_n = run_sw_ask_n;
+        p.ask_cursor = run_sw_ask_cur;
+        p.ask_title = ask_title;
+        p.ask_line = ask_line;
+        p.footer = "UP / DOWN  CHOOSE     X  OK     O  BACK";
+    }
+    int ww = 0, wh = 0, w = 0, h = 0;
+    psx_mod_window_size(&ww, &wh);
+    const uint32_t *px = moa_screen_render_prize(ww, wh, &p, 0, &w, &h);
+    return px && psx_mod_set_overlay_image(px, w, h);
+}
+
+/* Equip saved part `run_sw_cur` at place `put`. */
+static void run_sw_equip(int put)
+{
+    struct moa_run_progress *r = &run_state.run;
+    const struct run_offer *o = &run_sw_part[run_sw_cur];
+    if (put < 0 || put >= o->nput) return;
+    const int ix = (int)k_run_tables[o->cat].base + o->id;
+    uint8_t now[13];
+    run_garage_rec(now);
+    const uint8_t *rec = o->put_rec[put];
+    for (int b = 0; b < 13; b++) {                     /* what came off is gone for good */
+        if (b == 10 || b == 11 || rec[b] == now[b]) continue;
+        const int was = run_rec_ix(now, b);
+        if (was < 0) continue;
+        const uint8_t have = psx_mod_read_byte(RUN_OWNED + (uint32_t)was);
+        if (have) psx_mod_write_byte(RUN_OWNED + (uint32_t)was, (uint8_t)(have - 1u));
+    }
+    run_garage_set(rec);
+    for (unsigned i = 0; i < r->saved_n; i++)          /* off the saved list (the first copy) */
+        if (r->saved[i] == (uint8_t)ix) {
+            for (unsigned j = i + 1u; j < r->saved_n; j++) r->saved[j - 1u] = r->saved[j];
+            r->saved_n--;
+            break;
+        }
+    run_ac_refresh = 1;
+    run_snap_take();
+    (void)moa_run_save(run_file_path(), &run_state);
+    run_save_pending = 1;
+    psx_mod_counter_add("moa.run.swap_equip", 1);
+    run_log("swap parts: %s equipped%s%s; %u saved left", o->name, o->put_lost[put][0] ? ", gone: " : "",
+            o->put_lost[put], (unsigned)r->saved_n);
+}
+
+static void run_sw_open(void)
+{
+    if (!run_sw_prepare()) { run_se(RUN_SE_BACK); run_log("swap parts: the part tables are not in memory"); return; }
+    run_sw_cur = run_sw_top = 0;
+    while (run_sw_cur < run_sw_n && !run_sw_fits[run_sw_cur]) run_sw_cur++;   /* the first that fits (else BACK) */
+    if (run_sw_cur >= RUN_SW_ROWS) run_sw_top = run_sw_cur - RUN_SW_ROWS + 1;
+    if (run_sw_cur == run_sw_n) run_sw_top = 0;
+    for (int k = 0; k < RUN_SW_ROWS; k++) run_sw_thumb_of[k] = -1;
+    run_hx = HX_SWAP;
+    run_log("swap parts: open, %d saved", run_sw_n);
+}
+
+/* Keys on the SWAP PARTS screens. */
+static void run_sw_input(uint16_t down)
+{
+    const int up = (down & RUN_PAD_UP) != 0, dn = (down & RUN_PAD_DOWN) != 0;
+    const int ok = (down & (RUN_PAD_X | RUN_PAD_START)) != 0, back = (down & RUN_PAD_CIRCLE) != 0;
+    if (run_hx == HX_SWAP_ASK) {
+        if (up || dn) {
+            run_se(RUN_SE_CURSOR);
+            run_sw_ask_cur = (run_sw_ask_cur + (up ? run_sw_ask_n - 1 : 1)) % run_sw_ask_n;
+        } else if (back || (ok && run_sw_ask_put[run_sw_ask_cur] < 0)) {
+            run_se(RUN_SE_BACK);
+            run_hx = HX_SWAP;
+        } else if (ok) {
+            run_se(RUN_SE_OK);
+            run_sw_equip(run_sw_ask_put[run_sw_ask_cur]);
+            run_hx = HX_SWAP;
+            (void)run_sw_prepare();                    /* the AC changed: what fits now */
+            for (int k = 0; k < RUN_SW_ROWS; k++) run_sw_thumb_of[k] = -1;
+        } else return;
+        (void)run_hx_draw();
+        return;
+    }
+    const int rows = run_sw_n + 1;                     /* the parts, then BACK */
+    if (up || dn) {
+        run_se(RUN_SE_CURSOR);
+        run_sw_cur = (run_sw_cur + (up ? rows - 1 : 1)) % rows;
+        if (run_sw_cur < run_sw_n) {
+            if (run_sw_cur < run_sw_top) run_sw_top = run_sw_cur;
+            if (run_sw_cur >= run_sw_top + RUN_SW_ROWS) run_sw_top = run_sw_cur - RUN_SW_ROWS + 1;
+        }
+    } else if (back || (ok && run_sw_cur == run_sw_n)) {
+        run_se(RUN_SE_BACK);
+        run_hx = HX_MENU;
+        run_log("swap parts: closed");
+    } else if (ok && !run_sw_fits[run_sw_cur]) {
+        run_se(RUN_SE_BACK);                           /* doesn't fit */
+        return;
+    } else if (ok) {
+        run_se(RUN_SE_OK);
+        const struct run_offer *o = &run_sw_part[run_sw_cur];
+        run_sw_ask_n = 0;
+        for (int i = 0; i < o->nput && i < 2; i++) run_sw_ask_put[run_sw_ask_n++] = i;
+        run_sw_ask_put[run_sw_ask_n++] = -1;
+        run_sw_ask_cur = 0;
+        run_hx = HX_SWAP_ASK;
+    } else return;
+    (void)run_hx_draw();
+}
+
 static int run_hx_draw(void)
 {
     if (run_vs) return 1;                              /* the VS screen has the picture */
-    char title[40], bal[40], stage_v[27];
+    if (run_hx == HX_SWAP || run_hx == HX_SWAP_ASK) {
+        if (!run_sw_draw()) return 0;
+        run_hx_overlay = 1;
+        return 1;
+    }
+    char title[40], bal[40], stage_v[27], swap_v[16];
     const unsigned wins = run_state.run.wins < MOA_RUN_SLOTS ? run_state.run.wins : MOA_RUN_SLOTS - 1u;
     struct moa_screen_list l;
     memset(&l, 0, sizeof l);
     l.title = title;
     l.marked = -1;
-    static const char *const k_rows[HXR_COUNT] = { "NEXT BATTLE", "STAGE", "GARAGE" };
-    const char *values[HXR_COUNT] = { NULL, stage_v, NULL };
+    static const char *const k_rows[HXR_COUNT] = { "NEXT BATTLE", "SWAP PARTS", "STAGE", "GARAGE" };
+    const char *values[HXR_COUNT] = { NULL, swap_v, stage_v, NULL };
+    if (run_state.run.saved_n) snprintf(swap_v, sizeof swap_v, "%u SAVED", (unsigned)run_state.run.saved_n);
+    else snprintf(swap_v, sizeof swap_v, "NONE");
     const char *srows[RUN_HX_STAGES];
     snprintf(stage_v, sizeof stage_v, "%s", k_hx_stage[run_hx_stage_i < 0 ? 0 : run_hx_stage_i].name);
     snprintf(bal, sizeof bal, "BALANCE  %u P", (unsigned)psx_mod_read_word(RUN_CREDITS));
@@ -3679,6 +3940,7 @@ static void run_hx_frame(void)
         else if (++run_hx_rep >= 18u && (run_hx_rep - 18u) % 5u == 0u) down |= (uint16_t)(held & (RUN_PAD_UP | RUN_PAD_DOWN));
     }
     if (!down) return;
+    if (run_hx == HX_SWAP || run_hx == HX_SWAP_ASK) { run_sw_input(down); return; }
     const int up = (down & RUN_PAD_UP) != 0, dn = (down & RUN_PAD_DOWN) != 0;
     if (run_hx == HX_STAGES) {
         if (up || dn) {
@@ -3714,6 +3976,11 @@ static void run_hx_frame(void)
                 break;
             }
             run_hx_start_next();
+            break;
+        case HXR_SWAP:
+            if (!run_state.run.saved_n) { run_se(RUN_SE_BACK); break; }   /* nothing saved */
+            run_sw_open();
+            (void)run_hx_draw();
             break;
         case HXR_STAGE:
             run_hx = HX_STAGES;

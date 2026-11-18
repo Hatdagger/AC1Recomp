@@ -671,7 +671,10 @@ static void prize_offer_box(uint32_t *buf, int W, int x0, int y0, int x1, int y1
     if (r->cost) {
         snprintf(s, sizeof s, "%s", r->cost);
         text_left(buf, s, x1 - 28 - text_width(s, 4), y0 + (r->locked ? 56 : h / 2), 4, r->locked ? red : gold);
-        if (r->locked) text_left(buf, "NOT ENOUGH P", x1 - 28 - text_width("NOT ENOUGH P", 1), y0 + 96, 1, red);
+        if (r->locked) {
+            const char *why = r->locked_why ? r->locked_why : "NOT ENOUGH P";
+            text_left(buf, why, x1 - 28 - text_width(why, 1), y0 + 96, 1, red);
+        }
     }
 }
 

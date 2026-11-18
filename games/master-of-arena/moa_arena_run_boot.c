@@ -27,6 +27,7 @@
  *
  * Offline only, and only when the launcher asked for it (PSX_MOA_ARENA_RUN=1).
  */
+#include "moa_direct_start.h"
 #include "mod_plugins.h"
 #include "cpu_state.h"
 
@@ -643,66 +644,20 @@ static int run_direct_code_ok(void)
 static void run_apply_prices(void);
 static void run_restock_catch_up(const char *where);
 
+static void run_hub_tile(void);
+
 static int run_direct_boot(struct CPUState *cpu)
 {
     static uint8_t save[RUN_D_SAVE_BYTES];
     if (!run_direct_code_ok()) { run_log("direct: menu code not as expected"); return 0; }
     if (!run_direct_read_save(save)) { run_log("direct: run card not readable"); return 0; }
-    uint32_t sum = 0;
-    for (uint32_t i = 0; i < RUN_D_SUM_BYTES; i++) sum += ~(uint32_t)save[RUN_D_SUM_FROM + i];  /* nor on the byte */
-    const uint32_t want = (uint32_t)save[RUN_D_SUM_AT] | (uint32_t)save[RUN_D_SUM_AT + 1] << 8 |
-                          (uint32_t)save[RUN_D_SUM_AT + 2] << 16 | (uint32_t)save[RUN_D_SUM_AT + 3] << 24;
-    if (sum != want || save[RUN_D_VERSION_AT] != 1u) {
-        run_log("direct: save check failed (sum %08x, stored %08x, byte 3672 = %u)",
-                (unsigned)sum, (unsigned)want, save[RUN_D_VERSION_AT]);
+    /* Steps 0-2b: the shared direct start (moa_direct_start.h), the same road
+     * as the launcher's LOAD GAME: title flags, SCENARIO, the hub colour
+     * strips, LOAD's unpack, emblem through the menu heap (mod memory is out
+     * of DMA reach), the card screen's finish and its disc-queue wait. */
+    if (!moa_direct_start_load(cpu, save)) {
+        run_log("direct: the shared start refused the save or the menu code");
         return 0;
-    }
-    if (!run_direct_buf) run_direct_buf = psx_mod_alloc_guest_memory(RUN_D_SAVE_BYTES, 4u);
-    if (!run_direct_buf) { run_log("direct: no guest memory"); return 0; }
-    for (uint32_t i = 0; i < RUN_D_SAVE_BYTES; i += 4u)
-        psx_mod_write_word(run_direct_buf + i, (uint32_t)save[i] | (uint32_t)save[i + 1] << 8 |
-                                               (uint32_t)save[i + 2] << 16 | (uint32_t)save[i + 3] << 24);
-    const uint32_t ra = cpu->gpr[31], buf = run_direct_buf;
-    /* 0. What the title itself would have done (see RUN_D_TITLE_FLAG). */
-    psx_mod_write_byte(RUN_D_TITLE_FLAG, 0);
-    psx_mod_write_byte(RUN_D_NO_LOGOS, 0);
-    /* 1. SCENARIO MODE */
-    psx_mod_write_byte(RUN_D_SCORE, 255);
-    psx_mod_write_byte(RUN_D_MODE, 0);
-    for (size_t i = 0; i < sizeof k_run_d_scenario / sizeof k_run_d_scenario[0]; i++)
-        (void)psx_mod_call_guest(cpu, k_run_d_scenario[i], ra, 0, 0, 0, 0);
-    for (uint32_t i = 0; i < 8u; i++) psx_mod_write_byte(RUN_D_PLUS + i, 0);
-    (void)psx_mod_call_guest(cpu, RUN_D_TASKS_CLEAR, ra, 2, 0, 0, 0);
-    (void)psx_mod_call_guest(cpu, RUN_D_PICTURES, ra, 4, 0, 0, 0);
-    (void)psx_mod_call_guest(cpu, RUN_D_PICTURES, ra, 4, 1, 0, 0);
-    (void)psx_mod_call_guest(cpu, RUN_D_PICTURES, ra, 4, 4, 0, 0);
-    /* 2. LOAD's 'N' path, after the card read */
-    for (size_t k = 0; k < sizeof k_run_d_unpack / sizeof k_run_d_unpack[0]; k++)
-        for (uint32_t i = 0; i < k_run_d_unpack[k].bytes; i++)
-            psx_mod_write_byte(k_run_d_unpack[k].dst + i, save[k_run_d_unpack[k].from + i]);
-    (void)psx_mod_call_guest(cpu, RUN_D_LOAD_IMAGE, ra, RUN_D_EMBLEM_RECT, buf + 1152u, 0, 0);
-    (void)psx_mod_call_guest(cpu, RUN_D_LOAD_IMAGE, ra, RUN_D_CLUT_RECT, buf + 3200u, 0, 0);
-    (void)psx_mod_call_guest(cpu, RUN_D_DRAW_SYNC, ra, 0, 0, 0, 0);
-    for (size_t i = 0; i < sizeof k_run_d_after_load / sizeof k_run_d_after_load[0]; i++)
-        (void)psx_mod_call_guest(cpu, k_run_d_after_load[i], ra, 0, 0, 0, 0);
-    /* 2b. The card screen's finish after a good LOAD (0x8005CFB0..0x8005D14C,
-     * title case). The game then waits for the disc queue (0x800589DC); here
-     * the menu loop drains it behind the loading screen. */
-    for (uint32_t i = 0; i < 256u; i++)
-        psx_mod_write_byte(RUN_D_OWNED_COPY + i, psx_mod_read_byte(RUN_D_OWNED + i));
-    for (size_t i = 0; i < sizeof k_run_d_card_finish / sizeof k_run_d_card_finish[0]; i++)
-        (void)psx_mod_call_guest(cpu, k_run_d_card_finish[i], ra, 0, 0, 0, 0);
-    (void)psx_mod_call_guest(cpu, RUN_D_EMPTY_SLOTS, ra, 1, 0, 0, 0);
-    (void)psx_mod_call_guest(cpu, RUN_D_AC_TEXTURES, ra, 0, 0, 0, 0);
-    {   /* back weapon ids 52 and up keep a texture block aside; the hub open
-         * (0x800554A8) moves it back */
-        const uint8_t bl = psx_mod_read_byte(0x80036FB6u), br = psx_mod_read_byte(0x80036FB7u);
-        if ((bl != 0xFFu && bl >= 52u) || (br != 0xFFu && br >= 52u)) {
-            (void)psx_mod_call_guest(cpu, RUN_D_MOVE_IMAGE, ra, RUN_D_WEAPON_RECT, 768, 448, 0);
-            (void)psx_mod_call_guest(cpu, RUN_D_MOVE_IMAGE, ra, RUN_D_WEAPON_CLUT, 0, 493, 0);
-            (void)psx_mod_call_guest(cpu, RUN_D_MOVE_IMAGE, ra, RUN_D_WEAPON_CLUT, 0, 494, 0);
-            (void)psx_mod_call_guest(cpu, RUN_D_DRAW_SYNC, ra, 0, 0, 0, 0);
-        }
     }
     /* The run is in RAM: hand the data over now (the arena hooks wait for
      * it), keep the loading screen until the Arena list is up. */
@@ -712,15 +667,18 @@ static int run_direct_boot(struct CPUState *cpu)
     run_restock_catch_up("load");
     psx_mod_write_byte(RUN_ARENA_LOCK, 0);
     psx_mod_write_byte(RUN_D_MAIL_SHOWN, 1);     /* no mail box in the way */
-    /* 3. The hub, on Arena: on a later menu frame, once the disc queue has
-     * taken the AC's textures (run_direct_hub_frame, RUN_D_CDQ_WRITE). */
+    /* 3. The hub on Arena, and Arena opened by the hub's own ✕ path on its
+     * first input frame (shared start, entry hook 0x80055848). The load
+     * above already waited for the disc queue, so no frame wait here. */
     run_direct = 1;
-    run_direct_hub_due = 1;
-    run_direct_hub_wait = 0;
+    run_direct_hub_due = 0;
     run_stage = STAGE_DIRECT;
+    run_hub_tile();                         /* the rank's tile into the hub's RAM copies */
+    const uint32_t hub = moa_direct_start_hub(cpu, RUN_HUB_ARENA, 1);
     psx_mod_counter_add("moa.run.direct_boot", 1);
-    run_log("direct: title flags cleared, save loaded, card screen finish replayed "
-            "(frame %u); the hub opens once the disc queue is empty", (unsigned)run_frames);
+    run_log("direct: shared start done, hub %s on Arena, opening it (frame %u)",
+            hub ? "opened" : "NOT opened", (unsigned)run_frames);
+    run_reach_hub("moa.run.direct_hub");
     return 1;
 }
 

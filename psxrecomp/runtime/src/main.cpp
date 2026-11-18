@@ -20032,6 +20032,10 @@ session_reboot:
         std::fflush(stdout);
     }
     memory_init(bios_path_str.c_str());
+    /* memory_init cleared the overlay page watches and generations; the
+     * loader's candidates (set up before this, and kept from any earlier
+     * session in this process) must watch their pages again. */
+    overlay_loader_reset_for_boot();
     if (g_headless_opengl) g_video_renderer = 1;
     if (net_cfg.enabled && !psx_mod_netplay_renderer_allowed(g_video_renderer)) {
         std::fprintf(stderr, "psxrecomp: this title's netplay profile requires OpenGL "

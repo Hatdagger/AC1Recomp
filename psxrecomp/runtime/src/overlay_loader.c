@@ -3176,6 +3176,39 @@ void overlay_loader_resync_validation_after_restore(void)
 #endif
 }
 
+/* A new session in the same process (first boot too: the loader is set up
+ * before memory_init). memory_init() zeroes RAM, every page generation and
+ * the page-watch bitmap, but candidates and lazy manifests armed their watch
+ * once, when they were registered or indexed, and DLLs already loaded are
+ * never registered again. Left like that, their code pages are unwatched:
+ * writes no longer move their generation, so the first validation of the
+ * session sticks, and a later overlay loaded at the same address runs the
+ * earlier overlay's native code (a jump into nowhere while a fight loads,
+ * seen after Rogue Arena's RETRY). Re-arm every watch and make every
+ * candidate re-check its bytes on its next dispatch. Host-only state. */
+void overlay_loader_reset_for_boot(void)
+{
+    int i, r;
+    for (i = 0; i < s_cand_n; i++) {
+        Candidate *c = &s_cand[i];
+        ov_ranges_watch(c->range_lo, c->range_len, c->nranges);
+        c->val_gen = 0xFFFFFFFFu;            /* no gen sum after a reset reaches this */
+    }
+    for (i = 0; i < s_lazy_man_n; i++) {
+        LazyMan *lm = &s_lazy_man[i];
+        for (r = 0; r < lm->fn.n; r++)
+            ov_ranges_watch(&lm->fn.lo[r], &lm->fn.len[r], 1);
+        lm->val_gen = 0xFFFFFFFFu;
+        lm->state = 0xFFu;
+    }
+#ifdef PSX_HAS_OVERLAY_DISPATCH
+    memset(s_static_match_cache, 0, sizeof(s_static_match_cache));
+    memset(s_static_match_victim, 0, sizeof(s_static_match_victim));
+#endif
+    lazy_miss_invalidate_loader();
+    s_nchecked = 0;
+}
+
 /* Re-scan the cache dir for DLLs compiled after init (step 2.8 autocompile)
  * and clear the checked-regions memo so the next dispatch into a window
  * region reconsiders the cache. Already-loaded DLLs stay loaded;

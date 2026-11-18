@@ -641,8 +641,31 @@ const uint32_t *moa_screen_render_prize(int win_w, int win_h, const struct moa_s
         fill(buf, x0, y0, x1, y1, on ? rgb(22, 40, 70) : rgb(8, 10, 16));
         frame_rect(buf, x0, y0, x1, y1, 2, on ? rgb(130, 200, 255) : rgb(60, 90, 130));
         if (on && !p->ask_n) cursor_marks(buf, x0, x1, y0 + h / 2, gold);
+        if (!offer && p->alt_name && i == count - 1) {   /* split: [alt | this row] */
+            const int mid = cx - 4, on_alt = on && p->alt_on, on_row = on && !p->alt_on;
+            const int hx[2][2] = { { x0, mid }, { mid + 8, x1 } };
+            for (int k = 0; k < 2; k++) {
+                const int hon = k ? on_row : on_alt, lk = k ? r->locked : p->alt_locked;
+                const int a = hx[k][0], b = hx[k][1];
+                fill(buf, a, y0, b, y1, hon ? rgb(22, 40, 70) : rgb(8, 10, 16));
+                frame_rect(buf, a, y0, b, y1, 2, hon ? rgb(130, 200, 255) : rgb(60, 90, 130));
+                if (hon && !p->ask_n) cursor_marks(buf, a, b, y0 + h / 2, gold);
+                const char *nm = k ? (r->name ? r->name : "PASS") : p->alt_name;
+                const char *co = k ? r->cost : p->alt_cost;
+                const uint32_t c = lk ? rgb(90, 100, 116) : hon ? white : rgb(150, 175, 205);
+                char s2[24];
+                snprintf(s2, sizeof s2, "%s", nm);
+                text_left(buf, s2, a + 28, y0 + h / 2, 3, c);
+                if (co) {
+                    snprintf(s2, sizeof s2, "%s", co);
+                    text_left(buf, s2, b - 24 - text_width(s2, 3), y0 + h / 2, 3, lk ? rgb(110, 80, 70) : gold);
+                }
+            }
+            y0 = y1 + gap;
+            continue;
+        }
         const uint32_t name_c = r->locked ? rgb(90, 100, 116) : on ? white : rgb(150, 175, 205);
-        char s[40];
+        char s[56];
         if (offer) {
             const int tx = x0 + 6, ty = y0 + (h - 128) / 2;
             fill(buf, tx, ty, tx + 128, ty + 128, rgb(4, 5, 8));

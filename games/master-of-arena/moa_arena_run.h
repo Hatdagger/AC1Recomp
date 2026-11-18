@@ -123,7 +123,9 @@ struct moa_run_progress {
     uint8_t  points;               /* P: one per win */
     uint8_t  over;                 /* 1 = lost: Retry or New Run only */
     uint8_t  best;                 /* most wins of any attempt */
-    uint8_t  pad[2];
+    uint8_t  reroll_win;           /* prize screen (win + 1) whose RE-ROLL was used, 0 none
+                                      (was padding: 0 in older run files) */
+    uint8_t  pad;
     uint32_t beaten[2];            /* bit e: arena 0 entry e beaten (booked once) */
     char     pilot[17];            /* ASCII, as typed in the launcher */
     char     ac[17];               /* may be empty */

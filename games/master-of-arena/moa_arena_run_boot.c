@@ -1298,7 +1298,10 @@ static void run_reconcile(int refresh)
  * come from the seed, the attempt, the win and the AC, so a reopen shows the
  * same rows. Shown over the arena screen or the hub, never in a fight. */
 #define RUN_PAD_UP    0x0010u
+#define RUN_PAD_RIGHT 0x0020u
 #define RUN_PAD_DOWN  0x0040u
+#define RUN_PAD_LEFT  0x0080u
+#define RUN_BACK_DETAIL 0x800D21D4u            /* back weapon details, 24 bytes by back id */
 #define RUN_TYPE_AT   0x12u
 #define RUN_MENU_FROM 0x800CE690u              /* the part tables ... */
 #define RUN_MENU_TO   0x800D2774u              /* ... to the end of the weapon details */
@@ -1309,10 +1312,12 @@ static const char *const k_tier_tag[3] = { "CHEAP", "MID", "EXPENSIVE" };
 
 struct run_offer {
     uint8_t cat, id, cost, band, nput;
+    uint8_t xn, xcat[2], xid[2];               /* a set: parts that come with it (arms set) */
     uint8_t put_slot[2];                       /* record byte it goes into */
     uint8_t put_rec[2][13];                    /* the AC with it equipped there */
     char put_lost[2][48];                      /* what that equip throws away ("" none) */
-    char name[19], category[40], cost_s[8];
+    char name[19], category[56], cost_s[8];
+    uint32_t w;                                /* draw weight (1000 = normal) */
 };
 static struct run_offer run_offer[3];
 static int run_offer_n;
@@ -1322,6 +1327,8 @@ static struct moa_parts run_parts;
 
 static int run_prize_stage;               /* PZ_* */
 static int run_prize_cur, run_prize_ask_cur, run_prize_ask_n;
+static int run_prize_alt;                 /* on the bottom row: 1 = RE-ROLL, 0 = PASS */
+static unsigned run_prize_win;            /* the win whose screen is up (0 = the first) */
 static int run_prize_ask_kind[4];
 static int run_prize_where;               /* 1: at the arena screen or the hub (not a fight) */
 static int run_prize_overlay;             /* shown over the live game */
@@ -1458,14 +1465,145 @@ static int run_plus_on(void)
     return 0;
 }
 
-/* The offers for the win's prize screen. */
-static void run_prize_roll(unsigned win)
+/* ---- what the randomizer prefers (user, 2026-11-18) -------------------------------
+ * - Legs: each screen picks one leg type, the four equally likely (25%
+ *   each), then a random part of that type (legs keep their usual share).
+ * - Radars: only when the AC has a strong back weapon (5 P or more) and an
+ *   arm weapon (hand weapon or weapon arms), and then rarely.
+ * - Back weapons that make two-legged ACs (humanoid, reverse joint) crouch
+ *   to fire: less likely on those legs, and rarely a second one. Two-legged
+ *   legs are rarely offered to an AC that already carries two.
+ * - Weapon arms equipped: regular arms come only as the expensive offer, an
+ *   ARMS SET of regular arms + hand weapon + blade (each 4 P or less) for 7 P. */
+#define RUN_W_NORMAL      1000u
+#define RUN_W_RADAR        250u
+#define RUN_W_STANCE       400u                /* a crouch weapon, two-legged AC */
+#define RUN_W_STANCE_TWO    80u                /* ... that would make two */
+#define RUN_SET_COST         7u
+#define RUN_SET_PART_MAX     4u
+
+/* Back weapon `id` makes two-legged ACs crouch to fire (cannons; energy
+ * cannons with the guide sight): the stance rule in acr_parts_moa.c. */
+static int run_back_stance(uint8_t id)
+{
+    if (id == 255u || id > 57u) return 0;
+    const uint32_t w = RUN_BACK_DETAIL + 24u * id;
+    const uint8_t kind = psx_mod_read_byte(w), sight = psx_mod_read_byte(w + 5u), fl = psx_mod_read_byte(w + 0x12u);
+    return kind == 2u || ((fl & 0x20u) && sight == 3u);
+}
+
+static int run_stance_n(const uint8_t rec[13])
+{
+    return run_back_stance(rec[6]) + run_back_stance(rec[7]);
+}
+
+/* Leg type by id: 0 humanoid (0-13), 1 reverse joint (14-20), 2 four legs
+ * (21-26), 3 caterpillar (27-32), as moa_part_group names them. */
+static int run_leg_type(uint8_t id)
+{
+    return id < 14u ? 0 : id < 21u ? 1 : id < 27u ? 2 : 3;
+}
+
+static int run_two_legged(uint8_t legs)
+{
+    return legs != 255u && run_leg_type(legs) <= 1;
+}
+
+static int run_is_radar(uint8_t back) { return back >= 40u && back <= 47u; }
+
+static int run_radar_ok(const uint8_t now[13])
+{
+    const int arm = (now[2] != 255u && now[2] >= 12u) || (now[4] != 255u && now[4] != 0u);
+    int strong = 0;
+    for (int s = 6; s <= 7; s++) {
+        const uint8_t id = now[s];
+        if (id == 255u || run_is_radar(id) || id == 57u) continue;   /* 57: P77-ST, stealth */
+        const struct moa_part *q = moa_parts_find(&run_parts, MOA_CAT_BACK, id);
+        if (q && run_part_p(q) >= 5u) strong = 1;
+    }
+    return arm && strong;
+}
+
+static int run_part_real(int cat, uint8_t id)
+{
+    char type[19];
+    run_text_at(k_run_tables[cat].addr + (uint32_t)id * k_run_tables[cat].stride + RUN_TYPE_AT, 18, type);
+    return type[0] && type[0] != '-';
+}
+
+static int run_part_owned(int cat, uint8_t id)
+{
+    const uint32_t ix = k_run_tables[cat].base + id;
+    return ix > 255u || psx_mod_read_byte(RUN_OWNED + ix) != 0u;
+}
+
+/* The ARMS SET for an AC on weapon arms: regular arms + hand weapon + blade,
+ * none owned, each 4 P or less, the three fitting together. 1 = made. */
+static int run_set_roll(const uint8_t now[13], int plus, uint64_t *rng, struct run_offer *o)
+{
+    uint8_t ids[3][MOA_PARTS_MAX];
+    unsigned n[3] = { 0, 0, 0 };
+    static const int k_cat[3] = { MOA_CAT_ARMS, MOA_CAT_HAND, MOA_CAT_BLADE };
+    for (int k = 0; k < 3; k++)
+        for (int i = 0; i < run_parts.count[k_cat[k]]; i++) {
+            const struct moa_part *q = &run_parts.part[k_cat[k]][i];
+            const uint32_t p = run_part_p(q);
+            if (!p || p > RUN_SET_PART_MAX) continue;
+            if (k_cat[k] == MOA_CAT_ARMS && q->id >= 12u) continue;
+            if (k_cat[k] == MOA_CAT_HAND && q->id == 0u) continue;
+            if (run_part_owned(k_cat[k], q->id) || !run_part_real(k_cat[k], q->id)) continue;
+            ids[k][n[k]++] = q->id;
+        }
+    if (!n[0] || !n[1] || !n[2]) return 0;
+    for (int t = 0; t < 64; t++) {
+        const uint8_t a = ids[0][moa_run_below(rng, n[0])], h = ids[1][moa_run_below(rng, n[1])],
+                      bl = ids[2][moa_run_below(rng, n[2])];
+        uint8_t rec[13];
+        memcpy(rec, now, 13);
+        rec[2] = a; rec[4] = h; rec[5] = bl;
+        moa_build_fit(rec);
+        if (rec[2] != a || rec[4] != h || rec[5] != bl) continue;
+        int bad = 0;
+        for (int b = 0; b < 13 && !bad; b++) {
+            if (b == 2 || b == 4 || b == 5 || b == 10 || b == 11 || rec[b] == now[b]) continue;
+            if (run_rec_ix(now, b) >= 0) bad = 1;               /* something else would come off */
+        }
+        if (bad) continue;
+        struct moa_build_check c;
+        moa_build_check(&run_parts, rec, plus, &c);
+        if (c.blocked) continue;
+        const struct moa_part *qa = moa_parts_find(&run_parts, MOA_CAT_ARMS, a);
+        const struct moa_part *qh = moa_parts_find(&run_parts, MOA_CAT_HAND, h);
+        const struct moa_part *qb = moa_parts_find(&run_parts, MOA_CAT_BLADE, bl);
+        const struct moa_part *qw = moa_parts_find(&run_parts, MOA_CAT_ARMS, now[2]);
+        if (!qa || !qh || !qb) continue;
+        memset(o, 0, sizeof *o);
+        o->cat = MOA_CAT_ARMS; o->id = a; o->cost = RUN_SET_COST; o->band = 2;
+        o->xn = 2; o->xcat[0] = MOA_CAT_HAND; o->xid[0] = h; o->xcat[1] = MOA_CAT_BLADE; o->xid[1] = bl;
+        o->nput = 1; o->put_slot[0] = 2;
+        memcpy(o->put_rec[0], rec, 13);
+        snprintf(o->put_lost[0], sizeof o->put_lost[0], "%s", qw ? qw->name : "");
+        snprintf(o->name, sizeof o->name, "%s", qa->name);
+        snprintf(o->category, sizeof o->category, "ARMS SET  WITH %s + %s", qh->name, qb->name);
+        snprintf(o->cost_s, sizeof o->cost_s, "%u P", RUN_SET_COST);
+        o->w = RUN_W_NORMAL;
+        return 1;
+    }
+    return 0;
+}
+
+/* One draw of the offers. `excl` (n pairs cat,id): parts left out (a
+ * re-roll leaves out what the first draw showed). */
+static void run_prize_draw_offers(unsigned win, uint64_t salt, const uint8_t (*excl)[2], int nexcl)
 {
     run_offer_n = 0;
-    if (!run_parts_read()) { run_log("prize: part tables could not be read; PASS only"); return; }
     uint8_t now[13];
     run_garage_rec(now);
     const int plus = run_plus_on();
+    const int weapon_arms = now[2] != 255u && now[2] >= 12u;
+    const int two_legged = run_two_legged(now[3]);
+    const int stance_now = run_stance_n(now);
+    const int radar_ok = run_radar_ok(now);
     static struct run_offer cand[3][96];
     unsigned nc[3] = { 0, 0, 0 };
     for (int cat = 0; cat < MOA_CAT__COUNT; cat++)
@@ -1473,11 +1611,12 @@ static void run_prize_roll(unsigned win)
             const struct moa_part *q = &run_parts.part[cat][i];
             const uint32_t p = run_part_p(q);
             if (!p || p > 7u) continue;
-            const uint32_t ix = k_run_tables[cat].base + q->id;
-            if (ix > 255u || psx_mod_read_byte(RUN_OWNED + ix)) continue;
-            char type[19];
-            run_text_at(k_run_tables[cat].addr + (uint32_t)q->id * k_run_tables[cat].stride + RUN_TYPE_AT, 18, type);
-            if (!type[0] || type[0] == '-') continue;     /* no part behind the row */
+            if (run_part_owned(cat, q->id) || !run_part_real(cat, q->id)) continue;
+            if (cat == MOA_CAT_BACK && run_is_radar(q->id) && !radar_ok) continue;
+            if (cat == MOA_CAT_ARMS && q->id < 12u && weapon_arms) continue;   /* the ARMS SET instead */
+            int skip = 0;
+            for (int e = 0; e < nexcl && !skip; e++) skip = excl[e][0] == cat && excl[e][1] == q->id;
+            if (skip) continue;
             const unsigned band = p <= 2u ? 0u : p <= 4u ? 1u : 2u;
             if (nc[band] >= 96u) continue;
             struct run_offer *o = &cand[band][nc[band]];
@@ -1485,26 +1624,88 @@ static void run_prize_roll(unsigned win)
             o->cat = (uint8_t)cat; o->id = q->id; o->cost = (uint8_t)p; o->band = (uint8_t)band;
             if (!run_offer_fit(cat, q->id, now, plus, o)) continue;
             run_offer_label(o, q);
+            o->w = RUN_W_NORMAL;
+            if (cat == MOA_CAT_BACK && run_is_radar(q->id)) o->w = RUN_W_RADAR;
+            if (cat == MOA_CAT_BACK && two_legged && run_back_stance(q->id)) {
+                int two = 0;
+                for (int k = 0; k < o->nput; k++) two |= run_stance_n(o->put_rec[k]) >= 2;
+                o->w = two ? RUN_W_STANCE_TWO : RUN_W_STANCE;
+            }
+            if (cat == MOA_CAT_LEGS && run_two_legged(q->id) && stance_now >= 2) o->w /= 4u;
             nc[band]++;
         }
-    uint64_t rng = run_prize_rng(win, 0);
-    unsigned used = 0;                                    /* categories already up */
+    /* Legs: one leg type for this screen, each type as likely (of those with
+     * a part that fits), then its parts take all the legs' share. */
+    uint64_t rng = run_prize_rng(win, salt);
+    unsigned have = 0;
+    for (unsigned band = 0; band < 3u; band++)
+        for (unsigned i = 0; i < nc[band]; i++)
+            if (cand[band][i].cat == MOA_CAT_LEGS) have |= 1u << run_leg_type(cand[band][i].id);
+    int leg_t = -1;
+    if (have) {
+        unsigned k = moa_run_below(&rng, (uint32_t)__builtin_popcount(have));
+        for (int t = 0; t < 4; t++) if ((have >> t) & 1u) { if (!k--) { leg_t = t; break; } }
+    }
+    unsigned nl = 0, nk = 0;                             /* over all bands: a type found only */
+    for (unsigned band = 0; band < 3u; band++)            /* in some bands keeps legs' whole share */
+        for (unsigned i = 0; i < nc[band]; i++)
+            if (cand[band][i].cat == MOA_CAT_LEGS) { nl++; nk += run_leg_type(cand[band][i].id) == leg_t; }
     for (unsigned band = 0; band < 3u; band++) {
-        if (!nc[band]) continue;
-        unsigned fresh = 0;
-        for (unsigned i = 0; i < nc[band]; i++) fresh += !(used & (1u << cand[band][i].cat));
-        unsigned pick = moa_run_below(&rng, fresh ? fresh : nc[band]);
         for (unsigned i = 0; i < nc[band]; i++) {
-            if (fresh && (used & (1u << cand[band][i].cat))) continue;
-            if (pick-- == 0) { run_offer[run_offer_n++] = cand[band][i]; used |= 1u << cand[band][i].cat; break; }
+            struct run_offer *o = &cand[band][i];
+            if (o->cat != MOA_CAT_LEGS) continue;
+            if (run_leg_type(o->id) != leg_t) { o->w = 0; continue; }
+            o->w = (uint32_t)((uint64_t)o->w * nl / nk);
+            if (!o->w) o->w = 1;
         }
+    }
+    unsigned used = 0;                                    /* categories already up */
+    struct run_offer set;
+    const int has_set = weapon_arms && run_set_roll(now, plus, &rng, &set);
+    if (has_set) used |= 1u << MOA_CAT_ARMS | 1u << MOA_CAT_HAND | 1u << MOA_CAT_BLADE;
+    for (unsigned band = 0; band < 3u; band++) {
+        if (band == 2u && has_set) { run_offer[run_offer_n++] = set; break; }
+        if (!nc[band]) continue;
+        uint64_t fresh = 0, all = 0;
+        for (unsigned i = 0; i < nc[band]; i++) {
+            all += cand[band][i].w;
+            if (!(used & (1u << cand[band][i].cat))) fresh += cand[band][i].w;
+        }
+        if (!all) continue;
+        const int only_fresh = fresh != 0u;
+        uint32_t pick = moa_run_below(&rng, (uint32_t)(only_fresh ? fresh : all));
+        for (unsigned i = 0; i < nc[band]; i++) {
+            if (only_fresh && (used & (1u << cand[band][i].cat))) continue;
+            if (pick < cand[band][i].w) { run_offer[run_offer_n++] = cand[band][i]; used |= 1u << cand[band][i].cat; break; }
+            pick -= cand[band][i].w;
+        }
+    }
+}
+
+/* The offers for the win's prize screen (after its re-roll, if used). */
+static void run_prize_roll(unsigned win)
+{
+    run_offer_n = 0;
+    if (!run_parts_read()) { run_log("prize: part tables could not be read; PASS only"); return; }
+    run_prize_draw_offers(win, 0, NULL, 0);
+    if (run_state.run.reroll_win == win + 1u) {
+        uint8_t excl[3][2];
+        const int n = run_offer_n;
+        for (int i = 0; i < n; i++) { excl[i][0] = run_offer[i].cat; excl[i][1] = run_offer[i].id; }
+        run_prize_draw_offers(win, 0x5245524F4C4Cull, excl, n);      /* "REROLL" */
+        if (!run_offer_n) run_prize_draw_offers(win, 0x5245524F4C4Cull, NULL, 0);   /* nothing else fits */
     }
     const char *dir = getenv("PSX_MOA_MODELS_DIR");
     const int models = dir && dir[0] && moa_acv_has_part_models(dir);
     for (int i = 0; i < run_offer_n; i++)
         run_offer_has_thumb[i] = models && run_part_thumb(dir, run_offer[i].cat, run_offer[i].id, run_offer_thumb[i]);
-    run_log("prize: offers from %u cheap, %u mid, %u expensive part(s) that fit%s", nc[0], nc[1], nc[2],
+    run_log("prize: %d offer(s)%s%s", run_offer_n, run_state.run.reroll_win == win + 1u ? " (re-rolled)" : "",
             models ? "" : " (no model install: no pictures)");
+}
+
+static int run_reroll_can(void)
+{
+    return run_state.run.reroll_win != run_prize_win + 1u && psx_mod_read_word(RUN_CREDITS) >= 1u;
 }
 
 static void run_prize_hide(void)
@@ -1531,8 +1732,9 @@ static int run_prize_draw(void)
     }
     row[run_offer_n].name = "PASS";
     row[run_offer_n].cost = "+1 P";
+    const int rerolled = run_state.run.reroll_win == run_prize_win + 1u;
     char title[32], line[40], ask_title[48], ask_line[96];
-    const unsigned win = run_state.run.prize_wins + 1u;
+    const unsigned win = run_prize_win + 1u;
     snprintf(title, sizeof title, "PRIZE  RANK %u", (unsigned)(MOA_RUN_SLOTS - (win < MOA_RUN_SLOTS ? win : MOA_RUN_SLOTS - 1u)));
     snprintf(line, sizeof line, "YOU HAVE %u P", (unsigned)credits);
     struct moa_screen_prize p;
@@ -1542,14 +1744,26 @@ static int run_prize_draw(void)
     p.row = row;
     p.count = run_offer_n + 1;
     p.cursor = run_prize_cur;
-    p.footer = "UP / DOWN  CHOOSE     X  TAKE";
+    p.footer = "ARROWS  CHOOSE     X  TAKE";
+    p.alt_name = rerolled ? "RE-ROLLED" : "RE-ROLL";
+    p.alt_cost = rerolled ? NULL : "1 P";
+    p.alt_locked = !run_reroll_can();
+    p.alt_on = run_prize_cur == run_offer_n && run_prize_alt;
     const char *ask[4];
-    if (run_prize_stage == PZ_ASK && run_prize_cur < run_offer_n) {
+    if (run_prize_stage == PZ_ASK && run_prize_cur == run_offer_n) {    /* the re-roll question */
+        static const char *const k_reroll_ask[2] = { "RE-ROLL", "BACK" };
+        p.ask = k_reroll_ask;
+        p.ask_n = 2;
+        p.ask_cursor = run_prize_ask_cur;
+        p.ask_title = "RE-ROLL FOR 1 P";
+        p.ask_line = "3 NEW PRIZES IN PLACE OF THESE.  ONE RE-ROLL PER WIN";
+        p.footer = "UP / DOWN  CHOOSE     X  OK     O  BACK";
+    } else if (run_prize_stage == PZ_ASK && run_prize_cur < run_offer_n) {
         const struct run_offer *o = &run_offer[run_prize_cur];
         for (int i = 0; i < run_prize_ask_n; i++)
             ask[i] = run_prize_ask_kind[i] == ASK_SAVE ? "SAVE FOR LATER" : run_prize_ask_kind[i] == ASK_BACK ? "BACK"
                    : o->nput < 2 ? "EQUIP NOW" : o->put_slot[run_prize_ask_kind[i]] == 6 ? "EQUIP LEFT" : "EQUIP RIGHT";
-        snprintf(ask_title, sizeof ask_title, "%s  FOR %s", o->name, o->cost_s);
+        snprintf(ask_title, sizeof ask_title, "%s%s  FOR %s", o->name, o->xn ? " SET" : "", o->cost_s);
         if (o->nput >= 2)
             snprintf(ask_line, sizeof ask_line, "LEFT REPLACES %s   RIGHT REPLACES %s", o->put_lost[0], o->put_lost[1]);
         else if (o->put_lost[0][0])
@@ -1584,8 +1798,10 @@ static int run_prize_due(void)
 static void run_prize_open(int win)
 {
     if (!run_show_font()) return;
+    run_prize_win = (unsigned)win;
     run_prize_roll((unsigned)win);
     run_prize_cur = 0;
+    run_prize_alt = 0;
     while (run_prize_cur < run_offer_n && run_offer[run_prize_cur].cost > psx_mod_read_word(RUN_CREDITS))
         run_prize_cur++;                                  /* on the first offer that can be taken (else PASS) */
     run_prize_stage = PZ_CHOOSE;
@@ -1593,10 +1809,10 @@ static void run_prize_open(int win)
     run_prize_frames = 0;
     run_prize_held = 0xFFFFu;
     if (!run_prize_draw()) { run_prize_stage = PZ_OFF; run_log("prize: no picture"); return; }
-    char all[120] = "";
+    char all[160] = "";
     for (int i = 0; i < run_offer_n; i++)
-        snprintf(all + strlen(all), sizeof all - strlen(all), "%s%s %s", i ? " / " : "", run_offer[i].name,
-                 run_offer[i].cost_s);
+        snprintf(all + strlen(all), sizeof all - strlen(all), "%s%s%s %s", i ? " / " : "", run_offer[i].name,
+                 run_offer[i].xn ? " set" : "", run_offer[i].cost_s);
     run_log("prize (win %d): %s%sPASS, credits %u%s", win + 1, all, run_offer_n ? " / " : "",
             (unsigned)psx_mod_read_word(RUN_CREDITS), run_prize_overlay ? "" : " (loading picture)");
 }
@@ -1636,8 +1852,12 @@ static void run_prize_take(int put)
     psx_mod_write_word(RUN_CREDITS, credits - o->cost);
     r->p_spent = (uint16_t)(r->p_spent + o->cost);
     const uint32_t ix = k_run_tables[o->cat].base + o->id;
+    uint32_t xix[2] = { 0, 0 };
+    for (int k = 0; k < o->xn; k++) xix[k] = k_run_tables[o->xcat[k]].base + o->xid[k];
     psx_mod_write_byte(RUN_OWNED + ix, (uint8_t)(psx_mod_read_byte(RUN_OWNED + ix) + 1u));
-    char what[96];
+    for (int k = 0; k < o->xn; k++)
+        psx_mod_write_byte(RUN_OWNED + xix[k], (uint8_t)(psx_mod_read_byte(RUN_OWNED + xix[k]) + 1u));
+    char what[128];
     if (put >= 0) {
         uint8_t now[13];
         run_garage_rec(now);
@@ -1652,14 +1872,43 @@ static void run_prize_take(int put)
         run_garage_set(rec);
         run_ac_refresh = 1;
         psx_mod_counter_add("moa.run.prize_equip", 1);
-        snprintf(what, sizeof what, "%s equipped for %u P%s%s", o->name, (unsigned)o->cost,
+        snprintf(what, sizeof what, "%s%s equipped for %u P%s%s", o->name, o->xn ? " set" : "", (unsigned)o->cost,
                  o->put_lost[put][0] ? ", gone: " : "", o->put_lost[put]);
     } else {
         if (r->saved_n < MOA_RUN_SAVED_MAX) r->saved[r->saved_n++] = (uint8_t)ix;
+        for (int k = 0; k < o->xn; k++)
+            if (r->saved_n < MOA_RUN_SAVED_MAX) r->saved[r->saved_n++] = (uint8_t)xix[k];
         psx_mod_counter_add("moa.run.prize_save", 1);
-        snprintf(what, sizeof what, "%s saved for later for %u P", o->name, (unsigned)o->cost);
+        snprintf(what, sizeof what, "%s%s saved for later for %u P", o->name, o->xn ? " set" : "", (unsigned)o->cost);
     }
     run_prize_done(what);
+}
+
+/* RE-ROLL: 1 P, once per win's screen, booked in the run file at once (a
+ * reopen shows the new offers and no second re-roll). */
+static void run_prize_reroll(void)
+{
+    struct moa_run_progress *r = &run_state.run;
+    const uint32_t credits = psx_mod_read_word(RUN_CREDITS);
+    if (!run_reroll_can()) return;
+    psx_mod_write_word(RUN_CREDITS, credits - 1u);
+    r->p_spent = (uint16_t)(r->p_spent + 1u);
+    r->reroll_win = (uint8_t)(run_prize_win + 1u);
+    (void)moa_run_save(run_file_path(), &run_state);
+    run_save_pending = 1;
+    psx_mod_counter_add("moa.run.prize_reroll", 1);
+    run_prize_roll(run_prize_win);
+    run_prize_cur = 0;
+    run_prize_alt = 0;
+    while (run_prize_cur < run_offer_n && run_offer[run_prize_cur].cost > psx_mod_read_word(RUN_CREDITS))
+        run_prize_cur++;
+    run_prize_stage = PZ_CHOOSE;
+    char all[160] = "";
+    for (int i = 0; i < run_offer_n; i++)
+        snprintf(all + strlen(all), sizeof all - strlen(all), "%s%s%s %s", i ? " / " : "", run_offer[i].name,
+                 run_offer[i].xn ? " set" : "", run_offer[i].cost_s);
+    run_log("prize (win %u): RE-ROLL for 1 P: %s; credits %u", run_prize_win + 1u, all,
+            (unsigned)psx_mod_read_word(RUN_CREDITS));
 }
 
 static void run_prize_ask_open(void)
@@ -1667,7 +1916,7 @@ static void run_prize_ask_open(void)
     const struct run_offer *o = &run_offer[run_prize_cur];
     run_prize_ask_n = 0;
     for (int i = 0; i < o->nput && i < 2; i++) run_prize_ask_kind[run_prize_ask_n++] = ASK_EQUIP0 + i;
-    if (run_state.run.saved_n < MOA_RUN_SAVED_MAX) run_prize_ask_kind[run_prize_ask_n++] = ASK_SAVE;
+    if (run_state.run.saved_n + 1u + o->xn <= MOA_RUN_SAVED_MAX) run_prize_ask_kind[run_prize_ask_n++] = ASK_SAVE;
     run_prize_ask_kind[run_prize_ask_n++] = ASK_BACK;
     run_prize_ask_cur = 0;
     run_prize_stage = PZ_ASK;
@@ -1716,6 +1965,10 @@ static void run_prize_frame(void)
             run_se(RUN_SE_BACK);
             run_prize_stage = PZ_CHOOSE;
             (void)run_prize_draw();
+        } else if ((down & (RUN_PAD_X | RUN_PAD_START)) && run_prize_cur == run_offer_n) {
+            if (run_prize_ask_cur == 0) { run_se(RUN_SE_OK); run_prize_reroll(); }
+            else { run_se(RUN_SE_BACK); run_prize_stage = PZ_CHOOSE; }
+            (void)run_prize_draw();
         } else if (down & (RUN_PAD_X | RUN_PAD_START)) {
             const int k = run_prize_ask_kind[run_prize_ask_cur];
             if (k == ASK_BACK) {
@@ -1730,12 +1983,24 @@ static void run_prize_frame(void)
         return;
     }
     const int rows = run_offer_n + 1;
+    const int lr = (down & (RUN_PAD_LEFT | RUN_PAD_RIGHT)) != 0;
     if (up || dn) {
         run_se(RUN_SE_CURSOR);
         run_prize_cur = (run_prize_cur + (up ? rows - 1 : 1)) % rows;
         (void)run_prize_draw();
+    } else if (lr && run_prize_cur == run_offer_n) {        /* the bottom row: RE-ROLL | PASS */
+        run_se(RUN_SE_CURSOR);
+        run_prize_alt = (down & RUN_PAD_LEFT) != 0;
+        (void)run_prize_draw();
     } else if (down & (RUN_PAD_X | RUN_PAD_START)) {
-        if (run_prize_cur == run_offer_n) {
+        if (run_prize_cur == run_offer_n && run_prize_alt) {
+            if (!run_reroll_can()) { run_se(RUN_SE_BACK); return; }   /* used, or no P */
+            run_se(RUN_SE_OK);
+            run_prize_ask_n = 2;
+            run_prize_ask_cur = 0;
+            run_prize_stage = PZ_ASK;
+            (void)run_prize_draw();
+        } else if (run_prize_cur == run_offer_n) {
             run_se(RUN_SE_OK);
             run_prize_pass();
         } else if (run_offer[run_prize_cur].cost > psx_mod_read_word(RUN_CREDITS)) {

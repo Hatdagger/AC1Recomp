@@ -734,7 +734,7 @@ So chapter-timed (kind 0) mails depend on mission wins **and** arena ranks.
 Full crash evidence (registers, call sites) is kept in the claude.ai project doc
 `claude/phantasma-missions-crashes.md`. Mission names are the user's; their PP numbers aren't confirmed yet.
 
-**Report 1, master build 20caf2a (before the fix branch), after Rescue the Allies:** crashed later in
+**Report 1, master build 20caf2a (already includes the fix branch, merged in cec102c), after Rescue the Allies:** crashed later in
 the menu module. BIOS `rand()` (A0:2Fh, stub `0x8002C0F4`, from `0x80015138`) jumped to `0xFFFFAA92`:
 the A0 table entry at kernel RAM `0x000002BC` had been overwritten earlier by a stray write.
 
@@ -756,6 +756,33 @@ the A0 table entry at kernel RAM `0x000002BC` had been overwritten earlier by a 
 - Next: match the mission names to PP numbers; for those missions, find what feeds `0x8007D50C`'s
   object argument, the door/shield triggers and the "mission over -> report" path, comparing PP's
   original code with the fixed pack.
+
+**Cause found (2026-11-17, static, both discs):** mission names = PP slots: Infiltrate Amber Base #1,
+Rescue the Allies #3, Raid the Laboratory #4; the crash dump's mission module matches #5 Disrupt
+Shipping Lanes (10,238 of 10,240 words), report 1's matches #3.
+- **Every call to PP `0x80075638` was mapped to MoA `0x8007D5AC`**, the middle of the matching routine
+  `0x8007D50C` (same code, +8 object fields; it aims an object along a vector and is what enemy shots
+  use; the engine calls it with callback `0x80081824`, missions with their own `0x8007C088`). Jumping
+  in there skips the stack set-up, so the routine's epilogue pops 80 bytes it never pushed and
+  restores s0-s5 from the caller's frame: the caller's registers and stack get scrambled on every
+  shot. That is report 2's crash (EPC `0x8007D5AC` itself, s1 = `0xF9`) and fits report 1's stray
+  write into BIOS RAM and the dead triggers. 44 call sites, in #1-#16 (all but #17).
+- **#4 effect calls:** `0x800875F8` and `0x80087870` were left at Phantasma addresses (middle of MoA
+  engine code); `0x80087BDC` was mapped to `0x8009043C`, which is really `0x800875F8`'s counterpart
+  (same args a0 pos, a1 vector, a2, a3 type 1/3; MoA adds type 4). MoA has no counterpart for
+  `0x80087870` (spark + sound 51) or `0x80087BDC` (smoke sprite 280/281, lifetime a2).
+- **#8 callback** `0x80073DA4` (passed to `0x8007C134`) was left at its PP address; MoA `0x8007BC5C`.
+- Check used: every mapped call / code pointer in the 17 code blocks must land on a routine start in
+  MoA (after `jr ra` or an `addiu sp,-n`) and match the PP routine's code; the rest of the call map
+  passed (BIOS stubs and `0x8004B80C` -> `0x80053320` differ by design).
+- Fixes on branch `phantasma-mission-fixes-2` (242d3cb, 49 new `k_ppm_fixes` words): 44 calls ->
+  `0x8007D50C`; #4 `0x800875F8` -> `0x8009043C`, `0x80087870` -> nop, `0x80087BDC` -> `0x80090658`
+  (closest sprite effect); #8 callback -> `0x8007BC5C`. Re-check of the rebuilt pack: no call or
+  callback into the middle of a routine left. Not yet tested in game.
+- Not covered yet: object-field offsets the old converter may have missed (it re-typed registers to
+  remap fields; PP objects are 8 bytes shorter from +60 on, bytes 60-66 move by 9). If Amber Base's
+  generators/shield door or the Laboratory door still fail after this build, look there next.
+
 
 ## Open
 - What `0x8003EA29` (from T+1160) does in the engine; what T+8 counts.

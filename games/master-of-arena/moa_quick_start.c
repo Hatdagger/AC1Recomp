@@ -17,6 +17,7 @@
  * Offline only. The launcher clears PSX_MOA_START for every other mode
  * (Rogue Arena, AI Battle, netplay), so those keep their own boots.
  */
+#include "moa_direct_start.h"
 #include "mod_plugins.h"
 #include "cpu_state.h"
 
@@ -58,6 +59,10 @@
 #define QS_DISC_BUSY       0x800589DCu  /* non-zero (low 16 bits) = disc queue still loading */
 #define QS_DISC_WAIT_MAX   20000000u    /* safety cap: each check runs a little game time */
 #define QS_HUB_OPEN        0x800552C0u
+#define QS_HUB_INPUT       0x80055848u  /* hub state: input (✕ = open the selected entry) */
+#define QS_HUB_ENTRY       0xBEu        /* hub task: selected entry (signed byte 0-7) */
+#define QS_PAD             0x801B1CB8u  /* +0x18 new presses, +0x1C the mask they must lack */
+#define QS_PAD_X           0x4000u
 #define QS_NEWGAME_STATE   0x800AC820u  /* NEW GAME: windows, then 0x800ACA0C name entry */
 #define QS_NULL_DRAW       0x80057C24u
 #define QS_LOAD_N          0x80073480u  /* LOAD: addiu v0,zero,'N' */
@@ -90,7 +95,7 @@ static const struct { uint32_t at, word; } k_code[] = {
     { 0x800A2318u,       0x27BDFFE8u }, { 0x800A2020u,      0x3C02801Au },
     { QS_PART_LISTS,     0x27BDFFC8u }, { QS_SLOT_DEFAULTS, 0x27BDFFE0u },
     { QS_EMPTY_SLOTS,    0x27BDFFE0u }, { QS_AC_TEXTURES,   0x27BDFFE0u },
-    { QS_HUB_OPEN,       0x27BDFFB8u }, { QS_NEW_TASK,      0x00804021u },
+    { QS_HUB_OPEN,       0x27BDFFB8u }, { QS_HUB_INPUT,     0x27BDFFC0u }, { QS_NEW_TASK,      0x00804021u },
     { QS_TIM_QUEUE,      0x27BDFFD8u }, { QS_NEWGAME_STATE, 0x27BDFFD0u },
     { 0x800ACA0Cu,       0x27BDFFE8u }, { QS_LOAD_N,        0x2402004Eu },
     { QS_DISC_BUSY,      0x27BDFFE8u }, { QS_MENU_ALLOC,     0x27BDFFE0u },
@@ -189,6 +194,16 @@ static void qs_scenario(struct CPUState *cpu)
     call(cpu, QS_PICTURE, ARCH_MENU_TIM, 4, 0);
 }
 
+static int qs_save_ok(const uint8_t save[SAVE_BYTES])
+{
+    if (save[0] != 'S' || save[1] != 'C' || save[VERSION_AT] != 1u) return 0;
+    uint32_t sum = 0;
+    for (uint32_t i = 0; i < SUM_BYTES; i++) sum += ~(uint32_t)save[SUM_FROM + i];
+    const uint32_t want = (uint32_t)save[SUM_AT] | (uint32_t)save[SUM_AT + 1] << 8 |
+                          (uint32_t)save[SUM_AT + 2] << 16 | (uint32_t)save[SUM_AT + 3] << 24;
+    return sum == want;
+}
+
 static int qs_read_save(uint8_t save[SAVE_BYTES])
 {
     const char *path = getenv("PSX_MOA_START_SAVE");
@@ -197,12 +212,7 @@ static int qs_read_save(uint8_t save[SAVE_BYTES])
     if (!f) return 0;
     const int ok = fread(save, 1, SAVE_BYTES, f) == SAVE_BYTES;
     fclose(f);
-    if (!ok || save[0] != 'S' || save[1] != 'C' || save[VERSION_AT] != 1u) return 0;
-    uint32_t sum = 0;
-    for (uint32_t i = 0; i < SUM_BYTES; i++) sum += ~(uint32_t)save[SUM_FROM + i];
-    const uint32_t want = (uint32_t)save[SUM_AT] | (uint32_t)save[SUM_AT + 1] << 8 |
-                          (uint32_t)save[SUM_AT + 2] << 16 | (uint32_t)save[SUM_AT + 3] << 24;
-    return sum == want;
+    return ok && qs_save_ok(save);
 }
 
 /* A new game's save state (as moa_card_to_save now writes it). */
@@ -236,11 +246,21 @@ static void qs_repair_save(uint8_t save[SAVE_BYTES])
     }
 }
 
-/* LOAD GAME: §3, §4a steps 2-4. */
-static int qs_load(struct CPUState *cpu)
+/* ---- the shared direct start (moa_direct_start.h) ------------------------------ */
+
+static int ds_open_entry = -1;      /* entry to open on the hub's first input frame */
+
+int moa_direct_start_load(struct CPUState *cpu, const uint8_t save_in[MOA_DIRECT_SAVE_BYTES])
 {
     static uint8_t save[SAVE_BYTES];
-    if (!qs_read_save(save)) { qs_log("moa.start.load_bad_save"); return 0; }
+    if (!qs_code_ok()) { qs_log("moa.start.code_mismatch"); return 0; }
+    memcpy(save, save_in, SAVE_BYTES);
+    if (!qs_save_ok(save)) { qs_log("moa.start.load_bad_save"); return 0; }
+    /* What opening the title clears (the menu entry clears both after the
+     * title-open call too). Left at 1, the menu entry took the title branch
+     * after a fight instead of the hub (Rogue Arena's first test). */
+    psx_mod_write_byte(QS_TO_TITLE, 0);
+    psx_mod_write_byte(QS_NO_LOGOS, 0);
     qs_repair_save(save);
     qs_scenario(cpu);
     /* The title branch of the menu entry keeps two strips of MENU_TIM 0's
@@ -298,10 +318,50 @@ static int qs_load(struct CPUState *cpu)
         call(cpu, QS_MOVE_IMAGE, QS_WEAPON_CLUT, 0, 494);
         call(cpu, QS_DRAW_SYNC, 0, 0, 0);
     }
-    /* LOAD's callback (0x800AC9E8): the hub. */
-    call(cpu, QS_HUB_OPEN, 0, 0, 0);
-    qs_log("moa.start.load_hub");
     return 1;
+}
+
+uint32_t moa_direct_start_hub(struct CPUState *cpu, int entry, int open)
+{
+    if (psx_mod_read_word(QS_HUB_OPEN) != 0x27BDFFB8u) { qs_log("moa.start.hub_code_mismatch"); return 0; }
+    /* LOAD's callback (0x800AC9E8): the hub. */
+    const uint32_t hub = call(cpu, QS_HUB_OPEN, 0, 0, 0);
+    if (hub < 0x80000000u || hub >= 0x80200000u || hub == 0x801D0BA0u) {
+        qs_log("moa.start.hub_no_task");
+        return 0;
+    }
+    if (entry >= 0 && entry < 8) psx_mod_write_byte(hub + QS_HUB_ENTRY, (uint8_t)entry);
+    ds_open_entry = (open && entry >= 0 && entry < 8) ? entry : -1;
+    qs_log(open ? "moa.start.hub_open_entry" : "moa.start.load_hub");
+    return hub;
+}
+
+/* The hub's input state (0x80055848, entry hook): opens the wanted entry
+ * through the game's own ✕ path, once. ✕ counts when it is in the new
+ * presses (+0x18) and not in the second mask (+0x1C); the state reads them
+ * right after this hook. Rogue Arena's earlier X at the hub hooked this
+ * routine too, but it was missing from game.toml's entry list, so compiled
+ * menu code never called it. */
+static void ds_hub_input(struct CPUState *cpu, uint32_t address)
+{
+    if (ds_open_entry < 0 || psx_mod_read_word(address) != 0x27BDFFC0u) return;
+    const uint32_t hub = cpu->gpr[4];
+    if (hub < 0x80000000u || hub >= 0x80200000u) return;
+    if ((int8_t)psx_mod_read_byte(hub + QS_HUB_ENTRY) != ds_open_entry)
+        psx_mod_write_byte(hub + QS_HUB_ENTRY, (uint8_t)ds_open_entry);
+    psx_mod_write_word(QS_PAD + 0x18u, psx_mod_read_word(QS_PAD + 0x18u) | QS_PAD_X);
+    psx_mod_write_word(QS_PAD + 0x1Cu, psx_mod_read_word(QS_PAD + 0x1Cu) & ~(uint32_t)QS_PAD_X);
+    ds_open_entry = -1;
+    qs_log("moa.start.hub_entry_opened");
+}
+
+/* LOAD GAME: the shared start, then the hub on Garage (as LOAD lands). */
+static int qs_load(struct CPUState *cpu)
+{
+    static uint8_t save[SAVE_BYTES];
+    if (!qs_read_save(save)) { qs_log("moa.start.load_bad_save"); return 0; }
+    if (!moa_direct_start_load(cpu, save)) return 0;
+    return moa_direct_start_hub(cpu, 0, 0) != 0;
 }
 
 /* NEW GAME: §3, then §4b. ✕ on NEW GAME queues the AC's textures and
@@ -366,4 +426,5 @@ PSX_MOD_CONSTRUCTOR(moa_quick_start_register)
 {
     (void)psx_game_register_offline_function_entry(QS_MENU_ENTRY, qs_menu_entry);
     (void)psx_game_register_offline_function_filter(QS_TITLE_OPEN, qs_title_open);
+    (void)psx_game_register_offline_function_entry(QS_HUB_INPUT, ds_hub_input);
 }

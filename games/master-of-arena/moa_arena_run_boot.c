@@ -3436,16 +3436,142 @@ static const uint32_t k_belt_band[11] = {
     0xE1E1DCu, 0xECA824u, 0xEC701Cu, 0x40A848u, 0x3070D0u, 0x8048B8u,
     0xCC2828u, 0x8C542Cu, 0x36363Cu, 0x8C1C1Cu, 0xB08C28u,
 };
-static const char *const k_victory_line[] = {
-    "THE ARENA IS STARTING TO KNOW YOUR NAME.",
-    "ONE STEP CLOSER TO THE TOP.",
-    "THEY NEVER SAW IT COMING.",
-    "THAT ONE WILL NEED A NEW AC.",
-    "THE CROWD WANTS MORE.",
-    "YOUR SPONSORS ARE WATCHING.",
-    "CLEAN WORK, RAVEN.",
-    "NEXT.",
+/* Victory lines, grouped by belt (the same bands as the hub backgrounds,
+ * moa_hub_rank_tile_index: 0 white 50-46 ... 8 black 10-6, 9 black-red 5-2,
+ * 10 black-gold 1), so the words grow with the climb. '#' is replaced by the
+ * ranks left to the top. Within a belt a run never repeats a line. */
+#define VL_N 8
+static const char *const k_victory_belt[11][VL_N] = {
+    {   /* white: the bottom */
+        "EVERYONE STARTS AT THE BOTTOM.",
+        "NOT BAD FOR A NEWCOMER.",
+        "THE CROWD BARELY NOTICED. YET.",
+        "A FIRST STEP. THERE ARE MANY MORE.",
+        "THE BOOKIES JUST CHANGED YOUR ODDS.",
+        "THE LOW RANKS ARE CROWDED. MAKE ROOM.",
+        "YOUR AC HAS A FEW SCRATCHES NOW. GOOD.",
+        "THE ARENA KEEPS A RECORD OF EVERYTHING.",
+    }, {   /* yellow */
+        "THE ARENA IS STARTING TO KNOW YOUR NAME.",
+        "SOMEONE IN THE STANDS IS CHEERING.",
+        "THE ROOKIES ARE WATCHING YOU NOW.",
+        "A FEW SPONSORS ARE TAKING NOTES.",
+        "YOU ARE NOT A FLUKE.",
+        "THAT ONE WILL NEED A NEW AC.",
+        "ONE STEP CLOSER TO THE TOP.",
+        "THEY NEVER SAW IT COMING.",
+    }, {   /* orange */
+        "YOUR SPONSORS ARE WATCHING.",
+        "THE CROWD WANTS MORE.",
+        "THE BETTING BOARD HAS YOUR NAME ON IT.",
+        "THE BOTTOM OF THE BOARD IS BEHIND YOU.",
+        "CLEAN WORK, RAVEN.",
+        "THE MECHANICS ARE TALKING ABOUT YOUR AC.",
+        "YOUR NAME IS ON THE BIG SCREEN NOW.",
+        "THEY WILL STUDY THIS FIGHT.",
+    }, {   /* green */
+        "THE ARENA HAS STOPPED LAUGHING.",
+        "PEOPLE ARE BETTING ON YOU NOW.",
+        "A CONTENDER, NOT A NEWCOMER.",
+        "THE UPPER RANKS JUST FELT A CHILL.",
+        "YOUR REPLAYS ARE GETTING VIEWS.",
+        "THAT WAS NOT LUCK. EVERYONE SAW IT.",
+        "THE GARAGE CREWS KNOW YOUR AC BY SOUND.",
+        "THEY WILL REMEMBER THIS ONE.",
+    }, {   /* blue */
+        "THE CROWD CHANTS YOUR NAME.",
+        "THE TOP 25 IS IN SIGHT.",
+        "VETERANS ARE CHECKING YOUR RECORD.",
+        "A REAL RAVEN NOW.",
+        "THE PRESS WANTS AN INTERVIEW.",
+        "YOU FIGHT LIKE YOU WERE BORN IN AN AC.",
+        "THE RANKERS ABOVE YOU ARE NERVOUS.",
+        "ANOTHER NAME CROSSED OFF THE BOARD.",
+    }, {   /* purple: the top half */
+        "HALFWAY UP. THE AIR IS GETTING THIN.",
+        "THE TOP HALF BELONGS TO YOU NOW.",
+        "ONLY THE SERIOUS RAVENS ARE LEFT.",
+        "SPONSORS ARE FIGHTING OVER YOU.",
+        "KIDS PAINT THEIR TOY ACS LIKE YOURS.",
+        "THAT WAS A VETERAN. NOW IT IS SCRAP.",
+        "THE TOP 20 HAS BEEN WARNED.",
+        "THE BOARD MOVED YOUR NAME UP AGAIN.",
+    }, {   /* red: the top 20 */
+        "THE TOP 20. FEW EVER GET THIS FAR.",
+        "EVERY FIGHT FROM HERE IS A HEADLINE.",
+        "THE ELITE ARE WATCHING YOUR REPLAYS.",
+        "NO ONE CALLS YOU A NEWCOMER NOW.",
+        "THE CROWD IS ON ITS FEET.",
+        "THAT AC WAS BUILT TO BEAT YOU. IT FAILED.",
+        "THE RANKS ABOVE ARE RUNNING OUT.",
+        "A NAME THE ARENA WILL NOT FORGET.",
+    }, {   /* brown: the top 15 */
+        "THE TOP 15. LEGENDS LIVE UP HERE.",
+        "THE BOOKIES STOPPED TAKING BETS ON THEM.",
+        "EVEN THE CHAMPIONS ARE WATCHING NOW.",
+        "EVERY RAVEN HERE HAS A STORY. NOW YOU DO.",
+        "THE ARENA HAS NEVER SEEN A CLIMB LIKE IT.",
+        "THE TOP 10 IS GETTING CLOSE.",
+        "THAT WAS A LEGEND. WAS.",
+        "THE CROWD KNOWS EVERY PART OF YOUR AC.",
+    }, {   /* black: the top 10 */
+        "THE TOP 10. THE ARENA HOLDS ITS BREATH.",
+        "# MORE TO THE TOP.",
+        "ONLY CHAMPIONS ARE LEFT.",
+        "EVERY SPONSOR WANTS YOU NOW.",
+        "EVERY STEP NOW IS ARENA HISTORY.",
+        "THE TOP 5 CAN HEAR YOU COMING.",
+        "THERE ARE NO EASY FIGHTS UP HERE.",
+        "# LEFT. THEY ARE ALL WATCHING.",
+    }, {   /* black-red: the top 5 */
+        "# MORE TO THE TOP.",
+        "THE TOP 5. THE LAST CLIMB.",
+        "THE CHAMPION IS WATCHING THIS ONE.",
+        "ONE OF THE GREATS. ALMOST THE GREATEST.",
+        "THE WHOLE ARENA CAME TO SEE THIS.",
+        "NOTHING LEFT ABOVE YOU BUT GIANTS.",
+        "THE TOP IS IN SIGHT.",
+        "THE CROWD HAS GONE SILENT.",
+    }, {   /* black-gold: rank 1 */
+        "NO ONE IS LEFT ABOVE YOU.",
+        "THE ARENA BELONGS TO YOU.",
+        "THEY WILL TELL STORIES ABOUT THIS RUN.",
+        "THE TOP OF THE ARENA. YOURS.",
+        "NO ONE IS LEFT ABOVE YOU.",
+        "THE ARENA BELONGS TO YOU.",
+        "THEY WILL TELL STORIES ABOUT THIS RUN.",
+        "THE TOP OF THE ARENA. YOURS.",
+    },
 };
+/* The first line: the rank taken (# = the rank). */
+static const char *const k_victory_rank_line[] = {
+    "RANK # IS YOURS.", "RANK # TAKEN.", "YOU NOW HOLD RANK #.", "UP TO RANK #.", "RANK #. KEEP CLIMBING.",
+};
+/* Entering a new belt (the background changes): the first line. */
+static const char *const k_victory_belt_name[11] = {
+    "WHITE", "YELLOW", "ORANGE", "GREEN", "BLUE", "PURPLE", "RED", "BROWN", "BLACK", "BLACK AND RED", "BLACK AND GOLD",
+};
+/* Beating a ghost (an AC the player lost with earlier). */
+static const char *const k_victory_ghost[] = {
+    "YOUR OLD AC IS SCRAP NOW.",
+    "YOU BEAT YOUR OWN PAST.",
+    "THE LAST RUN IS BURIED.",
+    "THAT AC LOST TO YOU TWICE NOW.",
+};
+
+/* `tpl` into `out` with '#' replaced by n. */
+static void run_victory_fill(char *out, size_t cap, const char *tpl, unsigned n)
+{
+    size_t k = 0;
+    for (const char *q = tpl; *q && k + 1 < cap; q++) {
+        if (*q != '#') { out[k++] = *q; continue; }
+        char num[12];
+        snprintf(num, sizeof num, "%u", n);
+        for (const char *d = num; *d && k + 1 < cap; d++) out[k++] = *d;
+    }
+    out[k] = 0;
+}
+
 static uint8_t *run_victory_win, *run_victory_lose;
 static char run_victory_beaten[64], run_victory_l0[48], run_victory_l1[48], run_victory_rank[16];
 
@@ -3515,14 +3641,26 @@ static void run_victory_prepare(void)
     const unsigned wins = run_state.run.wins < MOA_RUN_SLOTS ? run_state.run.wins : MOA_RUN_SLOTS - 1u;
     const unsigned rank = MOA_RUN_SLOTS - wins;
     snprintf(run_victory_rank, sizeof run_victory_rank, "RANK %u", rank);
-    snprintf(run_victory_l0, sizeof run_victory_l0, "RANK %u IS YOURS.", rank);
-    if (rank == 1) snprintf(run_victory_l1, sizeof run_victory_l1, "NO ONE IS LEFT ABOVE YOU.");
-    else if (rank <= 10) snprintf(run_victory_l1, sizeof run_victory_l1, "%u MORE TO THE TOP.", rank - 1u);
-    else {
-        uint64_t q = run_state.lineup.seed ^ ((uint64_t)wins * 0x9E3779B97F4A7C15ull) ^ run_state.run.attempt;
-        const uint32_t n = (uint32_t)(sizeof k_victory_line / sizeof k_victory_line[0]);
-        snprintf(run_victory_l1, sizeof run_victory_l1, "%s", k_victory_line[moa_run_below(&q, n)]);
-    }
+    /* The lines, by belt; a run never repeats a line within a belt. */
+    const int belt = moa_hub_rank_tile_index((int)rank);
+    const int belt_top = belt >= 10 ? 1 : belt == 9 ? 5 : 50 - 5 * belt;    /* first rank of the belt */
+    const unsigned step = (unsigned)(belt_top - (int)rank);                 /* 0 = just promoted */
+    uint64_t q = run_state.lineup.seed ^ ((uint64_t)(belt + 1) * 0x9E3779B97F4A7C15ull) ^
+                 ((uint64_t)run_state.run.attempt << 32);
+    const unsigned base = moa_run_below(&q, VL_N);
+    const unsigned nr = (unsigned)(sizeof k_victory_rank_line / sizeof k_victory_rank_line[0]);
+    if (rank == 1) snprintf(run_victory_l0, sizeof run_victory_l0, "RANK 1. THE CHAMPION.");
+    else if (wins == 1) snprintf(run_victory_l0, sizeof run_victory_l0, "FIRST WIN. RANK %u IS YOURS.", rank);
+    else if (step == 0 && belt > 0)
+        snprintf(run_victory_l0, sizeof run_victory_l0, "%s BELT. RANK %u.", k_victory_belt_name[belt], rank);
+    else run_victory_fill(run_victory_l0, sizeof run_victory_l0, k_victory_rank_line[(base + wins) % nr], rank);
+    const int ghost = who < MOA_RUN_SLOTS &&
+                      run_state.lineup.slot[MOA_RUN_SLOTS - 1u - who].arena == MOA_RUN_GHOST;
+    if (ghost && rank > 1) {
+        const unsigned ng = (unsigned)(sizeof k_victory_ghost / sizeof k_victory_ghost[0]);
+        snprintf(run_victory_l1, sizeof run_victory_l1, "%s", k_victory_ghost[(base + wins) % ng]);
+    } else if (rank == 2) snprintf(run_victory_l1, sizeof run_victory_l1, "ONE FIGHT LEFT. THE TOP AWAITS.");
+    else run_victory_fill(run_victory_l1, sizeof run_victory_l1, k_victory_belt[belt][(base + step) % VL_N], rank - 1u);
     run_victory_key++;
     run_victory_ready = 1;
     run_log("victory: %s %s, %s%s", run_victory_l0, run_victory_l1, run_victory_beaten,

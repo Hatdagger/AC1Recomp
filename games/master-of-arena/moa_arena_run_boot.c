@@ -3620,7 +3620,12 @@ static void run_cover_frame(void)
             if (moa_chime_play()) psx_mod_counter_add("moa.run.victory_chime", 1);
         }
         run_victory_frames++;
-        const int ready = settled && run_victory_frames > 90u;
+        struct moa_screen_victory typed;                         /* the prompt waits for the lines */
+        memset(&typed, 0, sizeof typed);
+        typed.line[0] = run_victory_l0;
+        typed.line[1] = run_victory_l1;
+        typed.t = (float)run_victory_frames / 60.0f;
+        const int ready = settled && run_victory_frames > 90u && moa_screen_victory_typed(&typed);
         const uint16_t b = psx_mod_host_pad_buttons(0);          /* active low */
         const uint16_t down = (uint16_t)(run_victory_held & ~b);
         run_victory_held = b;

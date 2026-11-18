@@ -587,9 +587,18 @@ const uint32_t *moa_screen_render_list(int win_w, int win_h, const struct moa_sc
  * belt pattern in it, the beaten AC on its back on the right (dark, smoking),
  * the winner large on the left rising out of the band, the bottom bar in front
  * of both, the lines on black. Animated by v->t (seconds): the beaten AC
- * slides in from the left (0-0.20 s), the winner from the right
- * (0.15-0.36 s), YOU WIN stamps in with a white flash at 0.36 s (the chime's
- * chord), the lines follow. The layers are built once per `key`. */
+ * slides in from the left (0-0.40 s), the winner from the right
+ * (0.30-0.72 s), YOU WIN stamps in with a white flash at 0.72 s (the chime's
+ * big chord), the lines are typed once the chime is over (VIC_TYPE). The
+ * layers are built once per `key`. */
+#define VIC_DOWN    0.40f     /* the beaten AC has landed */
+#define VIC_WIN_AT  0.30f     /* the winner starts sliding in */
+#define VIC_WIN_LEN 0.42f
+#define VIC_HIT     0.72f     /* YOU WIN + flash (the chime's hit) */
+#define VIC_POP     0.16f     /* YOU WIN big before it settles */
+#define VIC_FLASH   0.48f
+#define VIC_TYPE    1.95f     /* typing starts: the chime (1.85 s) is over */
+#define VIC_WORD    0.18f     /* a word every */
 static uint32_t blend_px(uint32_t d, uint32_t r, uint32_t g, uint32_t b, uint32_t a)
 {
     const uint32_t dr = (d >> 16) & 255, dg = (d >> 8) & 255, db = d & 255;
@@ -807,9 +816,9 @@ const uint32_t *moa_screen_render_victory(int win_w, int win_h, const struct moa
         key_done = v->key;
     }
     const float t = v->t;
-    memcpy(buf, t >= 0.20f ? bg_landed : bg, (size_t)W * H * 4u);
-    if (spr_down && t >= 0.20f) {                          /* smoke rising and thinning, looped */
-        const float k = t < 0.6f ? (t - 0.20f) / 0.4f : 1.0f;
+    memcpy(buf, t >= VIC_DOWN ? bg_landed : bg, (size_t)W * H * 4u);
+    if (spr_down && t >= VIC_DOWN) {                       /* smoke rising and thinning, looped */
+        const float k = t < VIC_DOWN + 0.8f ? (t - VIC_DOWN) / 0.8f : 1.0f;
         for (int i = 0; i < nsmoke; i++) {
             const float u = fmodf(t * 0.35f + (float)i / (float)nsmoke, 1.0f);   /* 0 = at the AC, 1 = gone */
             const int r = 22 + (int)(u * 42.0f);
@@ -818,9 +827,9 @@ const uint32_t *moa_screen_render_victory(int win_w, int win_h, const struct moa
         }
     }
     if (spr_down) {
-        const int x = (int)(-dw + (dpx + dw) * ease_out(t / 0.20f));
+        const int x = (int)(-dw + (dpx + dw) * ease_out(t / VIC_DOWN));
         blit(buf, W, H, spr_down, dw, dh, x, dpy);
-        if (t >= 0.20f) {                                  /* sparks, twinkling */
+        if (t >= VIC_DOWN) {                               /* sparks, twinkling */
             const int f = (int)(t * 25.0f);
             for (int i = 0; i < nsparks; i++) {
                 if ((f + i * 3) % 7 >= 3) continue;
@@ -830,8 +839,8 @@ const uint32_t *moa_screen_render_victory(int win_w, int win_h, const struct moa
             }
         }
     }
-    if (spr_win && t >= 0.15f) {
-        const int x = (int)(W + (wpx - W) * ease_out((t - 0.15f) / 0.21f));
+    if (spr_win && t >= VIC_WIN_AT) {
+        const int x = (int)(W + (wpx - W) * ease_out((t - VIC_WIN_AT) / VIC_WIN_LEN));
         blit(buf, W, H, spr_win, ww_, wh_, x, wpy);
     }
     /* the bottom bar is in front of both */
@@ -839,13 +848,13 @@ const uint32_t *moa_screen_render_victory(int win_w, int win_h, const struct moa
     fill(buf, 0, by1 + 2, W, by1 + 5, rgb(br, bgc, bb));
     const uint32_t white = rgb(240, 240, 240), gold = rgb(255, 200, 72), grey = rgb(170, 176, 190);
     text_left(buf, "ROGUE ARENA", 36, 42, 2, grey);
-    if (t >= 0.36f) {
-        const int sc = t < 0.44f ? 8 : 6;
+    if (t >= VIC_HIT) {
+        const int sc = t < VIC_HIT + VIC_POP ? 8 : 6;
         text_edged(buf, "YOU WIN", W * 600 / 1280 - (sc - 6) * 30, 196, sc, white);
         if (v->rank) text_left(buf, v->rank, W - 36 - text_width(v->rank, 4), 52, 4, white);
         if (v->pay) text_left(buf, v->pay, W - 36 - text_width(v->pay, 3), 100, 3, gold);
     }
-    if (t >= 0.60f && v->beaten) text_left(buf, v->beaten, W - 40 - text_width(v->beaten, 2), by1 + 32, 2, grey);
+    if (t >= VIC_HIT + VIC_FLASH && v->beaten) text_left(buf, v->beaten, W - 40 - text_width(v->beaten, 2), by1 + 32, 2, grey);
     {   /* the lines, a word at a time once the flash is over */
         int left = moa_screen_victory_words(v);
         for (int i = 0; i < 2 && left > 0; i++) {
@@ -865,9 +874,9 @@ const uint32_t *moa_screen_render_victory(int win_w, int win_h, const struct moa
             text_left(buf, part, 100, 546 + i * 56, sc, white);
         }
     }
-    if (t >= 0.60f && v->status) text_left(buf, v->status, W - 36 - text_width(v->status, 2), H - 30, 2, grey);
-    if (t >= 0.36f && t < 0.60f) {                         /* the flash */
-        const uint32_t a = (uint32_t)(230.0f * (1.0f - (t - 0.36f) / 0.24f));
+    if (t >= VIC_HIT + VIC_FLASH && v->status) text_left(buf, v->status, W - 36 - text_width(v->status, 2), H - 30, 2, grey);
+    if (t >= VIC_HIT && t < VIC_HIT + VIC_FLASH) {         /* the flash */
+        const uint32_t a = (uint32_t)(230.0f * (1.0f - (t - VIC_HIT) / VIC_FLASH));
         for (int i = 0; i < W * H; i++) buf[i] = blend_px(buf[i], 255, 255, 255, a);
     }
     s_w = keep_w; s_h = keep_h;
@@ -876,15 +885,27 @@ const uint32_t *moa_screen_render_victory(int win_w, int win_h, const struct moa
     return buf;
 }
 
-/* Words of the two lines shown at v->t: none before 0.62 s, then one every
- * 0.09 s. */
-int moa_screen_victory_words(const struct moa_screen_victory *v)
+static int victory_word_total(const struct moa_screen_victory *v)
 {
-    if (!v || v->t < 0.62f) return 0;
     int total = 0;
     for (int i = 0; i < 2; i++)
         for (const char *q = v->line[i]; q && *q; q++)
             if (*q != ' ' && (q == v->line[i] || q[-1] == ' ')) total++;
-    const int n = 1 + (int)((v->t - 0.62f) / 0.09f);
+    return total;
+}
+
+/* Words of the two lines shown at v->t: none before VIC_TYPE, then one every
+ * VIC_WORD. */
+int moa_screen_victory_words(const struct moa_screen_victory *v)
+{
+    if (!v || v->t < VIC_TYPE) return 0;
+    const int total = victory_word_total(v);
+    const int n = 1 + (int)((v->t - VIC_TYPE) / VIC_WORD);
     return n < total ? n : total;
+}
+
+/* 1 = every word is out (the prompt may show). */
+int moa_screen_victory_typed(const struct moa_screen_victory *v)
+{
+    return v && moa_screen_victory_words(v) >= victory_word_total(v) && v->t >= VIC_TYPE;
 }

@@ -98,7 +98,7 @@ const uint32_t *moa_screen_render_list(int win_w, int win_h, const struct moa_sc
  * band: the belt colour 0xRRGGBB; the belt pattern is the backdrop tile
  * (moa_screen_set_backdrop). The layers are built once per `key`; each call
  * draws the frame at time `t`: the beaten AC slides in from the left, the
- * winner from the right, YOU WIN stamps in with a flash at 0.36 s. */
+ * winner from the right, YOU WIN stamps in with a flash at 0.72 s. */
 struct moa_screen_victory {
     const uint8_t *winner; int winner_w, winner_h;
     const uint8_t *loser;  int loser_w, loser_h;
@@ -112,8 +112,10 @@ struct moa_screen_victory {
 const uint32_t *moa_screen_render_victory(int win_w, int win_h, const struct moa_screen_victory *v,
                                           int *out_w, int *out_h);
 /* How many words of the two lines are shown at v->t (typed in one at a
- * time after the flash): a caller plays a tick each time it grows. */
+ * time once the chime is over): a caller plays a tick each time it grows. */
 int moa_screen_victory_words(const struct moa_screen_victory *v);
+/* 1 = the lines are fully typed (the prompt may show). */
+int moa_screen_victory_typed(const struct moa_screen_victory *v);
 
 #ifdef __cplusplus
 }

@@ -2,11 +2,10 @@
  *
  * Made here, not taken from the disc. Heavy Japanese rock with a mechanical
  * edge (fighting-game victory sting):
- * - the sting (about 1.7 s): four palm-muted power-chord chugs on E with a
- *   kick and a metal clank on the first, then at 0.36 s (when YOU WIN lands)
- *   a huge ringing A power chord, double-tracked, with a crash, a kick, an
- *   anvil clank and a pinch-harmonic squeal sliding up on top; it rings out
- *   with a little vibrato and ends on a servo whine;
+ * - the sting (about 1.85 s, quick): a hit on E, a fast rising lead run
+ *   over chugs and a snare build, then at 0.72 s (when YOU WIN lands) a big
+ *   E power chord with a lead note bent up into the octave, crash, kick and
+ *   anvil clank; it fades out fast and ends on a hydraulic hiss;
  * - the type tick: a short mechanical click for each word of the lines.
  * Guitars are plucked strings (Karplus-Strong) through a hard overdrive and
  * a speaker-cabinet filter. Synthesized at 22050 Hz, encoded once to PS1 SPU
@@ -42,7 +41,7 @@ static float noise(void)
 /* One plucked string into `o` (clean signal; the amp comes after).
  * damp: 0.5 = open and ringing .. lower = palm muted. len_s: how long it may
  * sound. vib: vibrato depth in semitones (after 0.25 s). */
-static void pluck(float *o, int n, float at, float hz, float amp, float damp, float len_s, float vib)
+static void pluck_bend(float *o, int n, float at, float hz, float amp, float damp, float len_s, float vib, float bend)
 {
     const int s0 = (int)(at * RATE);
     int d = (int)((float)RATE / hz);
@@ -56,7 +55,8 @@ static void pluck(float *o, int n, float at, float hz, float amp, float damp, fl
     for (int i = s0; i < end; i++) {
         const float t = (float)(i - s0) / RATE;
         /* vibrato by reading the line slightly faster or slower */
-        const float v = vib > 0.0f && t > 0.25f ? vib * sinf(TAU * 5.5f * t) * fminf(1.0f, (t - 0.25f) * 3.0f) : 0.0f;
+        float v = vib > 0.0f && t > 0.25f ? vib * sinf(TAU * 5.5f * t) * fminf(1.0f, (t - 0.25f) * 3.0f) : 0.0f;
+        if (bend > 0.0f && t < 0.07f) v -= bend * (1.0f - t / 0.07f);
         const float step = powf(2.0f, v / 12.0f);
         const int k = (int)pos % d, k1 = (k + 1) % d;
         const float cur = line[k];
@@ -69,6 +69,11 @@ static void pluck(float *o, int n, float at, float hz, float amp, float damp, fl
         if (pos >= (float)d * 1000.0f) pos -= (float)d * 1000.0f;
     }
     free(line);
+}
+
+static void pluck(float *o, int n, float at, float hz, float amp, float damp, float len_s, float vib)
+{
+    pluck_bend(o, n, at, hz, amp, damp, len_s, vib, 0.0f);
 }
 
 /* A power chord (root, fifth, octave), two takes a hair apart and detuned. */
@@ -124,6 +129,37 @@ static void crash(float *o, int n, float at, float gain)
     }
 }
 
+static void snare(float *o, int n, float at, float gain)
+{
+    const int s0 = (int)(at * RATE);
+    float ph = 0.0f, a = 0.0f;
+    for (int i = s0; i < n; i++) {
+        const float t = (float)(i - s0) / RATE;
+        if (t > 0.25f) break;
+        ph += (190.0f + 60.0f * expf(-t * 60.0f)) / RATE;
+        const float w = noise();
+        a += 0.35f * (w - a);
+        o[i] += gain * (0.55f * sinf(TAU * ph) * expf(-t * 30.0f) + 0.8f * (w - 0.5f * a) * expf(-t * 18.0f));
+    }
+}
+
+/* A hydraulic hiss with a clunk in front: the machine settling. */
+static void hiss(float *o, int n, float at, float len, float gain)
+{
+    const int s0 = (int)(at * RATE);
+    float a = 0.0f, b = 0.0f;
+    for (int i = s0; i < n; i++) {
+        const float t = (float)(i - s0) / RATE;
+        if (t > len) break;
+        const float w = noise();
+        a += 0.6f * (w - a);
+        b += 0.6f * (a - b);
+        const float env = (t < 0.01f ? t / 0.01f : 1.0f) * expf(-t * 4.0f / len);
+        o[i] += gain * (w - b) * env;
+        o[i] += gain * 1.6f * sinf(TAU * 70.0f * t) * expf(-t * 40.0f);
+    }
+}
+
 /* Metal: inharmonic clang partials and a click. */
 static void clank(float *o, int n, float at, float gain)
 {
@@ -140,7 +176,7 @@ static void clank(float *o, int n, float at, float gain)
 }
 
 /* The pinch harmonic: a high squeal sliding up a step, with wide vibrato. */
-static void squeal(float *o, int n, float at, float gain)
+static void squeal(float *o, int n, float at, float hz, float gain)
 {
     const int s0 = (int)(at * RATE);
     float ph = 0.0f;
@@ -149,24 +185,9 @@ static void squeal(float *o, int n, float at, float gain)
         if (t > 1.0f) break;
         const float slide = 1.0f + 0.1225f * fminf(1.0f, t / 0.12f);            /* up a whole step */
         const float vib = 1.0f + 0.03f * sinf(TAU * 7.0f * t) * fminf(1.0f, t * 4.0f);
-        ph += 1760.0f * slide * vib / RATE;
+        ph += hz * slide * vib / RATE;
         const float env = (t < 0.01f ? t / 0.01f : 1.0f) * expf(-t * 2.8f);
         o[i] += gain * env * tanhf(4.0f * (sinf(TAU * ph) + 0.4f * sinf(2.0f * TAU * ph)));
-    }
-}
-
-/* A servo winding down: a buzzy tone falling in pitch. */
-static void servo(float *o, int n, float at, float len, float gain)
-{
-    const int s0 = (int)(at * RATE);
-    float ph = 0.0f;
-    for (int i = s0; i < n; i++) {
-        const float t = (float)(i - s0) / RATE;
-        if (t > len) break;
-        ph += (900.0f - 500.0f * t / len) / RATE;
-        const float env = sinf(3.1415927f * t / len);
-        const float sq = sinf(TAU * ph) > 0.0f ? 1.0f : -1.0f;
-        o[i] += gain * env * (0.6f * sq + 0.4f * sinf(TAU * ph * 0.5f)) * (0.8f + 0.2f * sinf(TAU * 60.0f * t));
     }
 }
 
@@ -234,27 +255,53 @@ static int encode(const float *pcm, int n, float peak, struct snd *out)
     return 1;
 }
 
-/* The sting as PCM (also used by the offline preview). */
+/* The sting as PCM (also used by the offline preview). About 1.85 s, quick:
+ * a hit on E to open, a fast rising run on the lead guitar over chugs and a
+ * snare build, then at 0.72 s (when YOU WIN lands) a big E power chord with a
+ * lead note bent up into the octave, crash, kick and anvil clank; it fades out
+ * fast and the machine settles with a hydraulic hiss. */
+#define STING_HIT 0.72f
 float *moa_chime_sting_pcm(int *n_out)
 {
-    const int n = (int)(1.75f * RATE);
+    const int n = (int)(1.85f * RATE);
     float *g = (float *)calloc((size_t)n, sizeof *g);       /* guitars */
     float *o = (float *)calloc((size_t)n, sizeof *o);       /* the mix */
     if (!g || !o) { free(g); free(o); return NULL; }
     s_noise = 0x1234567u;
-    const float E2 = 82.41f, A2 = 110.0f;
-    for (int k = 0; k < 4; k++) power_chord(g, n, 0.09f * (float)k, E2, 0.38f, 0.085f, 0.0f);   /* chugs */
-    power_chord(g, n, 0.36f, A2, 0.4985f, 1.35f, 0.35f);                                    /* the big one */
-    squeal(g, n, 0.37f, 0.05f);
+    const float E2 = 82.41f;
+    /* the opening hit and the chugs under the run */
+    power_chord(g, n, 0.00f, E2, 0.45f, 0.16f, 0.0f);
+    for (int k = 1; k < 8; k++) power_chord(g, n, 0.08f * (float)k + 0.08f, E2, 0.36f, 0.06f, 0.0f);
+    /* the run: E minor pentatonic up two octaves, double-tracked */
+    static const float k_run[8] = { 196.00f, 220.00f, 246.94f, 293.66f, 329.63f, 392.00f, 440.00f, 493.88f };
+    for (int k = 0; k < 8; k++)
+        for (int take = 0; take < 2; take++)
+            pluck(g, n, 0.08f + 0.08f * (float)k + 0.003f * (float)take, k_run[k] * (take ? 1.003f : 0.998f),
+                  0.55f, 0.47f, 0.085f, 0.0f);
+    /* the big one */
+    power_chord(g, n, STING_HIT, E2, 0.4985f, 1.1f, 0.25f);
+    for (int take = 0; take < 2; take++)
+        pluck_bend(g, n, STING_HIT + 0.003f * (float)take, 659.26f * (take ? 1.003f : 0.998f), 0.6f, 0.4985f, 1.1f,
+                   0.4f, 2.0f);
+    squeal(g, n, STING_HIT + 0.01f, 1318.5f, 0.035f);
     amp_cab(g, n);
     for (int i = 0; i < n; i++) o[i] = 0.85f * g[i];
-    kick(o, n, 0.00f, 0.9f);
-    kick(o, n, 0.18f, 0.6f);
-    kick(o, n, 0.36f, 1.0f);
-    clank(o, n, 0.00f, 0.45f);
-    clank(o, n, 0.36f, 0.55f);
-    crash(o, n, 0.36f, 0.22f);
-    servo(o, n, 1.20f, 0.45f, 0.12f);
+    kick(o, n, 0.00f, 1.0f);
+    clank(o, n, 0.00f, 0.5f);
+    crash(o, n, 0.00f, 0.12f);
+    kick(o, n, 0.24f, 0.55f);
+    kick(o, n, 0.40f, 0.55f);
+    for (int k = 0; k < 6; k++) snare(o, n, 0.44f + 0.05f * (float)k, 0.18f + 0.07f * (float)k);   /* the build */
+    kick(o, n, STING_HIT, 1.0f);
+    snare(o, n, STING_HIT, 0.5f);
+    clank(o, n, STING_HIT, 0.6f);
+    crash(o, n, STING_HIT, 0.24f);
+    hiss(o, n, 1.30f, 0.5f, 0.10f);
+    /* starts strong, fades out fast after the hit */
+    for (int i = (int)(1.05f * RATE); i < n; i++) {
+        const float u = (float)(i - (int)(1.05f * RATE)) / (float)(n - (int)(1.05f * RATE));
+        o[i] *= (1.0f - u) * (1.0f - u);
+    }
     free(g);
     *n_out = n;
     return o;

@@ -31,6 +31,10 @@ void recomp_launcher_set_preserve_sdl(int preserve) {
     launcher_platform_set_quit_sdl(!preserve);
 }
 
+int recomp_launcher_last_window_shown(void) {
+    return launcher_platform_was_shown() ? 1 : 0;
+}
+
 int recomp_launcher_relaunch_exe(char* out, size_t out_cap) {
     if (!out || out_cap == 0 || !g_last_relaunch_exe[0])
         return 0;

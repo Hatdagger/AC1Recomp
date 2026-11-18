@@ -2437,6 +2437,11 @@ int recomp_launcher_relaunch_exe(char* out, size_t out_cap);
 #define RECOMP_LAUNCHER_HAS_PRESERVE_SDL 1
 void recomp_launcher_set_preserve_sdl(int preserve);
 
+/* After run_window returns: 1 if its window was ever visible. A host that set
+ * LNG_START_HIDDEN=1 (a pass-through start that only carries out a pending
+ * action) learns here whether the player saw the launcher after all. */
+int recomp_launcher_last_window_shown(void);
+
 #ifdef __cplusplus
 }
 #endif

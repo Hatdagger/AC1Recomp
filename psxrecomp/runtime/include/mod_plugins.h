@@ -129,6 +129,11 @@ uint16_t psx_mod_host_pad_buttons(int slot);
  * starting from the launcher begins a new session. Takes effect at the next
  * scheduler escape point. */
 void psx_mod_request_return_to_launcher(void);
+/* The same, when the launcher only carries out a pick the game already made
+ * and starts the game again: the game window stays open, the launcher runs
+ * hidden (shown only if still open after ~3 s) and the next session reuses
+ * the window. */
+void psx_mod_request_return_to_launcher_quiet(void);
 /* Statically linked per-frame callback: runs once per guest frame after input
  * sampling (main.cpp). */
 void mod_register_frame_hook(void (*hook)(void));

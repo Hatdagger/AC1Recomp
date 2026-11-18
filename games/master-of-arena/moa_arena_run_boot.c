@@ -411,6 +411,7 @@ static uint32_t run_loss_wait;             /* frames until the loss screen opens
  * "new"; none = just the launcher), which carries it out when it is back. */
 static int run_end_stage;                  /* 0 not up, 1 choosing, 2 picked: back to the launcher */
 static int run_end_cur, run_end_armed, run_end_overlay;
+static int run_end_choice = -1;            /* the pick: 0 retry, 1 new, 2 quit */
 static uint32_t run_end_frames;
 static uint16_t run_end_held;
 static int run_overlay_up(void);
@@ -499,6 +500,7 @@ static void run_check_session(void)
     run_replay_t = 0;
     run_loss_wait = 0;
     run_end_stage = run_end_cur = run_end_armed = run_end_overlay = 0;
+    run_end_choice = -1;
     run_end_frames = 0;
     run_end_held = 0xFFFFu;
     run_sent = run_told = 0;
@@ -1664,8 +1666,16 @@ static void run_maybe_return(void)
     if (run_sent) return;
     run_sent = 1;
     psx_mod_counter_add("moa.run.over", 1);
-    run_log("loss: back to the launcher");
-    psx_mod_request_return_to_launcher();
+    /* RETRY ARENA / NEW ARENA: the launcher only carries out the pick (the
+     * ".next" file) and starts the game again, so it runs hidden and the game
+     * window stays open; QUIT TO LAUNCHER shows it as before. */
+    if (run_end_choice == 0 || run_end_choice == 1) {
+        run_log("loss: next run, same window");
+        psx_mod_request_return_to_launcher_quiet();
+    } else {
+        run_log("loss: back to the launcher");
+        psx_mod_request_return_to_launcher();
+    }
 }
 
 /* A new win over arena 0 entry `who`, booked once: into the run file at once
@@ -2763,8 +2773,10 @@ static void run_end_pick(int pick)
         FILE *f = fopen(p, "wb");
         if (f) { fputs(pick == 0 ? "retry\n" : "new\n", f); fclose(f); }
     }
+    run_end_choice = pick;
     (void)psx_mod_set_overlay_image(NULL, 0, 0);
-    psx_mod_set_loading_screen("ROGUE ARENA  Back to the launcher", -1);
+    psx_mod_set_loading_screen(pick == 2 ? "ROGUE ARENA  Back to the launcher"
+                                         : "ROGUE ARENA  Starting the next run", -1);
     psx_mod_counter_add(pick == 0 ? "moa.run.end_retry" : pick == 1 ? "moa.run.end_new" : "moa.run.end_quit", 1);
     run_log("loss screen: %s", k_run_end_label[pick]);
 }

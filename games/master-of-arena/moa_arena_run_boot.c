@@ -421,7 +421,12 @@ static int run_fixes;
 #define RUN_WATCH_FRAMES     (60u * 45u)   /* the replay and result screens fit well inside */
 #define RUN_WATCH_LOAD       (60u * 15u)   /* a fight runs ~4 s after its AI is applied; players
                                             * closed hung loads after ~25 s, before 45 s */
-static int run_watch_phase;               /* 0 off, 1 loading a fight, 2 after a fight */
+static int run_watch_phase;               /* 0 off, 1 loading a fight, 2 after a fight (3: idle dump) */
+/* Phase 3: at the hub (or a screen opened from it, like the Garage) and
+ * neither the menus' controller sampling nor the fight's has run for 30 s:
+ * the game is stuck (a Retry session hung opening the Garage, no files). */
+#define RUN_WATCH_IDLE       (60u * 30u)
+static uint32_t run_idle;                 /* frames since the game last sampled the controller */
 static uint32_t run_watch_count;
 static unsigned run_watch_dumps;
 static char run_watch_stamp[24];          /* this session's start time, for dump names */
@@ -485,6 +490,7 @@ static void run_check_session(void)
     run_direct = run_direct_press = 0;
     run_watch_phase = 0;
     run_watch_count = 0;
+    run_idle = 0;
     run_watch_dumps = 0;
     run_watch_stamp[0] = 0;
     run_irq_again = 0;
@@ -854,6 +860,7 @@ static void run_direct_hub_frame(struct CPUState *cpu);
 
 static void run_menu_input_entry(struct CPUState *cpu, uint32_t address)
 {
+    run_idle = 0;
     if (run_overlay_up() && run_on()) {
         const uint32_t w = psx_mod_read_word(address);
         if (w == RUN_SIG_INPUT_A || w == RUN_SIG_INPUT_B) run_pad_lock();
@@ -1078,7 +1085,7 @@ static void run_show_open(void)
 static void run_show_frame(void)
 {
     if (!run_show_on) {
-        if (run_show_rank && run_at_hub && !psx_mod_read_byte(RUN_FIGHT_DONE)) run_show_open();
+        if (run_show_rank && run_at_hub && (!psx_mod_read_byte(RUN_FIGHT_DONE) || run_prize_paid)) run_show_open();
         return;
     }
     psx_mod_write_half(RUN_PAD_BUFFER + 2u, 0xFFFFu);       /* the hub sees nothing pressed */
@@ -1806,6 +1813,9 @@ static void run_payout_entry(struct CPUState *cpu, uint32_t address)
      * windows (they wait while the prize screen holds the pad), instead of
      * ~9 s later when the game clears its fight-finished byte. */
     if (run_pay) run_prize_paid = 1;
+    /* A restock win: its picture now, over the arena screen (as a prize
+     * does), instead of after the game's ~23 s result wait and the hub. */
+    if (run_pay && run_state_ok && run_restock_win(run_state.run.wins)) run_restock_catch_up("arena screen");
     psx_mod_write_word(tab + 8u * who, run_pay);
     run_pay_due = 0;
     run_log("payout: %u (stock %u), credits %u", (unsigned)run_pay, (unsigned)was,
@@ -2268,24 +2278,34 @@ static void run_log_fighters(void)
  * whether the replay ended right after (arena screen or hub reached) or ran
  * on (then the player has it; no second press, in case START pauses). */
 #define RUN_REPLAY_FLAG      0x8003EA92u
-#define RUN_REPLAY_PRESS_AT  6u
-#define RUN_REPLAY_WATCH     150u
+#define RUN_REPLAY_PRESS_AT  60u          /* the 2026-11-17 test: a press at 6 did nothing; the
+                                             * player's own skips landed 73-300 samples in */
+#define RUN_REPLAY_EVERY     20u
+#define RUN_REPLAY_TRIES     12u          /* START 6 times, then X 6 times */
+static const char *run_replay_last = "";
 static void run_replay_skip(void)
 {
     if (!psx_mod_read_byte(RUN_REPLAY_FLAG)) return;
     if (run_replay_state == 0) {
         run_replay_state = 1;
         run_replay_t = 0;
-        run_log("replay: started, START pressed to skip it");
+        run_replay_last = "";
+        run_log("replay: started, skip presses from sample %u", (unsigned)RUN_REPLAY_PRESS_AT);
     }
     const uint32_t t = run_replay_t++;
-    if (run_replay_state == 1 && t >= RUN_REPLAY_PRESS_AT && t < RUN_REPLAY_PRESS_AT + 3u)
-        psx_mod_write_half(RUN_PAD_BUFFER + 2u,
-                           (uint16_t)(psx_mod_read_half(RUN_PAD_BUFFER + 2u) & ~RUN_PAD_START));
-    if (run_replay_state == 1 && t == RUN_REPLAY_WATCH) {
+    run_watch_count = 0;                          /* a replay is progress, not a hang (69 s one in the test) */
+    if (run_replay_state != 1 || t < RUN_REPLAY_PRESS_AT) return;
+    const uint32_t k = (t - RUN_REPLAY_PRESS_AT) / RUN_REPLAY_EVERY, in = (t - RUN_REPLAY_PRESS_AT) % RUN_REPLAY_EVERY;
+    if (k >= RUN_REPLAY_TRIES) {
         run_replay_state = 2;
         psx_mod_counter_add("moa.run.replay_not_skipped", 1);
-        run_log("replay: still running %u samples after START; left to the player", (unsigned)t);
+        run_log("replay: still running after %u presses (START, then X); left to the player", (unsigned)k);
+        return;
+    }
+    if (in < 3u) {                                /* held for 3 samples, then released */
+        const uint16_t btn = k < RUN_REPLAY_TRIES / 2u ? RUN_PAD_START : RUN_PAD_X;
+        run_replay_last = btn == RUN_PAD_START ? "START" : "X";
+        psx_mod_write_half(RUN_PAD_BUFFER + 2u, (uint16_t)(psx_mod_read_half(RUN_PAD_BUFFER + 2u) & ~btn));
     }
 }
 
@@ -2294,14 +2314,16 @@ static void run_replay_over(const char *where)
 {
     if (!run_replay_state) return;
     if (run_replay_state == 1) psx_mod_counter_add("moa.run.replay_skipped", 1);
-    run_log("replay: over at the %s, %u samples after it started%s", where, (unsigned)run_replay_t,
-            run_replay_state == 1 ? " (skipped)" : "");
+    run_log("replay: over at the %s, %u samples after it started%s%s", where, (unsigned)run_replay_t,
+            run_replay_state == 1 && run_replay_last[0] ? ", last press " : "",
+            run_replay_state == 1 ? run_replay_last : "");
     run_replay_state = 0;
 }
 
 static void run_sampler_entry(struct CPUState *cpu, uint32_t address)
 {
     (void)cpu;
+    run_idle = 0;
     if (!run_on() || !run_at_hub || psx_mod_read_word(address) != RUN_SIG_SAMPLER) return;
     run_prize_where = 0;                          /* in a fight: no prize screen */
     run_prize_paid = 0;
@@ -2520,11 +2542,15 @@ static void run_irq_log(int first)
     run_log("%s", line);
 }
 
-static uint32_t run_watch_limit(void) { return run_watch_phase == 1 ? RUN_WATCH_LOAD : RUN_WATCH_FRAMES; }
+static uint32_t run_watch_limit(void)
+{
+    return run_watch_phase == 1 ? RUN_WATCH_LOAD : run_watch_phase == 3 ? RUN_WATCH_IDLE : RUN_WATCH_FRAMES;
+}
 
 static void run_watch_dump(void)
 {
-    static const char *const k_phase[3] = { "", "loading a fight", "after a fight" };
+    static const char *const k_phase[4] = { "", "loading a fight", "after a fight",
+                                            "no controller sampling at the hub or its screens" };
     char calls[1024];
     moa_btrace_recent(calls, sizeof calls);
     run_log("hang watch: %s for %u s: disc queue write %u read %u, fight done %u won %u lost %u, "
@@ -2674,6 +2700,11 @@ static void run_frame_hook(void)
     run_apply_fixes();
     if (run_watch_phase && run_at_hub && ++run_watch_count == run_watch_limit()) run_watch_dump();
     if (run_irq_again && --run_irq_again == 0) run_irq_log(0);
+    if (run_at_hub && !run_autopilot && !run_watch_phase && ++run_idle == RUN_WATCH_IDLE) {
+        run_watch_phase = 3;                     /* for the dump's text and file name only */
+        run_watch_dump();
+        run_watch_phase = 0;
+    }
     if (run_at_hub && psx_mod_read_byte(RUN_ARENA_LOCK)) {
         psx_mod_write_byte(RUN_ARENA_LOCK, 0);
         psx_mod_counter_add("moa.run.arena_unlocked", 1);

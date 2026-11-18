@@ -657,6 +657,8 @@ static void prize_offer_box(uint32_t *buf, int W, int x0, int y0, int x1, int y1
                 const uint32_t q = thumb[y * 128 + x];
                 if (q >> 24) buf[(ty + y) * W + tx + x] = r->locked ? dim_px(0xFF000000u | q, 2, 5) : 0xFF000000u | q;
             }
+    } else if (r->icon) {                       /* not a part: big text in the picture box */
+        text(buf, NULL, r->icon, tx + 64, ty + 64 + 16, 4, r->locked ? rgb(90, 80, 60) : gold);
     } else {
         text(buf, NULL, "?", tx + 64, ty + 64, 3, rgb(60, 64, 72));
     }

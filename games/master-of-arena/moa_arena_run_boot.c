@@ -1318,6 +1318,7 @@ static const char *const k_tier_tag[3] = { "CHEAP", "MID", "EXPENSIVE" };
 
 struct run_offer {
     uint8_t cat, id, cost, band, nput;
+    uint8_t income;                            /* not a part: the +1 P per win upgrade */
     uint8_t xn, xcat[2], xid[2];               /* a set: parts that come with it (arms set) */
     uint8_t put_slot[2];                       /* record byte it goes into */
     uint8_t put_rec[2][13];                    /* the AC with it equipped there */
@@ -1493,6 +1494,9 @@ static int run_plus_on(void)
 #define RUN_W_STANCE       400u                /* a crouch weapon, two-legged AC */
 #define RUN_W_STANCE_TWO    80u                /* ... that would make two */
 #define RUN_SET_COST         7u
+#define RUN_INCOME_COST      6u                /* +1 P PER WIN: its price, */
+#define RUN_INCOME_ODDS      4u                /* offered on 1 screen in this many, */
+#define RUN_INCOME_MAX       3u                /* bought this often at most */
 #define RUN_SET_PART_MAX     4u
 
 /* Back weapon `id` makes two-legged ACs crouch to fire (cannons; energy
@@ -1699,6 +1703,21 @@ static void run_prize_draw_offers(unsigned win, uint64_t salt, const uint8_t (*e
             pick -= cand[band][i].w;
         }
     }
+    /* +1 P PER WIN: now and then as the expensive offer (not with an ARMS SET,
+     * not in the last fights, where it could not pay its price back). */
+    if (!has_set && run_state.run.income < RUN_INCOME_MAX && win + 1u + RUN_INCOME_COST < MOA_RUN_SLOTS - 1u &&
+        moa_run_below(&rng, RUN_INCOME_ODDS) == 0u) {
+        struct run_offer *o = NULL;
+        for (int i = 0; i < run_offer_n; i++) if (run_offer[i].band == 2u) o = &run_offer[i];
+        if (!o && run_offer_n < 3) o = &run_offer[run_offer_n++];
+        if (o) {
+            memset(o, 0, sizeof *o);
+            o->income = 1; o->cat = 0xFFu; o->cost = RUN_INCOME_COST; o->band = 2; o->w = RUN_W_NORMAL;
+            snprintf(o->name, sizeof o->name, "+1 P PER WIN");
+            snprintf(o->category, sizeof o->category, "UPGRADE  EVERY WIN PAYS 1 P MORE");
+            snprintf(o->cost_s, sizeof o->cost_s, "%u P", RUN_INCOME_COST);
+        }
+    }
 }
 
 /* The offers for the win's prize screen (after its re-roll, if used). */
@@ -1717,7 +1736,8 @@ static void run_prize_roll(unsigned win)
     const char *dir = getenv("PSX_MOA_MODELS_DIR");
     const int models = dir && dir[0] && moa_acv_has_part_models(dir);
     for (int i = 0; i < run_offer_n; i++) {
-        run_offer_has_thumb[i] = models && run_part_thumb(dir, run_offer[i].cat, run_offer[i].id, run_offer_thumb[i]);
+        run_offer_has_thumb[i] = models && !run_offer[i].income &&
+                                 run_part_thumb(dir, run_offer[i].cat, run_offer[i].id, run_offer_thumb[i]);
         for (int k = 0; k < 2; k++)
             run_offer_has_xthumb[i][k] = models && k < run_offer[i].xn &&
                 run_part_thumb(dir, run_offer[i].xcat[k], run_offer[i].xid[k], run_offer_xthumb[i][k]);
@@ -1777,6 +1797,7 @@ static int run_prize_draw(void)
         row[i].cost = o->cost_s;
         row[i].thumb = run_offer_has_thumb[i] ? run_offer_thumb[i] : NULL;
         row[i].locked = o->cost > credits;
+        if (o->income) row[i].icon = "+1P";
         if (o->xn) {                                   /* a set: the box cycles through its parts */
             const int np = 1 + o->xn;
             int k, wipe;
@@ -1821,9 +1842,12 @@ static int run_prize_draw(void)
         const struct run_offer *o = &run_offer[run_prize_cur];
         for (int i = 0; i < run_prize_ask_n; i++)
             ask[i] = run_prize_ask_kind[i] == ASK_SAVE ? "SAVE FOR LATER" : run_prize_ask_kind[i] == ASK_BACK ? "BACK"
-                   : o->nput < 2 ? "EQUIP NOW" : o->put_slot[run_prize_ask_kind[i]] == 6 ? "EQUIP LEFT" : "EQUIP RIGHT";
+                   : o->income ? "BUY" : o->nput < 2 ? "EQUIP NOW" : o->put_slot[run_prize_ask_kind[i]] == 6 ? "EQUIP LEFT" : "EQUIP RIGHT";
         snprintf(ask_title, sizeof ask_title, "%s  FOR %s", o->xn ? "ARMS SET" : o->name, o->cost_s);
-        if (o->xn)
+        if (o->income)
+            snprintf(ask_line, sizeof ask_line, "EVERY WIN PAYS %u P FROM NOW ON (NOW %u P)",
+                     2u + run_state.run.income, 1u + run_state.run.income);
+        else if (o->xn)
             snprintf(ask_line, sizeof ask_line, "%s + %s + %s.  REPLACES %s (GONE FOR GOOD)", o->name, o->xname[0],
                      o->xname[1], o->put_lost[0]);
         else if (o->nput >= 2)
@@ -1913,6 +1937,15 @@ static void run_prize_take(int put)
     if (o->cost > credits) return;
     psx_mod_write_word(RUN_CREDITS, credits - o->cost);
     r->p_spent = (uint16_t)(r->p_spent + o->cost);
+    if (o->income) {
+        r->income = (uint8_t)(r->income + 1u);
+        psx_mod_counter_add("moa.run.prize_income", 1);
+        char what[64];
+        snprintf(what, sizeof what, "+1 P PER WIN for %u P (each win now pays %u P)", (unsigned)o->cost,
+                 1u + r->income);
+        run_prize_done(what);
+        return;
+    }
     const uint32_t ix = k_run_tables[o->cat].base + o->id;
     uint32_t xix[2] = { 0, 0 };
     for (int k = 0; k < o->xn; k++) xix[k] = k_run_tables[o->xcat[k]].base + o->xid[k];
@@ -1977,6 +2010,13 @@ static void run_prize_ask_open(void)
 {
     const struct run_offer *o = &run_offer[run_prize_cur];
     run_prize_ask_n = 0;
+    if (o->income) {                                   /* BUY / BACK */
+        run_prize_ask_kind[run_prize_ask_n++] = ASK_EQUIP0;
+        run_prize_ask_kind[run_prize_ask_n++] = ASK_BACK;
+        run_prize_ask_cur = 0;
+        run_prize_stage = PZ_ASK;
+        return;
+    }
     for (int i = 0; i < o->nput && i < 2; i++) run_prize_ask_kind[run_prize_ask_n++] = ASK_EQUIP0 + i;
     if (run_state.run.saved_n + 1u + o->xn <= MOA_RUN_SAVED_MAX) run_prize_ask_kind[run_prize_ask_n++] = ASK_SAVE;
     run_prize_ask_kind[run_prize_ask_n++] = ASK_BACK;
@@ -4250,7 +4290,9 @@ static int run_victory_draw(int ready)
     v.loser = run_victory_lose; v.loser_w = v.loser_h = run_victory_lose ? 640 : 0;
     v.band = k_belt_band[moa_hub_rank_tile_index((int)(MOA_RUN_SLOTS - wins))];
     v.rank = run_victory_rank;
-    v.pay = "+1 P";
+    char pay[12];
+    snprintf(pay, sizeof pay, "+%u P", 1u + run_state.run.income);
+    v.pay = pay;
     v.beaten = run_victory_beaten;
     v.line[0] = run_victory_l0;
     v.line[1] = run_victory_l1;

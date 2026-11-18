@@ -108,6 +108,7 @@ struct moa_screen_prize_row {
     const uint32_t *thumb;    /* 128 x 128, or NULL */
     int locked;
     const char *locked_why;   /* under a locked row's cost (NULL: "NOT ENOUGH P") */
+    const char *icon;         /* no thumb: this text, large, in the picture box ("+1P") */
     /* A set cycling through its parts: the whole box is wiped from the top
      * to the next part (`category_next`, `name_next`, `thumb_next`), `wipe`
      * of 128 done, under a bright scan line; `dots` (2..3) small marks under

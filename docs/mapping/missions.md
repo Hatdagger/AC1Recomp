@@ -122,7 +122,7 @@ distinct engine routines per mission; most used: `0x8007C290`, `0x80015138`, `0x
 |---|---|---|
 | +0x00 | `0x80091390` ← main loop `0x80052608` | **every frame** (mission logic) |
 | +0x04 | `0x80052590` | **once at start** (mission init) |
-| +0x08 | `0x80090B28`, arg = event number | mission-specific event: event kind 9 of the dispatcher `0x80090934` (see "Event points") |
+| +0x08 | `0x80090B28`, arg = event number; also called straight from the route follower in missions 7 and 13 (see "Routes") | mission-specific event: event kind 9 of the dispatcher `0x80090934` (see "Event points") |
 | +0xA0 … | `0x80078EF4`: `*(module + 0xA0 + 4 × point+0x06)` | **handler per event-point type** (see "Event points") |
 | +0x0C | not found yet | — |
 | +0x10 | `0x8007EE6C`, arg = object | per-object callback `?` |
@@ -145,7 +145,16 @@ call counts). The codes found:
 |---|---|---|---|
 | 0x80 | the mission code (missions 0, 1, 19), event dispatcher | **mission complete** | 0 |
 | 0x100 | mission code (mission 1, with message 158), `0x8007E5B4` and `0x80090B0C` after dialog `0x80058B58(149)` returns 1 | **failed** (objective lost, or quit from a confirm dialog `?`) | 1 |
-| 0x200 | engine `0x800527A0` when a byte (+73 of a struct) hits 0 | probably **AC destroyed** `?` | 2 |
+| 0x101 | engine main loop `0x8005273C`: player block +0x08 & 7 = 1 (outside both inner area boxes, see `battle-system.md` stage boxes), message 157 "Out of area. Combat halted." | **out of area** | — |
+| 0x200 | engine `0x800527A0` when player object +0x49 (`0x801E7291`) = 0, message 155 "Defenses damaged. Cannot continue combat." (156 "…Test mode disengaged." when the mission number is 40) | **AC destroyed** | 2 |
+| timer | engine main loop `0x80052708` when the mission timer reaches 1 (below) | code and message chosen when the timer was started | — |
+
+**Mission timer** (2026-11-17): **M+0x14** counts down by 1 per engine pass (only while M+0x12 ≥ 16
+and the player AC is alive, +0x49 = 255) and stops at 1. At 1 the engine shows message
+`0x801F8E70` (byte) and ends with code `0x801F8E72` (u16). Started by **`0x80090FD8(ticks, code,
+message)`**, or by event kind 4 (show message *a*, timer = *b* × 22, code 0x100 / 0x200 if *d* = 1 /
+0x80 if *d* = 2, message *c*). The HUD clock (`0x8005681C`) shows ticks × 100 ÷ 22 hundredths of a
+second, so **22 ticks = one second on the HUD**. Setting M+0x14 = 0 stops the clock.
 
 At the end (`0x80052878`), the engine writes `0x8003EC50` = 1 / 2 / 0 and returns to the menu,
 **except** after a successful mission 18 (Enter Factory): it sets player block +0x255 = 19 and
@@ -153,7 +162,9 @@ returns 1, so the Final Mission starts straight away.
 
 Mission number **40** is a special case in the engine (message 155 vs 156 at the 0x200 end). The
 menu writes 40 at `0x8007DBA0` before compiling the AC, so it's a non-mission use of the missions
-engine (garage test? `?`).
+engine. The message texts settle what it is: **test mode** (152 "Combat system / Engaging test
+mode.", 154 "Target demolished. Test mode disengaged.", 156 "Defenses damaged. Test mode
+disengaged.").
 
 ## Map file (FDAT slot × 5 + 4)
 
@@ -248,7 +259,7 @@ are checked for spawning, 4 per frame (`0x8007F20C` → `0x8007EEE0`).
 
 | Offset | Meaning |
 |---|---|
-| +0x00 u8 | 1 = spawned (object exists) |
+| +0x00 u8 | 1 = spawned (object exists), **3 = destroyed** (never spawns again; set by `0x8007EE04`, see "How each mission is won") |
 | +0x01 u8 | object slot |
 | +0x02 u16 | copy of +0x1A at load |
 | +0x04, +0x06, +0x08 | → object +0x08, +0x0A (−1), +0x0C |
@@ -313,6 +324,119 @@ player's AP is 0. Otherwise:
 Nothing in the hook counts kills, so in mission 0 the objective is "reach door 290" as far as the
 code is concerned (the fugitive may be what blocks the way `?`). Other missions will differ: each
 has its own hook.
+
+## How each mission is won (2026-11-17, static, all 20 every-frame hooks read)
+
+### Shared pieces
+
+- **Destroying an object** = `0x8007EE04(obj)`: if obj +0x36 bit 1 is set it adds placement AP
+  (+0x1A) ÷ 200 to `0x8003EC54` (destruction bonus tally `?`), calls the mission's hook **+0x10**
+  (stub `jr ra` in all 20 MoA missions), frees the object and sets **placement +0x00 = 3** unless the
+  placement has **flag 0x10** (respawning, e.g. a production line). Mission code tests "is
+  placement N destroyed?" as `byte 0x801E6748 + 44N == 3`.
+- **"Everything destroyed"** checks loop over placements 4–63 and count those with type ≠ −1 and
+  +0x00 ≠ 3. Placements not yet spawned and disabled ones (flag 0x40) count too, so every placed
+  enemy must die; a placement with flag 0x10 can never reach 3 and blocks the check until the mission
+  clears that flag.
+- Every hook starts by doing nothing once M+0x0C has an end bit (0x381) or player AP
+  (`0x801E73B0`) is 0. "Complete" is always end code 0x80 (usually after message 153 "Battle
+  over."), "failed" 0x100 (message 158 "Mission failed.").
+- A **box test** some missions use for "reach the exit": player object +0x08/+0x0A/+0x0C against a
+  min/max box the init hook builds from an event point (centre +0/+2/+4, signed bytes +0x22 … +0x27
+  × 256, the same rule as spawn zones). So for those points +0x22 … +0x27 are box limits, not an
+  event (answers part of the "reconcile" open item: it depends on how the point is used).
+- **Message numbers** are global (FDAT 205, see "Message texts" below), so each mission's lines
+  name who is who.
+- **Ravens beaten in missions count in the arena** (2026-11-17): when a named Raven dies, the
+  mission calls **`0x800907D0(n)`**: if `0x8003EAC9` = 0 (not a sub-arena fight) it sets **bit 1 of
+  byte `0x8004B5D5 + n`**, i.e. entry *n* of a 50-byte per-rank table at `0x8004B5D6` (Ex Arena
+  save block `0x8004B5A0` +0x36, right before the Ex Arena opponent flags at `0x8004B608`; arena 0
+  has 50 ranks). *n* is the Raven's **arena-0 rank**: the briefings confirm The Wolf "ranked 14th"
+  = 14 and William "ranked 15th" = 15. Calls: Regulon 22 (m4), Toll-Keeper 29 (m3), Stalker 16
+  (m5), Barrel 18 (m6), Lucky Hopper 27 (m7), Evil Kiss 17 (m8), The Wolf 14 (m9), William 15
+  (m10), Goldy 24 + Super Bow 28 (m11), Hercules 21 (m14). Missions 16–19 make no call. That
+  bit 1 is the arena's own "beaten" bit is likely but not checked against the arena code `?`
+  (for the arena / save lanes: a mod that adds Ravens to missions should call it too).
+
+### Per mission
+
+Placement = the record number (0x801E6748 + 44 × N), AP = its +0x1A. Sections = map sections.
+
+| Slot | Mission | Win (end 0x80) | Lose (other than AC destroyed / out of area) |
+|---|---|---|---|
+| 0 | Eliminate Fugitive | walk up to the automatic door in **section 290** (see above) | — |
+| 1 | Defend Submarine | destroy the three attackers (**placements 10, 11, 12**, AP 8,000 each; msg 23 mentions a battle cruiser); a 660-frame wait follows (msgs 26 "Repairs are almost complete", 27 "…We will be submerging now"), then **stand on the submarine** (sections 56/55/54, on the deck within 10 units of floor height) | **fall into the sea** (player object +0x0A > 256; msg 25 warns, then 158); **section 56 destroyed** (submarine hull, handler 3, HP 30,000; only the first of the three sections is checked `?`) |
+| 2 | Destroy Berserk MTs | **every placement destroyed**. Placements 9–12 respawn (flag 0x10) until **section 143** (breakable, HP 3,000) is destroyed: its event (kind 9, *b* = 0) runs hook +0x08, which clears their flag 0x10 and removes point 3 (msg 28 "The production line has been stopped"). Gate locks: sections 69 / 70 (HP 2,000) unlock gates 141 / 72 (msg 160) | — |
+| 3 | Destroy Cannon | touch the **four bomb points** (points 8–11; each fires hook +0x08 with 0–3, counter `0x800AB828`); at 4: msg 30, **Toll-Keeper** (placement 5, AP 13,000) appears (script 1, msgs 98, 31, 32); destroy him → timer stops, msg 33 "We're coming in to retrieve you", placement 7 spawns, script 0x102 | **5-minute timer** (6,600 ticks, started when the intro ends): **the cannon fires** when 10 ticks or fewer are left (screen flash, script 0x100, msg 158, fail). Byte `0x800AB894` is module data that starts at **1** in the file (a one-shot guard, cleared when the sequence starts), so this always runs at time-out (corrected 2026-11-17) |
+| 4 | Recover Meteorite | destroy the five units (**placements 5–9**, AP 1,600; msg 6); then msg 94, **Regulon** (placement 4, AP 15,000) appears (script 1, msgs 7/8); destroy him → msg 9 "Well done" | — |
+| 5 | Enemy Fortress | destroy the defenders: when fewer than 10 placements are left, **8 reinforcements** spawn (placements 15–22, table `0x800AA2B0`); when only one is left, msg 20 "The enemy has hired a Raven… Stalker" and script 0 bring in **Stalker** (placement 5, AP 15,000); destroy him | — |
+| 6 | Assist Marine Lab | destroy the five MTs (every placement but 4–6; briefing: "MTs x 5"): flag `0x800AD838` = 1 and doors 132 / 133 unlock. When door 132 opens: Fritz's unit (placement 5) leaves, **Barrel** (placement 4, AP 5,000) and **placement 6** (AP 18,000) spawn (scripts 0x1301, 0x202, msg 37). **Destroy placement 6.** If Barrel is still alive then, a scripted ending (script 0x1304) plays first; Barrel dying or falling (object +0x0A > 30,000) shows msg 123 | — |
+| 7 | Retrieve Secret Files | destroy **placement 5 = the Armored Car** (AP 3,000; briefing: "Your target is the Armored Car, ignore all other enemies"). Placement 12 spawns with msg 38 "The airport should be just ahead. Destroy him before he escapes"; msgs 39/40 name **Lucky Hopper** = placement 4 (AP 13,000), optional (destroying it only records rank 27 as beaten, see "Shared pieces") | **the car escapes**: it drives a fixed route and the mission fails when it reaches the last route point (see "Routes" below): hook +0x08 event 0 → car stopped, script 0x900, msg 158, 0x100. The car stays parked until the player AC stands on **map section 39** (player object +0x30); then msg 38 plays, the car's type handler is re-run (route restarts at point 6) and placement 12 spawns near the route's end |
+| 8 | Cavern Invasion | destroy **Evil Kiss** (placement 4, AP 18,000; msgs 41–43) → msg 44 "Evacuate immediately!" → **reach the exit box** (event point 4: x −4,768 … −2,976, y −1,780 … 12, z −9,536 … −7,232) | — |
+| 9 | Enter Abandoned Mine | no end call in the module. Destroying **The Wolf** (placement 4, AP 18,000; msgs 45–47) unlocks door section 169 (clears its locked-message byte); when that door opens, msg 48 "Your target is that container. Retrieve it."; **touch the container** = event point 1 (kind 5, message 153, no part) | — |
+| 10 | Board Spaceship | **reach the exit box** (event point 0); the pad is then ignored for 50 frames, script 0x200. **William** (placement 5, AP 10,000; msgs 49–51) is optional | — |
+| 11 | Attack Terrorists | destroy **Goldy and Super Bow** (placements 4 and 5, AP 13,000 each, spawned at start with script; msgs 55–58) | — |
+| 12 | Assist MTs | destroy the six enemies (**placements 4–9**, AP 5,000, list `0x800AA0D8`) | **all three allies** (placements 10, 11, 12, list `0x800AA0F0`) destroyed: each death shows msg 102/103/104, then msg 59 "My squad has been destroyed", 158 |
+| 13 | Assault Transports | **every placement destroyed** (briefing: trucks x3 = placements 4–6, AP 3,000; MTs x4 = placements 7–10, AP 4,000); when fewer than 8 are left, msg 93 and 4 reinforcements (placements 11–14, AP 950). **Placement 15** (type 4, AP 20,000) is not a target: on spawn it takes over the camera (M+0x12 = 0xFFFF, M+0x0C bits 0x2400) and it **removes itself** (`0x8007EE04`, so +0x00 = 3) once it is past ±32,000 on x or z, or after its AP hits 0 and it falls; so it never blocks the "all destroyed" check (an intro flyover `?`) | **a truck escapes**: each truck drives the route point 4 → point 5 (z 10,000 → −2,500) from the moment it spawns; reaching the end runs hook +0x08 event 0 (msg 158, 0x100, once, flag `0x800AABFC`) and removes the truck (see "Routes" below) |
+| 14 | Attack Chrome HQ | destroy **placement 4 = Hercules** (Sub-Arena AC, AP 19,000; name from the briefing) | **3-minute timer** (3,960 ticks; msg 60 "Time limit 3 minutes", 61): at 3 ticks left msg 62 "Time is up. Retreat!", script, 158 |
+| 15 | Destroy Giant Tank | **every placement destroyed** (placements 4–10) | — |
+| 16 | Eliminate Intruders | when door section 24 opens, **Nine-Ball** (placement 30, AP 15,000) spawns (script 0x1200; msgs 64–66); **destroy Nine-Ball** → msgs 69 "all enemy units have retreated", 70. The other intruders are optional in the code, although the briefing says "Destroy all enemies" | — |
+| 17 | Defend Laboratory | three waves of two MTs (placements **4+5, 6+7, 8+9**, AP 5,000; next wave when both are destroyed, gate messages 73/71/72/74); then **Hustler One** (placement 10, AP 18,000; msg 75 when first hit); **bring his AP to 0** → he's kept alive (+0x49 = 255), script 0x800, complete | briefing objective "Defend all gates", but **there is no gate-lost failure**: module 17 has no map-section handlers at all (so no breakable gates) and only one end call (the win at `0x800A20A4`). Only the engine's AC-destroyed / out-of-area ends apply |
+| 18 | Enter Factory | when door section 68 opens, **placements 4 and 5** (AP 17,000 each) spawn (script 0x800; msgs 107–110 "???"); destroy both → msg 114, doors 92/93 get command 0x8201 (open + unlock); **door section 96 opens** → 64-frame fade → 0x80 (no message), then the engine starts the Final Mission | — |
+| 19 | Final Mission | intro states 0–5 (placement 4 spawns, scripts 0x200–0x202, 0x803); then **bring placement 4's AP to 0** (AP 16,800) → 40-frame fade → 0x80 | — |
+
+**Cross-checked with the game's own briefings** (MIS.T, plain ASCII pages; each mission's last
+page is "Theater of operations / Enemy forces / Objective"): every win condition above matches the
+stated objective, and the briefings name the targets in 7, 13 and 14. RetroAchievements also has a
+separate "defeat all enemies in Retrieve Secret Files" achievement, which fits Lucky Hopper being
+optional.
+
+**Two more ways a mission can end** (2026-11-17): the **script reader has an "end mission"
+command** (`0x800927C4`: u16 operand, code = operand & 0x7FFF, bit 15 also sets M+0x10 = 1), and
+a mission's hook +0x08 can end it. In the engine, hook +0x08 is only called through event kind 9
+(dispatcher `0x80090934` → `0x80090B1C`), but **missions 7 and 13 call it themselves** from their
+route follower (below); no other MoA module does (all 20 scanned).
+
+### Routes (escaping vehicles, 2026-11-17, static)
+
+Missions 7 and 13 move their getaway vehicles along a chain of **event points used as route
+points** (point type 2 in mission 7, type 3 in mission 13; neither type has a point handler, so the
+points are plain data):
+
+- The vehicle's type handler (mission 7 type 3 `0x800A2720`, mission 13 type 2 `0x800A30EC`) stores
+  the **first route point** in object **+0x118** (mission 7: point 6, mission 13: point 4) and sets
+  the movement routine (mission 7 `0x800A2350`, mission 13 the same code at `0x800A2D14`) through
+  `0x8007CEBC`.
+- Each frame the vehicle turns toward the point (`0x800136E0`: at most 96 of 4,096 angle units, about
+  8°, per frame) and checks a box around it:
+  **x and z within ±64, y within −72 … +64**. Inside it, it reads the point's **+0x28 (file byte 22)
+  = next point number**: not 0 → +0x118 = `0x801E49D8 + 52 × next`; **0 → the end of the route:
+  hook +0x08 is called with event 0**, which ends the mission as failed. Mission 13 also removes the
+  truck (`0x8007EE04`).
+- So for route points, +0x28 is "next point", not the one-shot flag that item points use (the two
+  readings belong to different point users).
+- Routes: mission 7 = points **6 → 7 → 8 → 5 → 14 → 15 → 18 → 17 → 16 → 19 → 11 → 12 → 13 (end)**,
+  ending at (−3,200, 0, −3,751), next to placement 12; mission 13 = **4 → 5 (end)**, (1,300, −250,
+  10,000) → (1,300, −250, −2,500).
+
+For mods: a route can be lengthened, shortened or redrawn by editing map block 9 (positions and
+byte 22) without touching code; setting the last point's byte 22 to its own number would make the
+vehicle loop forever and never escape.
+
+Timers: only missions 3 and 14 start one. Kill counts are never numbers in the code: missions
+check named placements (by +0x00 = 3) or "all placements gone". Protect targets: mission 1 (the
+submarine section), mission 12 (three allied MTs).
+
+### Message texts (FDAT 205)
+
+`0x80058B1C(0, 0 | 200, n)` shows message *n*; the text table is copied from **FDAT 205 block 4, 5
+or 6** (picked by a byte at +634 of the struct in `s3` at `0x80055744` `?`) to `0x800AE688`:
+u32 offset of a u16 table, entry *n* = offset of message *n* from the block start. The three blocks
+hold the same 250 messages except the COM lines (153 reads "Battle over." / "Target of operation
+cleared." / "TARGET ACHIEVED."). Encoding: A–Z = 0xAA–0xC3, a–z = 0xC4–0xDD, space and digits as
+ASCII, 0x80 + n = digit n in text, 0x8B `-`, 0x8E `.`, 0x8F `,`, 0x90 `?`, 0x91 `!`, 0x98 `:`,
+0x9E `'`, 0x0A new line, 0xF0 0x81 … 0xF0 0x82 around the speaker's name; a leading code such as
+`M5B32N0X93` or `H21` sets layout / voice / portrait `?`. Used: 3–76, 92–123, 147–166.
 
 ## Broken Phantasma missions: what sets them apart (2026-11-17, static, PP USA disc)
 
@@ -398,10 +522,50 @@ uses as trigger zones):
 | +0x06 | +6 | **point type** (−1 = none / removed); picks the handler module +0xA0 + 4 × type |
 | +0x08 … +0x0F | +8 … +15 | ? |
 | +0x14 | — | controller (allocated by the handler, `0x8007927C`) |
-| +0x1C … +0x21 | — | from block 8's 24-byte record for this type (`0x801E46D8 + 24 × type`); +0x1C = 0xC000 when the type is −1 |
+| +0x10, +0x18 … +0x1A | — | cleared at load |
+| +0x1C | — | **flags**, from block 8 record +0 (0xC000 when the type is −1): **0x4000 = not touchable** (left out of the touch list), **0x2000 = solid** (bumping objects call its message handler), 0x8000 = set when a point removes itself |
+| +0x1E, +0x20 | — | **touch size** (radius, height), from block 8 record +2 / +4 |
 | **+0x22 … +0x27** | +16 … +21 | **event 1**: kind, arg byte, arg u16 (+0x24), arg byte, arg byte |
 | +0x28 | +22 | 0 = repeatable, else one-shot; 2 = event 2 is used too `?` |
 | **+0x2A … +0x2F** | +24 … +29 | **event 2**, same layout |
+
+### Point classes (block 8, 2026-11-17, static)
+
+**Map file block 8** (`0x80078F58`) = u32 count, then count × 24-byte records copied to
+**`0x801E46D8 + 24 × type`**: u16 flags, u16 radius, u16 height, u16 **class**, then 8 u16 (0 in
+every MoA map). The loader copies flags / radius / height into point +0x1C … +0x21. So a point's
+**type** is only an index into its own map's block 8 (type 3 means different things in different
+missions); the **class** (record +6) is what stays the same from map to map. The engine never reads
+the class (an editor label `?`); each mission's point handler (module +0xA0 + 4 × type) decides the
+behaviour. After loading, `0x80078D70` lists every used point without flag 0x4000 at `0x801E63D8`
+(count u16 `0x801E65D8`); `0x80078FE4` / `0x800791A8` test boxes against that list.
+
+**Touching a point:** the player's "use" action (`0x80090E30`, from `0x800849D0`) first looks for an
+object in front of the AC (message 0x8100), else a listed point within 200 × 575 units in front, and
+calls its controller **+0x04 with message 0** = "used / picked up". Objects moving into a **solid**
+point (flag 0x2000, `0x8007A688` and three more callers) call +0x04 with a pointer to hit info
+instead (not 0) = "bumped". Each frame `0x800792B8` runs every point's controller +0x00.
+
+Classes in the 20 MoA maps (handler behaviour read in missions 2, 3, 13):
+
+| Class | Flags | Size | Missions | What it is |
+|---|---|---|---|---|
+| 0xF9 | 0xE004 | — | 1–8, 13, 15 (always points 0, 1, 2) | **combat area boxes**: while the player AC is inside the box (point ± signed bytes +0x22 … +0x27 × 256) its bit (+0x28) is set in player block +0x08. The engine's out-of-area end tests +0x08 & 7 = 1 (see "How a mission ends"). Same handler code in every mission |
+| 0xF8 | 0xC044 | — | 6–10, 13, 14, 17, 18 | **zones**: box limits in +0x22 … +0x27. Used by mission code for "reach the exit" boxes (8 point 4, 10 point 0) and spawn zones, and as **route points** (7, 13; +0x28 = next point). No handler |
+| 0xF7 | 0xC004 | — | 1, 3–8, 13, 15 | **sound box** `?`: each frame calls `0x800537D4(box min, box max, +0x28, +0x2A, +0x2B …)` (sound code near `0x800441D8`) |
+| 0xF4 | 0x4001 | — | 2, 3 | **watcher**: mode +0x22 = 0 watches *n* = +0x23 map sections from +0x24, mode 1 watches *n* points from +0x24; once all are gone it removes itself (type −1, flag 0x8000). Mission code then tests "point removed" (mission 3: points 8–11, mission 2: points 3, 13, 14) |
+| 0xF1, 0xF2, 0xFA | 0x400D, 0x4005, 0x4007 | — | one point each in 1, 3–7, 13, 15 | no handler, not touchable; positions for scripts / camera `?` |
+| 0xFD, 0xFE | 0xC000 | — | all | **plain markers** (positions for scripts and mission code: spawn points, cutscene targets). No handler |
+| 0x33, 0x35, 0x36, 0x37 | 0 | 20–80 wide | 9, 2, 8, 12 | **pickups**: the container (9) and the three hidden parts (2 HD-HELM, 8 WX-ED2, 12 P/CV). Use → event 1 (and 2), effect, removed. See "Hidden parts" below |
+| 0x2F | 0 | 200 × 300 | 18 (points 2–9) | touchable, fires its events (same pickup code) `?` |
+| 0x2C, 0x2D, 0x2E | **0x2000** (solid) | 70 × 40 / 70 × 50 | 2, 12, 14 | **mines** `?`: solid, can sit still (+0x23 = 1, spins), move toward a linked point (+0x23 = 2, next point +0x28) or wander (3); when bumped they blow up once (effect, made untouchable) |
+| 0x30, 0x31 | 0 | 200 × 150 | 1 | touchable, mission-1-only handler `?` |
+| 0x3C, 0x3D | 0 | 300 / 500 | 15 | mission-15-only handler `?` |
+| 0x2B, 0x32 | 0x4000 / 0 | 50 × 400 / 50 × 50 | 12 / 13 | no handler; positions `?` |
+
+So the old "reconcile" item has its answer: +0x22 … +0x27 are **event 1 for pickups**, **box limits
+for zones and area boxes**, and **mode / list for watchers**; the class decides. When porting maps
+(Phantasma), the handler table and block 8 must agree: a type number has no fixed meaning.
 
 **Event dispatcher `0x80090934(kind, a, b, c, d)`** (called only from mission code; a = byte +0x23,
 b = u16 +0x24, c = byte +0x26, d = byte +0x27):
@@ -565,11 +729,43 @@ So chapter-timed (kind 0) mails depend on mission wins **and** arena ranks.
   mail a kind the game never delivers (4 … 0x7F) and deliver it itself (set bit 0 | (+0x60 << 2),
   then +0x60 += 1), with its text and pictures from the Phantasma MIS.T copy (entry 410+k).
 
+## In-game tests of the Phantasma missions (2026-11-17, user reports)
+
+Full crash evidence (registers, call sites) is kept in the claude.ai project doc
+`claude/phantasma-missions-crashes.md`. Mission names are the user's; their PP numbers aren't confirmed yet.
+
+**Report 1, master build 20caf2a (before the fix branch), after Rescue the Allies:** crashed later in
+the menu module. BIOS `rand()` (A0:2Fh, stub `0x8002C0F4`, from `0x80015138`) jumped to `0xFFFFAA92`:
+the A0 table entry at kernel RAM `0x000002BC` had been overwritten earlier by a stray write.
+
+**Report 2, fix branch `phantasma-mission-fixes` build 6613497 (Actions run 44149288382):**
+- Mission picker works after LOAD GAME; overlay autocompile worked.
+- **Infiltrate Amber Base:** enemy shots never come out; destroying the generators doesn't drop the
+  shield door; exiting gives no mission report.
+- **Raid the Laboratory:** the elevator works; the door right after it never opens.
+- **Crash** (mission not confirmed): address error on load at `0x8007D5AC` (`lh v0,212(s1)`) in engine
+  routine `0x8007D50C` (a0 = object: copies an 8-byte vector from a stack argument into object
+  +212..+219, normalises it, then calls `0x8007C104`, `0x80054AC8`, `0x80054E40`). **The object
+  pointer was `0xF9`**, so the native part had already written to kernel RAM `0x1CD..0x1D4`. Callers:
+  `0x80083FE4` (object in s0) and `0x800867D4` (object in s1). At the crash s0 = `0x9398` = exactly the
+  PP→MoA code relocation delta, and s2 = `0x800AA7D0` (inside the mission module).
+- Reading: both crashes are a small number used as an object pointer, so the engine writes into the
+  bottom of RAM (BIOS tables). Together with the dead doors, shield and enemy shots, this points to
+  more wrongly converted calls, data addresses or object-field offsets in the PP code (like items 1-4
+  above). `0xF9` is also the area-box point class `?`.
+- Next: match the mission names to PP numbers; for those missions, find what feeds `0x8007D50C`'s
+  object argument, the door/shield triggers and the "mission over -> report" path, comparing PP's
+  original code with the fixed pack.
+
 ## Open
 - What `0x8003EA29` (from T+1160) does in the engine; what T+8 counts.
 - Mission 0's three type handlers (`0x800A1680`, `0x800A1EA8`, `0x800A1F50`): what they set up.
 - Messages 5 and 7; what `0x80093844(0x1300 / 0x301)` runs (cutscene / script `?`).
-- Other missions' win checks (kill counts? object AP?): read each mission's +0x00 hook.
+- ~~Other missions' win checks~~: done, see "How each mission is won". ~~Leftovers~~ done
+  2026-11-17: the escapes in 7 and 13 are the route follower (see "Routes"), mission 3's
+  `0x800AB894` starts at 1 (cannon fires at time-out), mission 17 has no gate-lost check,
+  mission 13's placement 15 removes itself. Still open: what mission 7's placement 12 is (type 1,
+  spawned with msg 38 next to the route's end; a plane `?`) and what script 0x900 shows.
 - File blocks 0–6, 8–10; the 36-byte type parameters; the 32 × 32 grid in block 6.
 - Hooks +0x0C, +0x18, +0x1C; the event numbers passed to +0x08.
 - Mission number 40: which menu screen uses it.
@@ -577,7 +773,8 @@ So chapter-timed (kind 0) mails depend on mission wins **and** arena ranks.
 - Map header fields (80, 19, 4 × 19) and the blocks after it.
 - Objectives, win/lose checks, timer, results and rewards; enemy list; script reader
   `0x80091FFC` (stepped at `0x80092E4C`; writes AC +0x6D/+0x7C/+0x7E/+0x84).
-- Event points: the other point types (0–2, 4, 5) and the block 8 per-type records.
-- Reconcile: the spawn rule reads point +0x22 … +0x27 as box limits, item points use the same bytes as event 1 (per type?).
+- ~~Event points: other types, block 8~~: done, see "Point classes". Still open: classes 0xF1 / 0xF2 /
+  0xFA (who reads them), 0x30 / 0x31 (mission 1), 0x3C / 0x3D (mission 15), 0x2F (mission 18),
+  and whether 0xF7 really is a sound box.
 - Mail: mission mode T+4 = 0 (what it is; it hands out every mail of kinds 0–3 at once); what
   the second delivery call (`0x800AC2D4`) belongs to; Phantasma's own mail table.

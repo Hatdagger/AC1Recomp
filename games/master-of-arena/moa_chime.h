@@ -16,6 +16,9 @@ void moa_chime_prepare(void);
 /* The sounds as 22050 Hz PCM, for an offline preview (caller frees). */
 float *moa_chime_sting_pcm(int *n);
 float *moa_chime_tick_pcm(int *n);
+/* The same with the shared finish, as encoded (caller frees). */
+float *moa_chime_sting_finished(int *n);
+float *moa_chime_tick_finished(int *n);
 
 #ifdef __cplusplus
 }

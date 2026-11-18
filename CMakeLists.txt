@@ -157,6 +157,7 @@ if(TARGET psx-master-of-arena)
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_hub_rank_bg.c"
         # Rogue Arena victory sting and type tick (synthesized, private SPU voices).
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_chime.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_sfx.c"
         # Rogue Arena music: the game's menu song around the run's screens, and
         # the player's own files from Music/Rogue Arena (ogg/mp3/wav decoders).
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_music.cpp"

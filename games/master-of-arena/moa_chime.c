@@ -8,11 +8,13 @@
  *   anvil clank; it fades out fast and ends on a hydraulic hiss;
  * - the type tick: a short mechanical click for each word of the lines.
  * Guitars are plucked strings (Karplus-Strong) through a hard overdrive and
- * a speaker-cabinet filter. Synthesized at 22050 Hz, encoded once to PS1 SPU
+ * a speaker-cabinet filter. Both get the shared 90s finish (moa_sfx.c: drive,
+ * dull top, dark hall echo baked in), like every sound we add. Synthesized at 22050 Hz, encoded once to PS1 SPU
  * ADPCM (every filter and shift tried per block, the closest kept),
  * registered as private sample banks and played on private voices: SPU RAM,
  * the game's voices and its registers are never touched. */
 #include "moa_chime.h"
+#include "moa_sfx.h"
 #include "mod_plugins.h"
 
 #include <math.h>
@@ -311,7 +313,7 @@ static int build_sting(void)
 {
     if (s_sting.adpcm) return 1;
     int n = 0;
-    float *o = moa_chime_sting_pcm(&n);
+    float *o = moa_chime_sting_finished(&n);
     if (!o) return 0;
     const int ok = encode(o, n, 29000.0f, &s_sting);
     free(o);
@@ -338,11 +340,34 @@ static int build_tick(void)
 {
     if (s_tick.adpcm) return 1;
     int n = 0;
-    float *o = moa_chime_tick_pcm(&n);
+    float *o = moa_chime_tick_finished(&n);
     if (!o) return 0;
     const int ok = encode(o, n, 14000.0f, &s_tick);
     free(o);
     return ok;
+}
+
+/* The sounds as they are encoded: with the shared finish (moa_sfx.c). The
+ * sting keeps 0.9 s of hall after it; the tick only a short room. */
+float *moa_chime_sting_finished(int *n_out)
+{
+    int n = 0;
+    float *o = moa_chime_sting_pcm(&n);
+    if (!o) return NULL;
+    float *f = moa_sfx_finish(o, n, 0.9f, &moa_sfx_hall, n_out);
+    free(o);
+    return f;
+}
+
+float *moa_chime_tick_finished(int *n_out)
+{
+    static const struct moa_sfx_room k_tick_room = { 0.12f, 0.6f, 3800.0f, 1.3f, 8500.0f };
+    int n = 0;
+    float *o = moa_chime_tick_pcm(&n);
+    if (!o) return NULL;
+    float *f = moa_sfx_finish(o, n, 0.12f, &k_tick_room, n_out);
+    free(o);
+    return f;
 }
 
 static int play(const struct snd *s, uint32_t bank, uint32_t slot, uint16_t vol)

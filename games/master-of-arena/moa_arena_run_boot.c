@@ -42,6 +42,7 @@
 #include "moa_hub_rank_bg.h"
 #include "moa_ac_view.h"
 #include "moa_chime.h"
+#include "moa_vs_sound.h"
 #include "moa_music.h"
 #include "moa_screen.h"
 #include "moa_run_record.h"
@@ -481,6 +482,10 @@ static unsigned run_victory_key;
  * done: the hub overlay could open) and the player presses X; the hub
  * overlay waits for that (run_hx_frame). */
 static int run_victory_hold;
+static int run_vs;                         /* the VS screen is up (NEXT BATTLE until the fight) */
+static void run_vs_open(void);
+static void run_vs_close(const char *why);
+static void run_vs_fight_runs(void);
 static uint32_t run_victory_frames;
 static int run_victory_words_shown, run_victory_armed;
 static uint16_t run_victory_held = 0xFFFFu;
@@ -2802,6 +2807,7 @@ static void run_sampler_entry(struct CPUState *cpu, uint32_t address)
     if (!run_on() || !run_at_hub || psx_mod_read_word(address) != RUN_SIG_SAMPLER) return;
     run_prize_where = 0;                          /* in a fight: no prize screen */
     run_hx_fight_runs();                          /* the stage pick has been read */
+    run_vs_fight_runs();
     run_prize_paid = 0;
     run_maybe_return();
     /* The fight's own result, before the retry/exit choice (a retry never
@@ -3423,6 +3429,7 @@ static void run_hx_foe_text(void)
 
 static int run_hx_draw(void)
 {
+    if (run_vs) return 1;                              /* the VS screen has the picture */
     char title[40], bal[40], stage_v[27];
     const unsigned wins = run_state.run.wins < MOA_RUN_SLOTS ? run_state.run.wins : MOA_RUN_SLOTS - 1u;
     struct moa_screen_list l;
@@ -3482,7 +3489,7 @@ static int run_hx_draw(void)
 
 static void run_hx_close(void)
 {
-    if (run_hx_overlay) (void)psx_mod_set_overlay_image(NULL, 0, 0);
+    if (run_hx_overlay && !run_vs) (void)psx_mod_set_overlay_image(NULL, 0, 0);   /* the VS screen keeps it */
     run_hx_overlay = 0;
     run_hx = HX_OFF;
 }
@@ -3493,6 +3500,7 @@ static void run_hx_fail(const char *why)
     psx_mod_counter_add("moa.run.hub_overlay_failed", 1);
     run_hx_go_entry = -1;
     run_hx_next = 0;
+    run_vs_close("next battle failed");
     run_hx_close();
 }
 
@@ -3517,6 +3525,7 @@ static void run_hx_start_next(void)
     if (!run_hx_draw()) run_hx_overlay = 0;          /* no picture: the menus still run */
     run_log("hub overlay: next battle from the %s (%s, stage %s)", at_hub ? "hub" : "arena list",
             run_hx_foe, k_hx_stage[run_hx_stage_i].name);
+    run_vs_open();                                    /* the VS screen over all of it */
 }
 
 /* The run's arena block (a0 + 0x80) when a0 is a screen state of arena 0, else 0. */
@@ -3988,11 +3997,264 @@ static int run_victory_draw(int ready)
     return px && psx_mod_set_overlay_image(px, w, h);
 }
 
+/* ---- VS screen (design: docs/rogue-arena-v2-design.md, "VS screen") ----------
+ *
+ * From NEXT BATTLE until the fight runs, over the menus the run drives and
+ * the game's own loading: the player's AC and the next opponent, FOR RANK n,
+ * VS, the belt's strip, "UNITS DEPLOY IN 5..1" at a second a step; on counts
+ * 3, 2, 1 a rifle shot, crossing out the last three ACs beaten in the belt
+ * (older ones are crossed out already). Then the hangar shutters close and
+ * it fades to black; black holds until the fight runs. A fight that runs
+ * before the count is over cuts it: the shutters close at once and hand
+ * over as soon as they meet (user 2026-11-18 12:29). Silent but for the
+ * shots and the shutters. Renders from the 3D model install; without it,
+ * the boxes are empty. */
+#define VS_C0        0.6f          /* the count starts */
+#define VS_STEP      1.0f          /* a second per number */
+#define VS_SHUT      (VS_C0 + 5.0f * VS_STEP)
+#define VS_FADE_AT   0.7f          /* after the shutters start: fade to black ... */
+#define VS_FADE_LEN  0.4f
+#define VS_MAX_MINI  8
+static uint32_t run_vs_frames;
+static int32_t run_vs_fight_at = -1;      /* frame the fight ran, -1 not yet */
+static int32_t run_vs_shut_at = -1;       /* frame the shutters started, -1 not yet */
+static int run_vs_overlay;                /* drawn as the overlay (else the loading picture) */
+static unsigned run_vs_shots, run_vs_key;
+static int run_vs_door;
+static uint8_t *run_vs_you_px, *run_vs_foe_px, *run_vs_mini_px[VS_MAX_MINI];
+static uint32_t run_vs_emblem[64 * 64];
+static int run_vs_has_emblem;
+static struct moa_screen_vs_mini run_vs_mini[VS_MAX_MINI];
+static int run_vs_mini_n;
+static char run_vs_pilot[25], run_vs_ac[25], run_vs_my_pilot[17], run_vs_my_ac[17], run_vs_belt[40];
+static int run_vs_foe_rank, run_vs_my_rank;
+static float run_vs_foe_frac, run_vs_my_frac;
+static uint32_t run_vs_band;
+
+/* A lineup pick's build (64-byte arena record: parts, paint at +16). */
+static int run_vs_pick_record(struct moa_run_pick p, uint8_t r64[64])
+{
+    if (p.arena == MOA_RUN_GHOST && p.rank < MOA_RUN_SLOTS) {
+        moa_run_ghost_record(&run_state.lineup.ghost[p.rank], run_state.lineup.seed, r64);
+        return 1;
+    }
+    if (p.arena == MOA_RUN_PLAYER) return 0;
+    const uint32_t ix = run_index();
+    return ix && run_menu_lba() && run_record(ix, p, KIND_BUILDS, 64u, r64);
+}
+
+/* A pick's emblem from its arena's emblem entries (a ghost: the emblem of
+ * the AC it pushed off the ladder, the old rank 49; user 12:33). 1 = got one. */
+static int run_vs_pick_emblem(struct moa_run_pick p, uint32_t out[64 * 64])
+{
+    if (p.arena == MOA_RUN_GHOST && p.rank < MOA_RUN_SLOTS) p = run_state.ghost_emblem[p.rank];
+    if (p.arena == MOA_RUN_GHOST || p.arena == MOA_RUN_PLAYER) return 0;
+    uint32_t first, count;
+    const uint32_t ix = run_index();
+    if (!ix || !run_menu_lba() || !run_source(ix, p.arena, &first, &count) || p.rank >= count) return 0;
+    const uint32_t e = first + count + p.rank, a = run_hdr(e), b = run_hdr(e + 1u);
+    static uint8_t sec[2 * 2048];
+    if (b <= a || b - a > 2u || !psx_mod_read_disc_sectors(run_menu_lba() + a, b - a, sec)) return 0;
+    return moa_screen_emblem_from_tim(sec, (b - a) * 2048u, out);
+}
+
+/* The VS sounds from the disc's shared fight bank (FDAT entry 205), once. */
+static void run_vs_sounds(void)
+{
+    static int tried;
+    if (tried || moa_vs_sound_ready()) return;
+    tried = 1;
+    uint32_t lba = 0, size = 0;
+    static uint8_t head[2048];
+    if (!psx_mod_disc_file_extent("GG/COM/FDAT.T", &lba, &size) || !lba ||
+        !psx_mod_read_disc_sectors(lba, 1u, head)) { run_log("vs: FDAT.T not found, no sounds"); return; }
+    const uint32_t k = MOA_VS_FDAT_ENTRY - 1u;
+    const uint32_t a = (uint32_t)head[4 + 2 * k] | (uint32_t)head[5 + 2 * k] << 8;
+    const uint32_t b = (uint32_t)head[6 + 2 * k] | (uint32_t)head[7 + 2 * k] << 8;
+    uint8_t *e = b > a && b - a < 512u ? (uint8_t *)malloc((size_t)(b - a) * 2048u) : NULL;
+    const int ok = e && psx_mod_read_disc_sectors(lba + a, b - a, e) && moa_vs_sound_build(e, (b - a) * 2048u);
+    free(e);
+    run_log("vs: sounds %s", ok ? "ready" : "not made (no sounds)");
+}
+
+static uint8_t *run_vs_render(const uint8_t rec[13], const uint8_t paint[48], int size, float yaw)
+{
+    return run_victory_render(rec, paint, size, yaw, 0.06f, 1.3f);
+}
+
+static void run_vs_free(void)
+{
+    free(run_vs_you_px); free(run_vs_foe_px);
+    run_vs_you_px = run_vs_foe_px = NULL;
+    for (int i = 0; i < VS_MAX_MINI; i++) { free(run_vs_mini_px[i]); run_vs_mini_px[i] = NULL; }
+    run_vs_mini_n = 0;
+}
+
+/* Wide legs (four legs, caterpillars) read better with more of the AC in the box. */
+static float run_vs_frac(const uint8_t rec[13]) { return rec[3] != 255u && rec[3] >= 21u ? 0.72f : 0.55f; }
+
+static void run_vs_open(void)
+{
+    if (run_vs || !run_state_ok || run_state.run.over || !run_show_font()) return;
+    const unsigned wins = run_state.run.wins;
+    if (wins >= MOA_RUN_SLOTS - 1u) return;
+    run_vs_free();
+    run_backdrop_frame();
+    run_vs_sounds();
+    const int my_rank = (int)(MOA_RUN_SLOTS - wins), foe_rank = my_rank - 1;
+    run_vs_my_rank = wins ? my_rank : 0;
+    run_vs_foe_rank = foe_rank;
+    /* The player: the garage's AC (the save's part order -> card record). */
+    uint8_t g[12], paint[48];
+    for (unsigned i = 0; i < 12; i++) g[i] = psx_mod_read_byte(0x80036FB0u + i);
+    const uint8_t me[13] = { g[0], g[2], g[3], g[11], g[5], g[4], g[6], g[7], g[9], g[8],
+                             psx_mod_read_byte(0x8003EA70u), psx_mod_read_byte(0x8003EA71u), g[1] };
+    moa_run_paint(run_state.lineup.seed, run_state.run.attempt, paint);
+    run_vs_you_px = run_vs_render(me, paint, 1000, 0.55f);
+    run_vs_my_frac = run_vs_frac(me);
+    run_hx_name((const uint8_t *)run_state.run.pilot, 16, run_vs_my_pilot, sizeof run_vs_my_pilot);
+    run_hx_name((const uint8_t *)run_state.run.ac, 16, run_vs_my_ac, sizeof run_vs_my_ac);
+    if (!run_vs_my_ac[0]) snprintf(run_vs_my_ac, sizeof run_vs_my_ac, "NEW AC");
+    /* The opponent: the lineup's next rank. */
+    const struct moa_run_pick foe = run_state.lineup.slot[MOA_RUN_SLOTS - (unsigned)foe_rank];
+    uint8_t r64[64];
+    run_vs_foe_frac = 0.55f;
+    if (run_vs_pick_record(foe, r64)) {
+        run_vs_foe_px = run_vs_render(r64, r64 + 16, 1000, -0.55f);
+        run_vs_foe_frac = run_vs_frac(r64);
+    }
+    run_vs_has_emblem = run_vs_pick_emblem(foe, run_vs_emblem);
+    run_pick_names(foe, run_vs_ac, run_vs_pilot, sizeof run_vs_ac);
+    /* The strip: the next opponent's belt, beaten first, then YOU, the next, the rest. */
+    const int belt = moa_hub_rank_tile_index(foe_rank);
+    const int hi = belt >= 10 ? 1 : belt == 9 ? 5 : 50 - 5 * belt, lo = belt >= 10 ? 1 : belt == 9 ? 2 : hi - 4;
+    run_vs_band = k_belt_band[belt < 0 ? 0 : belt > 10 ? 10 : belt];
+    if (hi == lo) snprintf(run_vs_belt, sizeof run_vs_belt, "%s BELT  %d", k_victory_belt_name[belt], hi);
+    else snprintf(run_vs_belt, sizeof run_vs_belt, "%s BELT  %d-%d", k_victory_belt_name[belt], hi, lo);
+    int beaten = 0;
+    for (int r = hi; r >= lo && run_vs_mini_n < VS_MAX_MINI; r--) {
+        if (r > (int)MOA_RUN_SLOTS - 1 || r < my_rank) continue;       /* rank 50: the player's start */
+        struct moa_screen_vs_mini *m = &run_vs_mini[run_vs_mini_n];
+        memset(m, 0, sizeof *m);
+        const struct moa_run_pick p = run_state.lineup.slot[MOA_RUN_SLOTS - (unsigned)r];
+        if (run_vs_pick_record(p, r64)) run_vs_mini_px[run_vs_mini_n] = run_vs_render(r64, r64 + 16, 400, -0.55f);
+        m->rgba = run_vs_mini_px[run_vs_mini_n]; m->size = 400; m->rank = r; m->kind = MOA_VS_DOWN;
+        run_vs_mini_n++;
+        beaten++;
+    }
+    for (int i = 0; i < beaten; i++) {                    /* the last three on counts 3, 2, 1 */
+        const int from_end = beaten - 1 - i;
+        run_vs_mini[i].slash_at = from_end >= 3 ? -9.0f : VS_C0 + (float)(4 - from_end) * VS_STEP;
+    }
+    if (run_vs_mini_n < VS_MAX_MINI) {
+        struct moa_screen_vs_mini *m = &run_vs_mini[run_vs_mini_n];
+        memset(m, 0, sizeof *m);
+        run_vs_mini_px[run_vs_mini_n] = run_vs_render(me, paint, 400, 0.55f);
+        m->rgba = run_vs_mini_px[run_vs_mini_n]; m->size = 400; m->kind = MOA_VS_YOU; m->rank = my_rank;
+        run_vs_mini_n++;
+    }
+    for (int r = foe_rank; r >= lo && run_vs_mini_n < VS_MAX_MINI; r--) {
+        struct moa_screen_vs_mini *m = &run_vs_mini[run_vs_mini_n];
+        memset(m, 0, sizeof *m);
+        const struct moa_run_pick p = run_state.lineup.slot[MOA_RUN_SLOTS - (unsigned)r];
+        if (run_vs_pick_record(p, r64)) run_vs_mini_px[run_vs_mini_n] = run_vs_render(r64, r64 + 16, 400, -0.55f);
+        m->rgba = run_vs_mini_px[run_vs_mini_n]; m->size = 400; m->rank = r;
+        m->kind = r == foe_rank ? MOA_VS_NEXT : MOA_VS_AHEAD;
+        m->top = r == lo;
+        run_vs_mini_n++;
+    }
+    run_vs = 1;
+    run_vs_frames = 0;
+    run_vs_fight_at = run_vs_shut_at = -1;
+    run_vs_shots = 0;
+    run_vs_door = 0;
+    run_vs_key++;
+    psx_mod_counter_add("moa.run.vs_screen", 1);
+    run_log("vs: up, rank %d vs %s / %s (rank %d), %s, %d beaten in the belt%s", my_rank, run_vs_pilot, run_vs_ac,
+            foe_rank, run_vs_belt, beaten, run_vs_you_px ? "" : " (no 3D model install: empty boxes)");
+}
+
+static void run_vs_close(const char *why)
+{
+    if (!run_vs) return;
+    run_vs = 0;
+    if (run_vs_overlay) (void)psx_mod_set_overlay_image(NULL, 0, 0);
+    else psx_mod_set_loading_screen(NULL, 0);
+    run_vs_overlay = 0;
+    run_vs_free();
+    run_log("vs: down (%s, %u frames, fight at %d, shutters at %d)", why, (unsigned)run_vs_frames,
+            (int)run_vs_fight_at, (int)run_vs_shut_at);
+}
+
+static void run_vs_fight_runs(void)
+{
+    if (run_vs && run_vs_fight_at < 0) {
+        run_vs_fight_at = (int32_t)run_vs_frames;
+        run_log("vs: the fight runs at %.2f s", run_vs_frames / 60.0);
+    }
+}
+
+/* Per frame while it is up. */
+static void run_vs_frame(void)
+{
+    if (!run_vs) return;
+    if (!run_state_ok || run_state.run.over) { run_vs_close("the run is over"); return; }
+    const float t = (float)run_vs_frames / 60.0f;
+    run_vs_frames++;
+    if (!run_hx_next) psx_mod_write_half(RUN_PAD_BUFFER + 2u, 0xFFFFu);   /* controls locked (not while the run drives the menus) */
+    /* The shutters: at the end of the count, or at once when the fight runs early. */
+    if (run_vs_shut_at < 0 && (t >= VS_SHUT || run_vs_fight_at >= 0)) {
+        run_vs_shut_at = (int32_t)run_vs_frames - 1;
+        if (run_vs_fight_at >= 0 && t < VS_SHUT) run_log("vs: the fight is ready at %.2f s: count cut, shutters", t);
+    }
+    const float sh = run_vs_shut_at >= 0 ? (float)(run_vs_frames - 1u - (uint32_t)run_vs_shut_at) / 60.0f : -1.0f;
+    /* Hand over: the fight runs and the shutters are shut (early: as soon as
+     * they have met and settled; else the black is up). */
+    if (run_vs_fight_at >= 0 && sh >= 0.0f) {
+        const int early = run_vs_fight_at < run_vs_shut_at + 1;
+        if (sh >= (early ? MOA_VS_SHUTTER_MEET + 0.10f : VS_FADE_AT + VS_FADE_LEN)) { run_vs_close("the fight runs"); return; }
+    }
+    if (run_vs_frames > RUN_SLOW(60u * 60u)) { run_vs_close("timed out"); return; }
+    /* Sounds: shots on counts 3, 2, 1; the shutters' slam on the meet. */
+    if (sh < 0.0f) {
+        while (run_vs_shots < 3u && t >= VS_C0 + (2.0f + (float)run_vs_shots) * VS_STEP) {
+            if (moa_vs_sound_shot(run_vs_shots == 2u)) psx_mod_counter_add("moa.run.vs_shot", 1);
+            run_vs_shots++;
+        }
+    } else if (!run_vs_door && sh >= MOA_VS_SHUTTER_MEET - MOA_VS_DOOR_PEAK) {
+        run_vs_door = 1;
+        (void)moa_vs_sound_door();
+    }
+    struct moa_screen_vs v;
+    memset(&v, 0, sizeof v);
+    v.key = run_vs_key;
+    v.you.rgba = run_vs_you_px; v.you.size = 1000; v.you.pilot = run_vs_my_pilot; v.you.ac = run_vs_my_ac;
+    v.you.rank = run_vs_my_rank; v.you.frac = run_vs_my_frac;
+    v.foe.rgba = run_vs_foe_px; v.foe.size = 1000; v.foe.emblem = run_vs_has_emblem ? run_vs_emblem : NULL;
+    v.foe.pilot = run_vs_pilot; v.foe.ac = run_vs_ac; v.foe.rank = run_vs_foe_rank; v.foe.frac = run_vs_foe_frac;
+    v.mini = run_vs_mini; v.mini_n = run_vs_mini_n;
+    v.belt = run_vs_belt; v.band = run_vs_band;
+    v.t = t;
+    v.count = (sh < 0.0f && t >= VS_C0) ? 5 - (int)((t - VS_C0) / VS_STEP) : 0;
+    if (v.count < 1) v.count = 0;
+    v.shutter = sh;
+    v.black = sh < 0.0f ? 0.0f : (sh - VS_FADE_AT) / VS_FADE_LEN;
+    if (v.black < 0.0f) v.black = 0.0f;
+    int ww = 0, wh = 0, w = 0, h = 0;
+    psx_mod_window_size(&ww, &wh);
+    const uint32_t *px = moa_screen_render_vs(ww, wh, &v, &w, &h);
+    if (!px) { run_vs_close("could not be drawn"); return; }
+    if (psx_mod_set_overlay_image(px, w, h)) { run_vs_overlay = 1; return; }
+    run_vs_overlay = 0;
+    psx_mod_set_loading_screen("ROGUE ARENA  Next battle", -1);
+    psx_mod_set_loading_image(px, w, h);
+}
+
 /* ---- the cover (see run_cover) --------------------------------------------- */
 static void run_cover_end(const char *why)
 {
     if (!run_cover) return;
-    if (run_cover_drawn && !run_hx && !run_prize_stage && !run_end_stage)
+    if (run_cover_drawn && !run_hx && !run_prize_stage && !run_end_stage && !run_vs)
         (void)psx_mod_set_overlay_image(NULL, 0, 0);
     run_cover = run_cover_drawn = 0;
     run_log("cover: down (%s, %u frames)", why, (unsigned)run_cover_frames);
@@ -4191,6 +4453,7 @@ static int run_music_scene(void)
     if (!run_on()) return MOA_MUSIC_OFF;
     if (run_autopilot || run_boot_black) return MOA_MUSIC_BOOT;   /* until the player has control */
     if (!run_at_hub) return MOA_MUSIC_OFF;
+    if (run_vs) return MOA_MUSIC_OFF;                            /* silent, as the game's loading */
     if (run_music_fight) return MOA_MUSIC_FIGHT;
     if (run_state_ok && run_state.run.over) return MOA_MUSIC_LOSS;
     if (run_cover && run_victory_hold) return MOA_MUSIC_VICTORY;
@@ -4225,6 +4488,7 @@ static void run_frame_hook(void)
     run_hx_frame();
     run_boot_black_frame();
     run_cover_frame();
+    run_vs_frame();
     {
         const unsigned wins = run_state.run.wins < MOA_RUN_SLOTS ? run_state.run.wins : MOA_RUN_SLOTS - 1u;
         moa_music_frame(run_music_scene(), (int)(MOA_RUN_SLOTS - wins));

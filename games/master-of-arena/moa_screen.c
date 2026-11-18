@@ -1148,3 +1148,463 @@ int moa_screen_victory_typed(const struct moa_screen_victory *v)
 {
     return v && moa_screen_victory_words(v) >= victory_word_total(v) && v->t >= VIC_TYPE;
 }
+
+/* ---- VS screen (moa_screen_render_vs) ----------------------------------------
+ * A port of the approved mock (handover tools/vs_mock2.py + compose.py):
+ * 1280-wide layout centred on the canvas, belt tile dimmed to 42 %. */
+#define VS_PW 420                      /* portrait boxes */
+#define VS_PH 300
+#define VS_PY 84
+#define VS_MW 150                      /* strip boxes */
+#define VS_MH 120
+#define VS_TW 186                      /* the belt's last AC */
+#define VS_TH 150
+
+static uint32_t vs_scale(uint32_t c, float k)
+{
+    int r = (int)(((c >> 16) & 255) * k), g = (int)(((c >> 8) & 255) * k), b = (int)((c & 255) * k);
+    if (r > 255) r = 255;
+    if (g > 255) g = 255;
+    if (b > 255) b = 255;
+    return 0xFF000000u | (uint32_t)r << 16 | (uint32_t)g << 8 | (uint32_t)b;
+}
+
+/* Rows/columns with enough opaque pixels: the AC's solid box (antennas and
+ * thin bits ignored). 1 = found. */
+static int vs_solid_box(const uint8_t *p, int n, int *x0, int *y0, int *x1, int *y1)
+{
+    const int thr = n / 130 > 2 ? n / 130 : 2;
+    *x0 = *y0 = -1; *x1 = *y1 = -1;
+    for (int x = 0; x < n; x++) {
+        int c = 0;
+        for (int y = 0; y < n; y++) c += p[(y * n + x) * 4 + 3] > 0;
+        if (c > thr) { if (*x0 < 0) *x0 = x; *x1 = x; }
+    }
+    for (int y = 0; y < n; y++) {
+        int c = 0;
+        for (int x = 0; x < n; x++) c += p[(y * n + x) * 4 + 3] > 0;
+        if (c > thr) { if (*y0 < 0) *y0 = y; *y1 = y; }
+    }
+    return *x0 >= 0 && *y0 >= 0;
+}
+
+/* The fighting-game crop: from just above the AC's top down `frac` of its
+ * height, box aspect, pushed `lean` toward the screen centre (side -1 the
+ * player on the left, +1 the opponent), area-averaged to bw x bh.
+ * 0xAARRGGBB, caller frees. */
+static uint32_t *vs_crop(const uint8_t *p, int n, int bw, int bh, int side, float frac)
+{
+    int x0, y0, x1, y1;
+    uint32_t *o = (uint32_t *)calloc((size_t)bw * bh, 4u);
+    if (!o || !p || !vs_solid_box(p, n, &x0, &y0, &x1, &y1)) return o;
+    const float ah = (float)(y1 - y0), ch = ah * frac, cw = ch * bw / bh;
+    const float cx = (x0 + x1) * 0.5f + (side < 0 ? -0.10f : 0.10f) * cw;
+    const float bx = cx - cw * 0.5f, by = y0 - ah * 0.03f;
+    for (int j = 0; j < bh; j++) {
+        const float sy0 = by + j * ch / bh, sy1 = by + (j + 1) * ch / bh;
+        int ya = (int)floorf(sy0), yb = (int)ceilf(sy1);
+        if (yb <= ya) yb = ya + 1;
+        for (int i = 0; i < bw; i++) {
+            const float sx0 = bx + i * cw / bw, sx1 = bx + (i + 1) * cw / bw;
+            int xa = (int)floorf(sx0), xb = (int)ceilf(sx1);
+            if (xb <= xa) xb = xa + 1;
+            float r = 0, g = 0, b = 0, a = 0;
+            int k = 0;
+            for (int y = ya; y < yb; y++)
+                for (int x = xa; x < xb; x++, k++) {
+                    if (x < 0 || y < 0 || x >= n || y >= n) continue;
+                    const uint8_t *q = p + (y * n + x) * 4;
+                    const float al = q[3] / 255.0f;
+                    r += q[0] * al; g += q[1] * al; b += q[2] * al; a += al;
+                }
+            if (a <= 0.0f || !k) continue;
+            const float A = a / k;
+            o[j * bw + i] = (uint32_t)(A * 255.0f + 0.5f) << 24 | (uint32_t)(r / a + 0.5f) << 16 |
+                            (uint32_t)(g / a + 0.5f) << 8 | (uint32_t)(b / a + 0.5f);
+        }
+    }
+    return o;
+}
+
+/* Over `dst` (opaque, w x h): the AC with a black edge r px round it (alpha a). */
+static void vs_put_outlined(uint32_t *dst, const uint32_t *ac, int w, int h, int r, int a)
+{
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++) {
+            if ((ac[y * w + x] >> 24) > 8) continue;
+            int hit = 0;
+            for (int dy = -r; dy <= r && !hit; dy++)
+                for (int dx = -r; dx <= r && !hit; dx++) {
+                    if (dx * dx + dy * dy > r * r + r) continue;
+                    const int X = x + dx, Y = y + dy;
+                    hit = X >= 0 && Y >= 0 && X < w && Y < h && (ac[Y * w + X] >> 24) > 8;
+                }
+            if (hit) dst[y * w + x] = blend_px(dst[y * w + x], 0, 0, 0, (uint32_t)a);
+        }
+    for (int i = 0; i < w * h; i++) {
+        const uint32_t q = ac[i], al = q >> 24;
+        if (al) dst[i] = blend_px(dst[i], (q >> 16) & 255, (q >> 8) & 255, q & 255, al);
+    }
+}
+
+/* A portrait box: a dark gradient in the side's colour, the emblem big and
+ * dim (pixel-doubled, then smooth), a floor shade, the AC outlined. */
+static uint32_t *vs_panel(const struct moa_screen_vs_side *s, int side, uint32_t tint)
+{
+    const int bw = VS_PW, bh = VS_PH;
+    uint32_t *p = (uint32_t *)malloc((size_t)bw * bh * 4u);
+    if (!p) return NULL;
+    for (int y = 0; y < bh; y++) {
+        const uint32_t c = vs_scale(tint, 0.55f - 0.40f * y / bh);
+        for (int x = 0; x < bw; x++) p[y * bw + x] = c;
+    }
+    if (s->emblem) {
+        const int es = (int)(bh * 1.15f);
+        const int ex = (bw - es) / 2 + (side < 0 ? (int)(bw * 0.10f) : -(int)(bw * 0.10f));
+        const int ey = (bh - es) / 2 - (int)(bh * 0.06f);
+        for (int y = 0; y < es; y++) {
+            const int Y = ey + y;
+            if (Y < 0 || Y >= bh) continue;
+            for (int x = 0; x < es; x++) {
+                const int X = ex + x;
+                if (X < 0 || X >= bw) continue;
+                const float u = (x + 0.5f) * 128.0f / es - 0.5f, v = (y + 0.5f) * 128.0f / es - 0.5f;
+                const int u0 = (int)floorf(u), v0 = (int)floorf(v);
+                const float fu = u - u0, fv = v - v0;
+                float acc[4] = { 0, 0, 0, 0 };
+                for (int k = 0; k < 4; k++) {
+                    int uu = u0 + (k & 1), vv = v0 + (k >> 1);
+                    uu = uu < 0 ? 0 : uu > 127 ? 127 : uu;
+                    vv = vv < 0 ? 0 : vv > 127 ? 127 : vv;
+                    const uint32_t q = s->emblem[(vv / 2) * 64 + uu / 2];
+                    const float wgt = ((k & 1) ? fu : 1.0f - fu) * ((k >> 1) ? fv : 1.0f - fv);
+                    const float al = (q >> 24) / 255.0f;
+                    acc[0] += wgt * al; acc[1] += wgt * al * ((q >> 16) & 255);
+                    acc[2] += wgt * al * ((q >> 8) & 255); acc[3] += wgt * al * (q & 255);
+                }
+                if (acc[0] <= 0.0f) continue;
+                p[Y * bw + X] = blend_px(p[Y * bw + X], (uint32_t)(acc[1] / acc[0]), (uint32_t)(acc[2] / acc[0]),
+                                         (uint32_t)(acc[3] / acc[0]), (uint32_t)(acc[0] * 0.62f * 255.0f));
+            }
+        }
+    }
+    for (int y = 0; y < bh; y++) {
+        const float t = (y / (float)bh - 0.55f) / 0.45f;
+        if (t <= 0.0f) continue;
+        for (int x = 0; x < bw; x++) p[y * bw + x] = blend_px(p[y * bw + x], 0, 0, 0, (uint32_t)(150.0f * t));
+    }
+    if (s->rgba) {
+        uint32_t *ac = vs_crop(s->rgba, s->size, bw, bh, side, s->frac > 0.0f ? s->frac : 0.55f);
+        if (ac) { vs_put_outlined(p, ac, bw, bh, 3, 200); free(ac); }
+    }
+    return p;
+}
+
+/* The mock's frame: a dark rim, then `t` px in colour, round (x, y, w, h). */
+static void vs_frame(uint32_t *buf, int x, int y, int w, int h, uint32_t col, int t)
+{
+    frame_rect(buf, x - t - 3, y - t - 3, x + w + t + 3, y + h + t + 3, 3, rgb(10, 10, 14));
+    frame_rect(buf, x - t, y - t, x + w + t, y + h + t, t, col);
+}
+
+static void vs_blit_opaque(uint32_t *buf, int W, const uint32_t *sp, int w, int h, int px, int py)
+{
+    for (int y = 0; y < h; y++) {
+        const int Y = py + y;
+        if (Y < 0 || Y >= s_h) continue;
+        for (int x = 0; x < w; x++) {
+            const int X = px + x;
+            if (X >= 0 && X < W) buf[Y * W + X] = sp[y * w + x];
+        }
+    }
+}
+
+/* A disc of colour c, alpha a, soft edge, clipped to the box. */
+static void vs_dot(uint32_t *buf, int W, float cx, float cy, float r, uint32_t c, int a,
+                   int bx0, int by0, int bx1, int by1)
+{
+    for (int y = (int)(cy - r - 1); y <= (int)(cy + r + 1); y++) {
+        if (y < by0 || y >= by1 || y < 0 || y >= s_h) continue;
+        for (int x = (int)(cx - r - 1); x <= (int)(cx + r + 1); x++) {
+            if (x < bx0 || x >= bx1 || x < 0 || x >= W) continue;
+            const float d = sqrtf((x + 0.5f - cx) * (x + 0.5f - cx) + (y + 0.5f - cy) * (y + 0.5f - cy));
+            float k = r + 0.5f - d;
+            if (k <= 0.0f) continue;
+            if (k > 1.0f) k = 1.0f;
+            buf[y * W + x] = blend_px(buf[y * W + x], (c >> 16) & 255, (c >> 8) & 255, c & 255, (uint32_t)(a * k));
+        }
+    }
+}
+
+/* Smoke rising out of a beaten AC's box (looped), strength k 0..1. */
+static void vs_smoke(uint32_t *buf, int W, int x, int y, int bw, int bh, float t, int seed, float k)
+{
+    uint32_t r = (uint32_t)seed * 2654435761u + 12345u;
+    for (int i = 0; i < 7; i++) {
+        r = r * 1664525u + 1013904223u; const float r1 = (r >> 8) / 16777216.0f;
+        r = r * 1664525u + 1013904223u; const float r2 = (r >> 8) / 16777216.0f;
+        float u = t * 0.30f + i / 7.0f + r1 * 0.1f;
+        u -= floorf(u);
+        const float px = x + bw * (0.25f + 0.5f * r2) + u * 18.0f, py = y + bh * 0.85f - u * bh * 0.9f;
+        const float rad = 12.0f + u * 26.0f;
+        const int a = (int)(120.0f * (1.0f - u) * k);
+        /* a soft puff (the mock's blurred disc): full in the middle, fading out */
+        const float R = rad + 7.0f;
+        for (int yy = (int)(py - R); yy <= (int)(py + R); yy++) {
+            if (yy < y || yy >= y + bh) continue;
+            for (int xx = (int)(px - R); xx <= (int)(px + R); xx++) {
+                if (xx < x || xx >= x + bw) continue;
+                const float d2 = ((xx + 0.5f - px) * (xx + 0.5f - px) + (yy + 0.5f - py) * (yy + 0.5f - py)) / (R * R);
+                if (d2 >= 1.0f) continue;
+                const float f = (1.0f - d2) * (1.0f - d2);
+                buf[yy * W + xx] = blend_px(buf[yy * W + xx], 150, 146, 140, (uint32_t)(a * f));
+            }
+        }
+    }
+}
+
+/* A thick line (discs every pixel). */
+static void vs_line(uint32_t *buf, int W, float x0, float y0, float x1, float y1, float r, uint32_t c)
+{
+    const float len = sqrtf((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0));
+    const int n = (int)len + 1;
+    for (int i = 0; i <= n; i++) {
+        const float u = (float)i / n;
+        vs_dot(buf, W, x0 + (x1 - x0) * u, y0 + (y1 - y0) * u, r, c, 255, 0, 0, W, s_h);
+    }
+}
+
+/* The hangar shutters, t seconds after they start: close from the top and
+ * the bottom in MOA_VS_SHUTTER_MEET (ease in), a small bounce, a spark line
+ * on the seam as they meet. */
+static void vs_shutters(uint32_t *buf, int W, float t, uint32_t band)
+{
+    const int H = s_h;
+    float k;
+    if (t < MOA_VS_SHUTTER_MEET) { k = t / MOA_VS_SHUTTER_MEET; k *= k; }
+    else if (t < MOA_VS_SHUTTER_MEET + 0.10f) k = 1.0f - 0.025f * sinf((t - MOA_VS_SHUTTER_MEET) / 0.10f * 3.14159265f);
+    else k = 1.0f;
+    const int half = (int)(H / 2 * k);
+    for (int top = 1; top >= 0; top--) {
+        const int y0 = top ? 0 : H - half, y1 = top ? half : H;
+        fill(buf, 0, y0, W, y1, rgb(34, 35, 40));
+        /* panel seams, moving with the door */
+        for (int yy = top ? y1 - 26 - 48 : y0 + 26 + 48; top ? yy > y0 : yy < y1; yy += top ? -48 : 48)
+            fill(buf, 0, yy - 1, W, yy + 2, rgb(22, 22, 26));
+        if (half > 26) {                               /* the hazard stripe on the leading edge */
+            const int ey = top ? y1 - 26 : y0;
+            for (int y = ey; y < ey + 26; y++) {
+                if (y < 0 || y >= H) continue;
+                for (int x = 0; x < W; x++) {
+                    const int d = ((x - (y - ey) + 4000) % 40);
+                    if (d < 20) buf[y * W + x] = 0xFF000000u | (band & 0xFFFFFFu);
+                }
+            }
+            frame_rect(buf, 0, ey, W, ey + 26, 2, rgb(0, 0, 0));
+        }
+    }
+    if (t >= MOA_VS_SHUTTER_MEET && t < MOA_VS_SHUTTER_MEET + 0.12f) {
+        const int a = (int)(255.0f * (1.0f - (t - MOA_VS_SHUTTER_MEET) / 0.12f));
+        for (int y = H / 2 - 2; y <= H / 2 + 2; y++)
+            for (int x = 0; x < W; x++) buf[y * W + x] = blend_px(buf[y * W + x], 255, 240, 200, (uint32_t)a);
+    }
+}
+
+const uint32_t *moa_screen_render_vs(int win_w, int win_h, const struct moa_screen_vs *v, int *out_w, int *out_h)
+{
+    static uint32_t *buf, *base;
+    static int bw, base_w = -1;
+    static unsigned base_key;
+    enum { MAXM = 8 };
+    static uint32_t *mcol[MAXM], *mgrey[MAXM];
+    *out_w = *out_h = 0;
+    if (!s_font_ok || !v) return NULL;
+    int W = CONTENT_W;
+    if (win_w > 0 && win_h > 0) W = (int)((int64_t)CANVAS_H * win_w / win_h);
+    if (W < 1280) W = 1280;                            /* the layout needs 1280 */
+    if (W > MAX_W) W = MAX_W;
+    W &= ~1;
+    if (W != bw || !buf) {
+        free(buf); free(base);
+        buf = (uint32_t *)malloc((size_t)W * CANVAS_H * 4u);
+        base = (uint32_t *)malloc((size_t)W * CANVAS_H * 4u);
+        bw = (buf && base) ? W : 0;
+        base_w = -1;
+        if (!bw) return NULL;
+    }
+    const int keep_w = s_w, keep_h = s_h;
+    s_w = W; s_h = CANVAS_H;
+    const int H = CANVAS_H, cx = W / 2;
+    const uint32_t white = rgb(236, 236, 236), gold = rgb(255, 196, 72), grey = rgb(150, 156, 170);
+    const uint32_t blue = rgb(120, 170, 235), red = rgb(235, 90, 80), band = 0xFF000000u | (v->band & 0xFFFFFFu);
+    const int n = v->mini_n > MAXM ? MAXM : v->mini_n;
+    const int lx = cx - 640 + 64, rx = cx + 640 - 64 - VS_PW;
+    if (base_w != W || base_key != v->key) {
+        /* ---- the still layer ---- */
+        backdrop(base, W, 0);
+        for (int i = 0; i < W * H; i++) base[i] = vs_scale(base[i], 0.42f);
+        fill(base, 0, 0, W, 58, rgb(0, 0, 0));
+        fill(base, 0, 58, W, 61, band);
+        text_left(base, "ROGUE ARENA", cx - 640 + 30, 18 + 16, 2, grey);
+        text(base, NULL, "NEXT BATTLE", cx, 6 + 24, 3, white);
+        if (v->belt) text_left(base, v->belt, cx + 640 - 30 - text_width(v->belt, 2), 18 + 16, 2, band);
+        uint32_t *pl = vs_panel(&v->you, -1, blue), *op = vs_panel(&v->foe, 1, red);
+        if (pl) { vs_blit_opaque(base, W, pl, VS_PW, VS_PH, lx, VS_PY); free(pl); }
+        if (op) { vs_blit_opaque(base, W, op, VS_PW, VS_PH, rx, VS_PY); free(op); }
+        vs_frame(base, lx, VS_PY, VS_PW, VS_PH, blue, 3);
+        vs_frame(base, rx, VS_PY, VS_PW, VS_PH, red, 3);
+        char s[48];
+        for (int k = 0; k < 2; k++) {
+            const int rank = k ? v->foe.rank : v->you.rank;
+            if (rank <= 0) continue;
+            snprintf(s, sizeof s, "RANK %d", rank);
+            const int x = k ? rx : lx, tx = k ? x + VS_PW - 10 - text_width(s, 2) : x + 10;
+            for (int y = VS_PY + 6; y < VS_PY + 40; y++)
+                for (int xx = tx - 6; xx < tx + text_width(s, 2) + 4; xx++) base[y * W + xx] = blend_px(base[y * W + xx], 0, 0, 0, 170);
+            text_left(base, s, tx, VS_PY + 8 + 16, 2, gold);
+        }
+        if (v->you.pilot) text_left(base, v->you.pilot, lx + 2, VS_PY + VS_PH + 12 + 24, 3, white);
+        if (v->you.ac) text_left(base, v->you.ac, lx + 4, VS_PY + VS_PH + 62 + 16, 2, blue);
+        if (v->foe.pilot) text_left(base, v->foe.pilot, rx + VS_PW - 2 - text_width(v->foe.pilot, 3), VS_PY + VS_PH + 12 + 24, 3, white);
+        if (v->foe.ac) text_left(base, v->foe.ac, rx + VS_PW - 4 - text_width(v->foe.ac, 2), VS_PY + VS_PH + 62 + 16, 2, red);
+        if (v->foe.rank > 0) {
+            text(base, NULL, "FOR RANK", cx, 96 + 16, 2, grey);
+            snprintf(s, sizeof s, "%d", v->foe.rank);
+            text(base, NULL, s, cx, 124 + 40, 5, gold);
+        }
+        text(base, NULL, "VS", cx, 204 + 56, 7, red);
+        fill(base, 0, 488, W, H, rgb(0, 0, 0));
+        fill(base, 0, 485, W, 488, band);
+        /* the strip's boxes: in colour, and greyed for the beaten */
+        for (int i = 0; i < MAXM; i++) { free(mcol[i]); free(mgrey[i]); mcol[i] = mgrey[i] = NULL; }
+        for (int i = 0; i < n; i++) {
+            const struct moa_screen_vs_mini *m = &v->mini[i];
+            const int w = m->top ? VS_TW : VS_MW, h = m->top ? VS_TH : VS_MH;
+            const uint32_t tint = m->kind == MOA_VS_YOU ? blue : m->kind == MOA_VS_AHEAD ? (m->top ? band : rgb(110, 116, 132)) : red;
+            uint32_t *p = (uint32_t *)malloc((size_t)w * h * 4u);
+            if (!p) continue;
+            for (int y = 0; y < h; y++) {
+                const uint32_t c = vs_scale(tint, 0.5f - 0.38f * y / h);
+                for (int x = 0; x < w; x++) p[y * w + x] = c;
+            }
+            if (m->rgba) {
+                uint32_t *ac = vs_crop(m->rgba, m->size, w, h, m->kind == MOA_VS_YOU ? -1 : 1, 0.62f);
+                if (ac) { vs_put_outlined(p, ac, w, h, 2, 200); free(ac); }
+            }
+            mcol[i] = p;
+            if (m->kind == MOA_VS_DOWN && (mgrey[i] = (uint32_t *)malloc((size_t)w * h * 4u)) != NULL)
+                for (int k = 0; k < w * h; k++) {
+                    const uint32_t q = p[k];
+                    const float l = (0.299f * ((q >> 16) & 255) + 0.587f * ((q >> 8) & 255) + 0.114f * (q & 255)) * 0.45f;
+                    mgrey[i][k] = 0xFF000000u | (uint32_t)l << 16 | (uint32_t)l << 8 | (uint32_t)l;
+                }
+        }
+        base_w = W;
+        base_key = v->key;
+    }
+    memcpy(buf, base, (size_t)W * H * 4u);
+    /* ---- the strip ---- */
+    int total = 0;
+    for (int i = 0; i < n; i++) total += (v->mini[i].top ? VS_TW : VS_MW) + (i ? 22 : 0);
+    int x = cx - total / 2;
+    const float pulse = 0.5f + 0.5f * sinf(v->t * 6.0f);
+    for (int i = 0; i < n; i++) {
+        const struct moa_screen_vs_mini *m = &v->mini[i];
+        const int w = m->top ? VS_TW : VS_MW, h = m->top ? VS_TH : VS_MH, y = 646 - h;
+        float gk = 0.0f, sk = 0.0f;
+        const float ts = m->slash_at;
+        if (m->kind == MOA_VS_DOWN) {
+            const float after = v->t - (ts + 0.08f);
+            gk = after / 0.15f; gk = gk < 0 ? 0 : gk > 1 ? 1 : gk;
+            sk = after / 0.5f; sk = sk < 0 ? 0 : sk > 1 ? 1 : sk;
+            if (ts < -1.0f) gk = sk = 1.0f;
+        }
+        if (mcol[i]) {
+            for (int yy = 0; yy < h; yy++)
+                for (int xx = 0; xx < w; xx++) {
+                    uint32_t q = mcol[i][yy * w + xx];
+                    if (gk > 0.0f && mgrey[i]) {
+                        const uint32_t g = mgrey[i][yy * w + xx];
+                        q = blend_px(q, (g >> 16) & 255, (g >> 8) & 255, g & 255, (uint32_t)(gk * 255.0f));
+                    }
+                    buf[(y + yy) * W + x + xx] = q;
+                }
+        } else fill(buf, x, y, x + w, y + h, rgb(12, 12, 16));
+        if (sk > 0.0f) vs_smoke(buf, W, x, y, w, h, v->t, m->rank, sk);
+        if (m->kind == MOA_VS_DOWN) {                  /* the slash, then it stays */
+            float prog = ts < -1.0f ? 1.0f : (v->t - ts) / 0.08f;
+            if (prog > 0.0f) {
+                if (prog > 1.0f) prog = 1.0f;
+                const float x0 = x + 8, y0 = y + h - 8, x1 = x + w - 8, y1 = y + 8;
+                const float xe = x0 + (x1 - x0) * prog, ye = y0 + (y1 - y0) * prog;
+                vs_line(buf, W, x0, y0, xe, ye, 4.5f, rgb(20, 0, 0));
+                vs_line(buf, W, x0, y0, xe, ye, 2.5f, rgb(215, 40, 34));
+                if (ts >= -1.0f && v->t - ts >= 0.0f && v->t - ts < 0.16f)
+                    vs_dot(buf, W, xe, ye, 10.0f, rgb(255, 235, 190), 220, 0, 0, W, H);
+            }
+        }
+        uint32_t col;
+        int th = 3;
+        if (m->kind == MOA_VS_DOWN) {
+            const int r = (int)(150 + (80 - 150) * gk), g = (int)(70 + (80 - 70) * gk), b = (int)(64 + (86 - 64) * gk);
+            col = rgb(r, g, b);
+        } else if (m->kind == MOA_VS_YOU) col = blue;
+        else if (m->kind == MOA_VS_NEXT) { col = vs_scale(red, 0.75f + 0.25f * pulse); th = 4; }
+        else col = m->top ? band : rgb(96, 102, 118);
+        vs_frame(buf, x, y, w, h, col, th);
+        char lab[8];
+        if (m->kind == MOA_VS_YOU) snprintf(lab, sizeof lab, "YOU");
+        else snprintf(lab, sizeof lab, "%d", m->rank);
+        const uint32_t lc = m->kind == MOA_VS_DOWN ? (gk >= 1.0f ? grey : white)
+                          : (m->kind == MOA_VS_AHEAD && m->top) ? gold : white;
+        text(buf, NULL, lab, x + w / 2, y + h + 8 + 16, 2, lc);
+        x += w + 22;
+    }
+    /* ---- the count ---- */
+    if (v->count > 0) {
+        char s[32];
+        snprintf(s, sizeof s, "UNITS DEPLOY IN %d", v->count);
+        text(buf, NULL, s, cx, 404 + 16, 2, white);
+        snprintf(s, sizeof s, "%d", v->count);
+        text(buf, NULL, s, cx, 322 + 40, 5, gold);
+    }
+    if (v->shutter >= 0.0f) vs_shutters(buf, W, v->shutter, band);
+    if (v->black > 0.0f) {
+        const uint32_t a = (uint32_t)((v->black > 1.0f ? 1.0f : v->black) * 255.0f);
+        for (int i = 0; i < W * H; i++) buf[i] = blend_px(buf[i], 0, 0, 0, a);
+    }
+    s_w = keep_w; s_h = keep_h;
+    s_dirty = 1;
+    *out_w = W; *out_h = H;
+    return buf;
+}
+
+int moa_screen_emblem_from_tim(const uint8_t *d, uint32_t n, uint32_t out[64 * 64])
+{
+#define RD32(o) ((uint32_t)d[o] | (uint32_t)d[(o) + 1] << 8 | (uint32_t)d[(o) + 2] << 16 | (uint32_t)d[(o) + 3] << 24)
+#define RD16(o) ((uint32_t)d[o] | (uint32_t)d[(o) + 1] << 8)
+    if (!d || n < 20u || RD32(0) != 0x10u) return 0;
+    const uint32_t flags = RD32(4);
+    if ((flags & 3u) != 0u || !(flags & 8u)) return 0;          /* 4-bit with a palette */
+    uint32_t off = 8;
+    const uint32_t clen = RD32(off);
+    if (off + 12u + 32u > n || clen < 44u) return 0;
+    uint32_t pal[16];
+    for (int i = 0; i < 16; i++) {
+        const uint32_t v = RD16(off + 12u + 2u * (uint32_t)i);
+        const uint32_t r = (v & 31u) << 3, g = ((v >> 5) & 31u) << 3, b = ((v >> 10) & 31u) << 3;
+        pal[i] = (v ? 0xFF000000u : 0u) | (r | r >> 5) << 16 | (g | g >> 5) << 8 | (b | b >> 5);
+    }
+    off += clen;
+    if (off + 12u > n) return 0;
+    const uint32_t w = RD16(off + 8u) * 4u, h = RD16(off + 10u);
+    if (w != 64u || h != 64u || off + 12u + 64u * 64u / 2u > n) return 0;
+    for (uint32_t i = 0; i < 64u * 64u / 2u; i++) {
+        const uint8_t b = d[off + 12u + i];
+        out[2u * i] = pal[b & 15u];
+        out[2u * i + 1u] = pal[b >> 4];
+    }
+    return 1;
+#undef RD32
+#undef RD16
+}

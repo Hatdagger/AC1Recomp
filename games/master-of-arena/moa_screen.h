@@ -156,6 +156,48 @@ int moa_screen_victory_words(const struct moa_screen_victory *v);
 /* 1 = the lines are fully typed (the prompt may show). */
 int moa_screen_victory_typed(const struct moa_screen_victory *v);
 
+/* The VS screen before a run fight (Tekken 3 PLAYER SELECT style, user
+ * 2026-11-17/18): the player's AC left (blue), the opponent right (red,
+ * its emblem behind it), FOR RANK n / VS / the count in the middle, the
+ * player's belt as a strip of small portraits along the bottom (beaten ones
+ * crossed out with a red slash, greyed and smoking), hangar shutters
+ * closing at the end, then black. Renders are square RGBA (rows top first,
+ * transparent background); the portraits are cropped from them here. The
+ * layers are built once per `key` (and canvas width). */
+enum { MOA_VS_DOWN = 0, MOA_VS_YOU, MOA_VS_NEXT, MOA_VS_AHEAD };
+struct moa_screen_vs_mini {
+    const uint8_t *rgba; int size;   /* square render, or NULL (an empty box) */
+    int rank;                        /* shown under the box */
+    int kind;                        /* MOA_VS_* */
+    int top;                         /* the belt's last AC: a bigger box */
+    float slash_at;                  /* DOWN: seconds when its slash starts; < -1 crossed out from the start */
+};
+struct moa_screen_vs_side {
+    const uint8_t *rgba; int size;   /* square render, or NULL */
+    const uint32_t *emblem;          /* 64x64 0xAARRGGBB behind the AC, or NULL */
+    const char *pilot, *ac;
+    int rank;
+    float frac;                      /* share of the AC's height in the box (0: 0.55) */
+};
+struct moa_screen_vs {
+    unsigned key;
+    struct moa_screen_vs_side you, foe;
+    const struct moa_screen_vs_mini *mini;
+    int mini_n;
+    const char *belt;                /* "YELLOW BELT  45-41" */
+    uint32_t band;                   /* belt colour, 0xRRGGBB */
+    float t;                         /* seconds since the screen opened */
+    int count;                       /* 5..1 on screen, 0 none */
+    float shutter;                   /* seconds since the shutters started closing, < 0 none */
+    float black;                     /* 0..1 fade to black over everything */
+};
+const uint32_t *moa_screen_render_vs(int win_w, int win_h, const struct moa_screen_vs *v, int *out_w, int *out_h);
+/* A 4-bit 64x64 TIM (the game's emblems) to 0xAARRGGBB; colour 0 is
+ * see-through. 1 = ok. */
+int moa_screen_emblem_from_tim(const uint8_t *tim, uint32_t bytes, uint32_t out[64 * 64]);
+/* The shutters' timing: closed (the two halves meet) this long after they start. */
+#define MOA_VS_SHUTTER_MEET 0.30f
+
 #ifdef __cplusplus
 }
 #endif

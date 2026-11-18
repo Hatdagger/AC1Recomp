@@ -403,3 +403,19 @@ void moa_chime_prepare(void)
     (void)build_sting();
     (void)build_tick();
 }
+
+/* ---- shared with other Rogue Arena sounds (moa_vs_sound.c) ---- */
+int moa_chime_encode(const float *pcm, int n, float peak, uint8_t **adpcm, uint32_t *bytes)
+{
+    struct snd o = { NULL, 0 };
+    if (!encode(pcm, n, peak, &o)) return 0;
+    *adpcm = o.adpcm;
+    *bytes = o.bytes;
+    return 1;
+}
+
+int moa_chime_play_sample(const uint8_t *adpcm, uint32_t bytes, unsigned bank, unsigned slot, unsigned vol)
+{
+    const struct snd s = { (uint8_t *)adpcm, bytes };
+    return play(&s, bank, slot, (uint16_t)vol);
+}

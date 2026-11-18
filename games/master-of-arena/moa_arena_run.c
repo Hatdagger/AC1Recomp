@@ -354,6 +354,7 @@ int moa_run_new(const struct moa_parts *p, const struct moa_run_source *src, int
     s->version = MOA_RUN_VERSION;
     s->lineup.seed = seed;
     s->lineup.phantasma = (uint8_t)(phantasma != 0);
+    for (int g = 0; g < MOA_RUN_SLOTS; g++) s->ghost_emblem[g].arena = MOA_RUN_PLAYER;
     if (!moa_run_start_ac(p, seed, s->run.start_ac)) return 0;
     return moa_run_lineup(src, nsrc, phantasma, seed, s->lineup.slot) == MOA_RUN_SLOTS;
 }
@@ -387,6 +388,8 @@ static void run_add_ghost(struct moa_run_state *s, int held)
     gh->attempt = s->run.attempt;
     gh->rank_held = (uint8_t)held;
     gh->ai_from = ai;
+    /* Its emblem: the AC that just left the ladder (a ghost leaving passes its own on). */
+    s->ghost_emblem[g] = out.arena == MOA_RUN_GHOST && out.rank < MOA_RUN_SLOTS ? s->ghost_emblem[out.rank] : out;
     memcpy(gh->pilot, s->run.pilot, sizeof gh->pilot);
     memcpy(gh->ac, s->run.ac, sizeof gh->ac);
     l->slot[at].arena = MOA_RUN_GHOST;
@@ -431,6 +434,13 @@ void moa_run_lose(struct moa_run_state *s)
 #define RUN_V5_BYTES (offsetof(struct moa_run_state, run) + 64u)
 #define RUN_V6_PROGRESS ((offsetof(struct moa_run_progress, prize_wins) + 3u) & ~(size_t)3u)
 #define RUN_V6_BYTES ((offsetof(struct moa_run_state, run) + RUN_V6_PROGRESS + 7u) & ~(size_t)7u)
+/* Version 7 ended after the progress block (the state padded to 8). */
+#define RUN_V7_BYTES ((offsetof(struct moa_run_state, ghost_emblem) + 7u) & ~(size_t)7u)
+
+static void run_v8_defaults(struct moa_run_state *s)
+{
+    for (int g = 0; g < MOA_RUN_SLOTS; g++) { s->ghost_emblem[g].arena = MOA_RUN_PLAYER; s->ghost_emblem[g].rank = 0; }
+}
 
 /* Version 7's fields for an older run: every win so far has had its prize
  * (none owed), nothing spent or saved, and the card holds the garage. */
@@ -459,11 +469,17 @@ int moa_run_load(const char *path, struct moa_run_state *s)
         s->run.prizes = s->run.prize_saved = 0;
         memset(s->run.prize_ix, 0, sizeof s->run.prize_ix);
         run_v7_defaults(s);
+        run_v8_defaults(s);
     } else if (s->version == 6u && got == RUN_V6_BYTES) {
         /* Milestone prizes: any not yet on the card are added on load (the
          * game side's reconcile); from here on, a prize after every win. */
         s->version = MOA_RUN_VERSION;
         run_v7_defaults(s);
+        run_v8_defaults(s);
+    } else if (s->version == 7u && got == RUN_V7_BYTES) {
+        /* Ghosts so far have no emblem. */
+        s->version = MOA_RUN_VERSION;
+        run_v8_defaults(s);
     } else if (got != sizeof *s || s->version != MOA_RUN_VERSION) {
         return 0;
     }

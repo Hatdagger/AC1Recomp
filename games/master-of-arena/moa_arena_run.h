@@ -83,7 +83,7 @@ void moa_run_game_hand(uint8_t rec[13]);
 /* ---- the run file -------------------------------------------------------- */
 
 #define MOA_RUN_MAGIC   0x4E555241u   /* "ARUN" */
-#define MOA_RUN_VERSION 7u    /* 4 was the 14-opponent demo; 5 had no prizes, 6 milestone prizes (both still load) */
+#define MOA_RUN_VERSION 8u    /* 4 was the 14-opponent demo; 5 had no prizes, 6 milestone prizes, 7 no ghost emblems (5-7 still load) */
 #define MOA_RUN_SAVED_MAX 24u /* parts saved for later */
 
 /* A lineup slot whose arena is MOA_RUN_GHOST is a ghost: `rank` is its
@@ -162,6 +162,9 @@ struct moa_run_state {
     uint32_t magic, version;
     struct moa_run_lineup   lineup;
     struct moa_run_progress run;
+    /* Version 8 (user 2026-11-18): ghost g shows the emblem of the AC it
+     * pushed off the ladder (the old rank 49); arena MOA_RUN_PLAYER = none. */
+    struct moa_run_pick ghost_emblem[MOA_RUN_SLOTS];
 };
 
 /* Path of the run file for a memory card file: "<card>.arenarun". */

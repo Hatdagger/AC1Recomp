@@ -266,6 +266,8 @@ enum { KIND_BUILDS = 0, KIND_NAMES, KIND_REWARDS, KIND_AI };
 #define RUN_D_NO_LOGOS       0x8003EA7Fu
 #define RUN_D_MODE           0x8003EA2Au  /* engine mode byte: 0 */
 #define RUN_D_PLUS           0x8003EAC8u  /* 8 bytes cleared on SCENARIO */
+#define RUN_HPLUS_LEVEL      9u           /* Human Plus prize: the builder's full level */
+#define RUN_HPLUS_WAIVE      0x8003EACAu  /* RUN_D_PLUS + 2: load / energy limits waived */
 #define RUN_D_MAIL_SHOWN     0x8003EA82u  /* "You have new mail." already shown */
 static const uint32_t k_run_d_scenario[] = {
     0x800631FCu, 0x800BA854u, 0x800C566Cu, 0x800B69F8u, 0x800B6A80u };
@@ -525,6 +527,7 @@ static void run_prize_reset(void);
 static void run_reconcile(int refresh);
 static int run_ac_refresh;                /* defined with the garage helpers below */
 static void run_ac_refresh_now(struct CPUState *cpu);
+static void run_plus_sync(const char *why);   /* defined with the prize picks below */
 static int run_prize_where;               /* defined with the prize picks below */
 static int run_replay_state;              /* replay watch: 0 none, 1 running */
 static uint32_t run_replay_t;
@@ -1025,6 +1028,10 @@ static void run_menu_input_entry(struct CPUState *cpu, uint32_t address)
             /* Test 9 hang (1ad4e38): the save waited for the arena screen's
              * result routine, which had stopped running (the game was on the
              * opponent list under the cover). Save from here too. */
+            /* Human Plus as the run says, before the save and the next fight
+             * (a load or a Retry may have left the game's bytes otherwise). */
+            if (run_at_hub && !run_autopilot && run_state_ok && !run_state.run.over)
+                run_plus_sync("hub");
             if (run_save_pending && run_at_hub && !run_autopilot && !psx_mod_read_byte(RUN_FIGHT_DONE))
                 run_autosave(cpu);
             /* A prize equipped (or the garage put back on load): its textures. */
@@ -1260,6 +1267,7 @@ static void run_reconcile(int refresh)
     if (run_reconciled || !run_state_ok || run_state.run.over) return;
     run_reconciled = 1;
     struct moa_run_progress *r = &run_state.run;
+    run_plus_sync("loaded");
     int snap = 0;
     if (r->snap_pending) {
         run_snap_put();
@@ -1319,6 +1327,7 @@ static const char *const k_tier_tag[3] = { "CHEAP", "MID", "EXPENSIVE" };
 struct run_offer {
     uint8_t cat, id, cost, band, nput;
     uint8_t income;                            /* not a part: the +1 P per win upgrade */
+    uint8_t hplus;                             /* not a part: Human Plus */
     uint8_t xn, xcat[2], xid[2];               /* a set: parts that come with it (arms set) */
     uint8_t put_slot[2];                       /* record byte it goes into */
     uint8_t put_rec[2][13];                    /* the AC with it equipped there */
@@ -1475,8 +1484,22 @@ static uint64_t run_prize_rng(unsigned win, uint64_t salt)
 static int run_plus_on(void)
 {
     if (run_state.run.plus) return 1;
-    for (uint32_t i = 0; i < 8u; i++) if (psx_mod_read_byte(RUN_D_PLUS + i)) return 1;
-    return 0;
+    /* the level and the limits byte only: the Ex Arena flags beside them aren't Human Plus */
+    return psx_mod_read_byte(RUN_D_PLUS) || psx_mod_read_byte(RUN_HPLUS_WAIVE);
+}
+
+/* The game's Human Plus bytes as the run says (bought or not). The arena
+ * engine reads the level into the AC's stat block (+0x03) at match start;
+ * the game's own save keeps them (save +3564), the run file is the truth. */
+static void run_plus_sync(const char *why)
+{
+    const uint8_t lv = run_state.run.plus ? (uint8_t)RUN_HPLUS_LEVEL : 0u;
+    const uint8_t wv = run_state.run.plus ? 1u : 0u;
+    if (psx_mod_read_byte(RUN_D_PLUS) == lv && psx_mod_read_byte(RUN_HPLUS_WAIVE) == wv) return;
+    psx_mod_write_byte(RUN_D_PLUS, lv);
+    psx_mod_write_byte(RUN_HPLUS_WAIVE, wv);
+    run_log("human plus: %s (level %u, limits %s) [%s]", lv ? "on" : "off", (unsigned)lv,
+            wv ? "waived" : "kept", why);
 }
 
 /* ---- what the randomizer prefers (user, 2026-11-18) -------------------------------
@@ -1497,6 +1520,14 @@ static int run_plus_on(void)
 #define RUN_INCOME_COST      6u                /* +1 P PER WIN: its price, */
 #define RUN_INCOME_ODDS      4u                /* offered on 1 screen in this many, */
 #define RUN_INCOME_MAX       3u                /* bought this often at most */
+/* HUMAN PLUS: once per attempt, as the expensive offer; more often once the
+ * player can pay for it. Level 9 is the builder's full level (moa_card.h): it
+ * covers every mapped effect (built-in radar, cannons fired standing at 4+,
+ * the energy boost at 6+); the byte after it waives the load / energy limits
+ * (stat-block.md, ram-map-gameshark.md: 0x8003EAC8 level, 0x8003EACA). */
+#define RUN_HPLUS_COST      10u
+#define RUN_HPLUS_ODDS       8u                /* 1 screen in this many below its price, */
+#define RUN_HPLUS_ODDS_RICH  3u                /* this many once the player has it */
 #define RUN_SET_PART_MAX     4u
 
 /* Back weapon `id` makes two-legged ACs crouch to fire (cannons; energy
@@ -1703,9 +1734,27 @@ static void run_prize_draw_offers(unsigned win, uint64_t salt, const uint8_t (*e
             pick -= cand[band][i].w;
         }
     }
+    /* HUMAN PLUS: now and then as the expensive offer (not with an ARMS SET),
+     * once per attempt; more likely once the player has the P for it. */
+    int hp_up = 0;
+    if (!has_set && !run_state.run.plus &&
+        moa_run_below(&rng, psx_mod_read_word(RUN_CREDITS) >= RUN_HPLUS_COST ? RUN_HPLUS_ODDS_RICH
+                                                                          : RUN_HPLUS_ODDS) == 0u) {
+        struct run_offer *o = NULL;
+        for (int i = 0; i < run_offer_n; i++) if (run_offer[i].band == 2u) o = &run_offer[i];
+        if (!o && run_offer_n < 3) o = &run_offer[run_offer_n++];
+        if (o) {
+            memset(o, 0, sizeof *o);
+            o->hplus = 1; o->cat = 0xFFu; o->cost = RUN_HPLUS_COST; o->band = 2; o->w = RUN_W_NORMAL;
+            snprintf(o->name, sizeof o->name, "HUMAN PLUS");
+            snprintf(o->category, sizeof o->category, "UPGRADE  NO LOAD LIMITS, BUILT-IN RADAR");
+            snprintf(o->cost_s, sizeof o->cost_s, "%u P", RUN_HPLUS_COST);
+            hp_up = 1;
+        }
+    }
     /* +1 P PER WIN: now and then as the expensive offer (not with an ARMS SET,
      * not in the last fights, where it could not pay its price back). */
-    if (!has_set && run_state.run.income < RUN_INCOME_MAX && win + 1u + RUN_INCOME_COST < MOA_RUN_SLOTS - 1u &&
+    if (!has_set && !hp_up && run_state.run.income < RUN_INCOME_MAX && win + 1u + RUN_INCOME_COST < MOA_RUN_SLOTS - 1u &&
         moa_run_below(&rng, RUN_INCOME_ODDS) == 0u) {
         struct run_offer *o = NULL;
         for (int i = 0; i < run_offer_n; i++) if (run_offer[i].band == 2u) o = &run_offer[i];
@@ -1736,7 +1785,7 @@ static void run_prize_roll(unsigned win)
     const char *dir = getenv("PSX_MOA_MODELS_DIR");
     const int models = dir && dir[0] && moa_acv_has_part_models(dir);
     for (int i = 0; i < run_offer_n; i++) {
-        run_offer_has_thumb[i] = models && !run_offer[i].income &&
+        run_offer_has_thumb[i] = models && !run_offer[i].income && !run_offer[i].hplus &&
                                  run_part_thumb(dir, run_offer[i].cat, run_offer[i].id, run_offer_thumb[i]);
         for (int k = 0; k < 2; k++)
             run_offer_has_xthumb[i][k] = models && k < run_offer[i].xn &&
@@ -1798,6 +1847,7 @@ static int run_prize_draw(void)
         row[i].thumb = run_offer_has_thumb[i] ? run_offer_thumb[i] : NULL;
         row[i].locked = o->cost > credits;
         if (o->income) row[i].icon = "+1P";
+        if (o->hplus) row[i].icon = "H+";
         if (o->xn) {                                   /* a set: the box cycles through its parts */
             const int np = 1 + o->xn;
             int k, wipe;
@@ -1842,9 +1892,11 @@ static int run_prize_draw(void)
         const struct run_offer *o = &run_offer[run_prize_cur];
         for (int i = 0; i < run_prize_ask_n; i++)
             ask[i] = run_prize_ask_kind[i] == ASK_SAVE ? "SAVE FOR LATER" : run_prize_ask_kind[i] == ASK_BACK ? "BACK"
-                   : o->income ? "BUY" : o->nput < 2 ? "EQUIP NOW" : o->put_slot[run_prize_ask_kind[i]] == 6 ? "EQUIP LEFT" : "EQUIP RIGHT";
+                   : o->income || o->hplus ? "BUY" : o->nput < 2 ? "EQUIP NOW" : o->put_slot[run_prize_ask_kind[i]] == 6 ? "EQUIP LEFT" : "EQUIP RIGHT";
         snprintf(ask_title, sizeof ask_title, "%s  FOR %s", o->xn ? "ARMS SET" : o->name, o->cost_s);
-        if (o->income)
+        if (o->hplus)
+            snprintf(ask_line, sizeof ask_line, "FOR THE REST OF THIS ATTEMPT.  NO LOAD OR ENERGY LIMITS");
+        else if (o->income)
             snprintf(ask_line, sizeof ask_line, "EVERY WIN PAYS %u P FROM NOW ON (NOW %u P)",
                      2u + run_state.run.income, 1u + run_state.run.income);
         else if (o->xn)
@@ -1937,6 +1989,16 @@ static void run_prize_take(int put)
     if (o->cost > credits) return;
     psx_mod_write_word(RUN_CREDITS, credits - o->cost);
     r->p_spent = (uint16_t)(r->p_spent + o->cost);
+    if (o->hplus) {
+        r->plus = 1;
+        run_plus_sync("bought");
+        run_ac_refresh = 1;
+        psx_mod_counter_add("moa.run.prize_hplus", 1);
+        char what[64];
+        snprintf(what, sizeof what, "HUMAN PLUS for %u P (level %u)", (unsigned)o->cost, (unsigned)RUN_HPLUS_LEVEL);
+        run_prize_done(what);
+        return;
+    }
     if (o->income) {
         r->income = (uint8_t)(r->income + 1u);
         psx_mod_counter_add("moa.run.prize_income", 1);
@@ -2010,7 +2072,7 @@ static void run_prize_ask_open(void)
 {
     const struct run_offer *o = &run_offer[run_prize_cur];
     run_prize_ask_n = 0;
-    if (o->income) {                                   /* BUY / BACK */
+    if (o->income || o->hplus) {                       /* BUY / BACK */
         run_prize_ask_kind[run_prize_ask_n++] = ASK_EQUIP0;
         run_prize_ask_kind[run_prize_ask_n++] = ASK_BACK;
         run_prize_ask_cur = 0;

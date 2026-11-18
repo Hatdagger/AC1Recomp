@@ -71,6 +71,23 @@ const uint32_t *moa_screen_render_choice(int win_w, int win_h, const char *title
                                          int count, int cursor, const char *footer,
                                          int see_through, int *out_w, int *out_h);
 
+/* A list screen (Rogue Arena hub and its stage picker): a title, up to 3
+ * lines under it, then rows like the launcher's lists. `visible` rows show
+ * at a time (8 at most), from `top`; arrows above and below show there is
+ * more. A row may carry a value on its right (gold); `marked` (-1 none)
+ * gets a gold dot (the remembered pick). Same canvas and font as above;
+ * NULL until the font is loaded. see_through: as for the tiles. */
+struct moa_screen_list {
+    const char *title;
+    const char *info[3];
+    const char *const *row;      /* 26 characters at most */
+    const char *const *value;    /* NULL, or one per row (NULL entries allowed) */
+    int count, cursor, top, visible, marked;
+    const char *footer;
+};
+const uint32_t *moa_screen_render_list(int win_w, int win_h, const struct moa_screen_list *l,
+                                       int see_through, int *out_w, int *out_h);
+
 #ifdef __cplusplus
 }
 #endif

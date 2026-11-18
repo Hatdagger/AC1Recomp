@@ -486,3 +486,79 @@ const uint32_t *moa_screen_render_choice(int win_w, int win_h, const char *title
     *out_w = W; *out_h = CANVAS_H;
     return buf;
 }
+
+/* ---- list rows (moa_screen_render_list) ------------------------------------- */
+static void text_left(uint32_t *buf, const char *s, int x0, int cy, int scale, uint32_t c)
+{
+    text(buf, NULL, s, x0 + text_width(s, scale) / 2, cy, scale, c);
+}
+
+const uint32_t *moa_screen_render_list(int win_w, int win_h, const struct moa_screen_list *l,
+                                       int see_through, int *out_w, int *out_h)
+{
+    static uint32_t *buf;
+    static int bw;
+    *out_w = *out_h = 0;
+    if (!s_font_ok || !l) return NULL;
+    int W = CONTENT_W;
+    if (win_w > 0 && win_h > 0) W = (int)((int64_t)CANVAS_H * win_w / win_h);
+    if (W < CONTENT_W) W = CONTENT_W;
+    if (W > MAX_W) W = MAX_W;
+    W &= ~1;
+    if (W != bw || !buf) {
+        free(buf);
+        buf = (uint32_t *)malloc((size_t)W * CANVAS_H * 4u);
+        bw = buf ? W : 0;
+        if (!buf) return NULL;
+    }
+    const int keep_w = s_w, keep_h = s_h;            /* borrow fill()/text(), as the tiles do */
+    s_w = W; s_h = CANVAS_H;
+    const int cx = W / 2;
+    backdrop(buf, W, see_through);
+    const uint32_t grey = rgb(170, 176, 188), white = rgb(235, 238, 242), gold = rgb(255, 200, 80);
+    if (l->title) text(buf, NULL, l->title, cx, 56, 3, white);
+    fill(buf, cx - 300, 84, cx + 300, 86, rgb(70, 74, 82));
+    int y = 116, lines = 0;
+    for (int i = 0; i < 3; i++)
+        if (l->info[i] && l->info[i][0]) { text(buf, NULL, l->info[i], cx, y, 2, i == 0 ? gold : grey); y += 30; lines++; }
+    int vis = l->visible > 0 ? l->visible : 8;
+    if (vis > 8) vis = 8;
+    if (vis > l->count) vis = l->count;
+    int top = l->top;
+    if (top > l->count - vis) top = l->count - vis;
+    if (top < 0) top = 0;
+    const int rh = 50, gap = 8, rw = 640;
+    const int area_y0 = lines ? y + 22 : 150, area_y1 = CANVAS_H - 80;
+    const int total = vis * rh + (vis > 0 ? (vis - 1) * gap : 0);
+    int y0 = area_y0 + (area_y1 - area_y0 - total) / 2;
+    if (y0 < area_y0) y0 = area_y0;
+    const int x0 = cx - rw / 2, x1 = cx + rw / 2;
+    if (top > 0)                                     /* more above */
+        for (int k = 0; k < 10; k++) fill(buf, cx - k, y0 - 22 + k, cx + k + 1, y0 - 21 + k, grey);
+    for (int i = 0; i < vis; i++) {
+        const int r = top + i, ry = y0 + i * (rh + gap), on = r == l->cursor;
+        fill(buf, x0, ry, x1, ry + rh, on ? rgb(22, 40, 70) : rgb(8, 10, 16));
+        frame_rect(buf, x0, ry, x1, ry + rh, 2, on ? rgb(130, 200, 255) : rgb(60, 90, 130));
+        if (on)
+            for (int k = 0; k < 9; k++)
+                fill(buf, x0 - 26 + k, ry + rh / 2 - (9 - k), x0 - 25 + k, ry + rh / 2 + (9 - k), gold);
+        if (r == l->marked) fill(buf, x0 + 14, ry + rh / 2 - 5, x0 + 24, ry + rh / 2 + 5, gold);
+        char s[27];
+        snprintf(s, sizeof s, "%s", l->row && l->row[r] ? l->row[r] : "");
+        text_left(buf, s, x0 + 36, ry + rh / 2, 2, on ? white : rgb(120, 150, 185));
+        if (l->value && l->value[r] && l->value[r][0]) {
+            char v[27];
+            snprintf(v, sizeof v, "%s", l->value[r]);
+            text_left(buf, v, x1 - 24 - text_width(v, 2), ry + rh / 2, 2, gold);
+        }
+    }
+    if (top + vis < l->count) {                      /* more below */
+        const int yb = y0 + total + 12;
+        for (int k = 0; k < 10; k++) fill(buf, cx - (9 - k), yb + k, cx + (9 - k) + 1, yb + k + 1, grey);
+    }
+    if (l->footer) text(buf, NULL, l->footer, cx, CANVAS_H - 40, 2, grey);
+    s_w = keep_w; s_h = keep_h;
+    s_dirty = 1;
+    *out_w = W; *out_h = CANVAS_H;
+    return buf;
+}

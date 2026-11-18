@@ -188,7 +188,9 @@ Runs on power-on **and after every fight**:
   copies the garage to both players (see `mode-launch.md` §5).
 - First state `0x800B0FE4`: StoreImage (`0x800637A8`) → 0x8004B6F0 / 0x8004ACA8, **SOUND
   MENU_VAB 2 + 3**, **TIM queue MENU_TIM 1 and 4**, then (`0x800B15D8`) **MODEL slots 15 / 16
-  ← MENU_TMD 1 / 2** and one more MENU_TIM entry `?`.
+  ← MENU_TMD 1 / 2**, then **TIM queue MENU_TIM (stage byte − 10)** = the **stage preview
+  picture** of the chosen map (stage byte = `0x800D5800[map − 1]`, map = 0x8003EA81; entries
+  10–13, 20, 23–27; each 104×100 px 8-bit at (896,0), CLUT row 506).
 - Each player's AC (AC SETUP / DATA LOAD) loads its own models and textures. AI Battle's
   `moa_load_unit` already replays this with `0x80081E20` and the per-player file tables
   0x8004AB60 / 0x8004A9E0.
@@ -202,9 +204,26 @@ weapon blocks MoveImage → (768,448), (0,493), (0,494). Then stage (player bloc
 
 ## 7. Arena launch (menu)
 
+- **Opponent's textures (2026-11-18):** state `0x800C028C` waits for the disc, swaps the
+  texture sets `0x800C0E7C` (the player's set moves to the player 2 area), then
+  **`0x800C0D14(records, n)`** queues the opponent's textures from its 64-byte arena record
+  (records from MENU_TIM, n = arena list row +8), then sets state `0x800C030C`. TIM queue per part,
+  v = record byte 14:
+  | Archive | Entry |
+  |---|---|
+  | CORE_T (7) | +0 + 11v |
+  | HEAD_T (10) | +1 + 18v |
+  | ARMS_T (9) | +2 + 24v |
+  | LEG_T (8) | +3 + 40v |
+  | WEL_T (14) / WER_T (15) / BWL_T (12) / BWR_T (13) / BST_T (11) | +5 / +4 / +6 / +7 / +12, skipped if 255 |
+
+  Each `*_T` archive holds 16 complete texture sets (CORE_T 176 = 11 × 16, HEAD_T 288 = 18 × 16,
+  ARMS_T 24 × 16, LEG_T 40 × 16). **v = 0 (146 of 158 opponents)**: set 0, colours built from
+  the record's paint at +16 (`0x800C14AC`, LoadImage into the AC CLUT rows). **v ≠ 0 (12
+  opponents, v 1–15)**: a pre-painted set, colours = **MENU_TIM 26 + 4v + record byte 15**
+  (CLUT row 486 + rows 488–490).
 - Pre-fight `0x800C030C` / `0x800C0AD8`: wait for the disc, compile `0x800A7BB4`, swap
-  `0x800C0E7C` (the opponent's set). Which routine queues the **opponent's** textures is not
-  followed yet `?`.
+  `0x800C0E7C` again (the opponent's set goes to the player 2 area, the player's comes back).
 - Launch `0x800C0878`: kill group 2, `0x80093C20`, `0x800A20D8`, `0x80093BC4`, 0x8004AC50,
   **0x8003EA7C = 1**, arena 0x8003EAD4 / opponent 0x8003EAD5, frees three heap buffers, stage
   from 0x800D59F0, music, **0x801B1CC8 = 1** → FDAT 210.
@@ -231,7 +250,7 @@ with the textures the menu left in VRAM, which is rule 2.
 | Scenario via Load Save (Rogue Arena) | §3 SCENARIO steps 1–7; LOAD unpack + emblem + six calls; **§4a step 3 (card screen's finish), above all `0x800822B0`**; then the hub open, letting the menu loop drain the queue |
 | Scenario via New Game | §3; §4b step 1 (`0x800822B0` + MENU_TIM 7); §4b steps 2–3 |
 | VS without menus | §5 (the VS menu must have opened once: the StoreImage blocks, sound bank, MENU_TIM 1/4/6, model slots); each player's AC models + textures (`moa_load_unit`); §6 |
-| Arena fight | the player's textures in VRAM (rule 2), the opponent's set, §7 |
+| Arena fight | the player's textures in VRAM (rule 2); the opponent's set: swap, `0x800C0D14`, wait, swap (§7) |
 
 In code: `games/master-of-arena/moa_quick_start.c` replays the Load Save and New Game rows for
 the launcher's START GAME menu (LOAD GAME / NEW GAME / LAUNCH GAME with FULL BOOT).
@@ -258,8 +277,6 @@ save). `moa_card_to_save` starts from it since branch `load-game-fixes`.
   strips the title branch stores (0x800A6EB4 / 0x800A6EC8); the direct start opens the hub
   before that store. Fix (store them after the SCENARIO pictures) merged in 3a8e581 with the
   mission picker fix (§9a); both waiting for the user's test of master.
-- Which arena-screen routine queues the opponent's textures.
-- VS menu: the one MENU_TIM entry loaded from a variable in `0x800B15D8`.
 - `0x80067244(1)`: loads fallback files for empty slots. Exact entries not listed.
 - What `0x80090FD8` / `0x80083130` change when the save already has a full AC (probably
   nothing for the AC, but the part lists at 0x8003EB20 feed the garage and shop).

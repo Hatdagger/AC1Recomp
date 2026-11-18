@@ -211,6 +211,12 @@ Boot chat → Rogue Arena work (2026-11-17, after reading `rogue-arena-49` up to
   `moa_quick_start.c`) runs the same direct load as the Rogue Arena boot, card screen's finish
   included; once both work, one shared routine could serve both.
 
+Boot chat → Rogue Arena work (2026-11-18):
+- The arena screen loads the **opponent's textures** in `0x800C0D14(records, n)` from its
+  64-byte arena record, between two `0x800C0E7C` swaps; 12 of the 158 opponents use a
+  pre-painted texture set (record byte 14). Any direct arena launch or custom opponent must
+  replay it (`boot-loads.md` §7).
+
 Launch chat → data chat:
 - Stage (compiled +0x05 = player block +0x255) at VS START = byte `0x800D5800[map − 1]`,
   map = 0x8003EA81 (1–10), written by `0x800B348C`. VS START compiles P1 then P2 in

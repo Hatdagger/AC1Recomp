@@ -450,6 +450,16 @@ static unsigned run_watch_dumps;
 static char run_watch_stamp[24];          /* this session's start time, for dump names */
 static uint32_t run_irq_again;            /* frames until the second interrupt snapshot; 0 = none */
 
+/* Fast loading off from the hub on (test 8): MoA runs its drive in the
+ * bounded "instant" mode (mod_builtin_moa_loading.c), and the after-win stall
+ * and the after-win freezes were reads that mode never finished. Booting to
+ * the hub is fine with it, so once the player has the hub and the disc is
+ * idle, the run turns the drive back to its real speed for the rest of the
+ * session. PSX_MOA_RUN_FAST_LOAD=1 keeps fast loading (A/B). The waits below
+ * that assume fast loads get longer while it is off. */
+static int run_disc_slow;                 /* 0 not yet, 1 real speed, -1 kept fast */
+#define RUN_SLOW(n) (run_disc_slow == 1 ? (n) * 4u : (n))
+
 static void run_watch(int phase)
 {
     if (run_watch_phase == phase) return;
@@ -501,6 +511,7 @@ static void run_check_session(void)
     run_loss_wait = 0;
     run_end_stage = run_end_cur = run_end_armed = run_end_overlay = 0;
     run_end_choice = -1;
+    run_disc_slow = 0;
     run_end_frames = 0;
     run_end_held = 0xFFFFu;
     run_sent = run_told = 0;
@@ -2663,7 +2674,8 @@ static void run_cd_dump(const char *tag)
 
 static uint32_t run_watch_limit(void)
 {
-    return run_watch_phase == 1 ? RUN_WATCH_LOAD : run_watch_phase == 3 ? RUN_WATCH_IDLE : RUN_WATCH_FRAMES;
+    return run_watch_phase == 1 ? RUN_SLOW(RUN_WATCH_LOAD) : run_watch_phase == 3 ? RUN_WATCH_IDLE
+                                                                : RUN_SLOW(RUN_WATCH_FRAMES);
 }
 
 static void run_watch_dump(void)
@@ -3067,7 +3079,7 @@ static int run_hx_pick_row(uint32_t b, int step, const char *where)
     const int row = (int)MOA_RUN_SLOTS - (int)run_state.run.wins - 2;   /* the next opponent's rank - 1 */
     if (count < 1 || row < 0 || row >= count) { run_hx_fail("next battle: no opponent row on the arena list"); return 0; }
     if (run_hx_next == step + 1 && ++run_hx_next_t < 30u) return 1;    /* pressed already: give it a moment */
-    if (++run_hx_next_tries > 6u) { run_hx_fail("next battle: 6 X presses on the arena screens and no fight"); return 0; }
+    if (++run_hx_next_tries > RUN_SLOW(6u)) { run_hx_fail("next battle: too many X presses on the arena screens and no fight"); return 0; }
     const int vis = count < 6 ? count : 6;
     const int top = row > count - vis ? count - vis : row;
     psx_mod_write_byte(b + 0x69u, (uint8_t)top);
@@ -3154,10 +3166,11 @@ static void run_hx_frame(void)
     if (run_hx_list_seen < 0xFFFFu) run_hx_list_seen++;
     if (run_hx_hub_seen > 30u && run_hx_list_seen > 30u) run_hx_off = 0;   /* left both: back next time */
     if (run_hx == HX_BUSY && run_hx_go_entry < 0) run_hx_close();          /* the hub opened the pick */
-    if (run_hx_go_entry >= 0 && !run_hx_next && ++run_hx_go_frames > RUN_HX_GO_GIVE_UP)
+    if (run_hx_go_entry >= 0 && !run_hx_next && ++run_hx_go_frames > RUN_SLOW(RUN_HX_GO_GIVE_UP))
         run_hx_fail("the hub did not open the pick");
-    if (run_hx_next && ++run_hx_next_frames > RUN_HX_NEXT_GIVE_UP)
-        run_hx_fail("next battle: the fight did not start in 15 s");
+    if (run_hx_next && ++run_hx_next_frames > RUN_SLOW(RUN_HX_NEXT_GIVE_UP))
+        run_hx_fail(run_disc_slow == 1 ? "next battle: the fight did not start in 60 s"
+                                       : "next battle: the fight did not start in 15 s");
     if (run_hx == HX_OFF) {
         if (run_hx_go_entry >= 0 || run_hx_next || run_hx_off) return;
         if (run_hx_hub_seen > 2u && run_hx_list_seen > 2u) return;          /* neither screen is waiting */
@@ -3244,11 +3257,29 @@ static void run_hx_frame(void)
     }
 }
 
+static void run_disc_frame(void)
+{
+    if (run_disc_slow || !run_at_hub || run_autopilot) return;
+    const char *e = getenv("PSX_MOA_RUN_FAST_LOAD");
+    if (e && e[0] == '1') {
+        run_disc_slow = -1;
+        run_log("disc: fast loading kept (PSX_MOA_RUN_FAST_LOAD=1)");
+        return;
+    }
+    const uint32_t rd = psx_mod_read_word(RUN_CDQ + 0x37Cu);
+    if (rd != psx_mod_read_word(RUN_CDQ + 0x378u) || psx_mod_read_byte(rd) != 0u) return;  /* the game's queue */
+    if (!psx_mod_set_disc_speed_live(1u, 0u)) return;      /* netplay, or the drive is busy: next frame */
+    run_disc_slow = 1;
+    psx_mod_counter_add("moa.run.fast_load_off", 1);
+    run_log("disc: fast loading off from the hub on (the drive's real speed)");
+}
+
 static void run_frame_hook(void)
 {
     run_check_session();
     if (!run_on()) return;
     run_apply_fixes();
+    run_disc_frame();
     if (run_watch_phase && run_at_hub && ++run_watch_count == run_watch_limit()) run_watch_dump();
     if (run_irq_again && --run_irq_again == 0) { run_irq_log(0); run_cd_state_line("2 s later"); }
     if (run_at_hub && !run_autopilot && !run_watch_phase && ++run_idle == RUN_WATCH_IDLE) {

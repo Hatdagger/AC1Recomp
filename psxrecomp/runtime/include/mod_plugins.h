@@ -912,6 +912,15 @@ int psx_mod_set_disc_speed(uint32_t divisor,
                            uint32_t instant_max_per_frame);
 
 /*
+ * The same, applied to the running drive at once (psx_mod_set_disc_speed only
+ * takes effect at session start). Returns 0 and changes nothing in netplay or
+ * while a data load is in progress: call it again on a later frame. Lasts
+ * until the session ends; the next session starts from the configured speed.
+ */
+int psx_mod_set_disc_speed_live(uint32_t divisor,
+                                uint32_t instant_max_per_frame);
+
+/*
  * Turn the title's [[draw_distance.clamp]] sites on or off for this session
  * (draw_distance.h): a far primitive the game would drop past the end of its
  * ordering table is kept in the farthest slot instead. Returns 1 when the

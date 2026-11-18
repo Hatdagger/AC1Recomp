@@ -2131,6 +2131,28 @@ extern "C" int psx_mod_set_disc_speed(
     return 1;
 }
 
+extern "C" int psx_mod_set_disc_speed_live(
+    uint32_t divisor, uint32_t instant_max_per_frame) {
+    /* The same range as psx_mod_set_disc_speed, applied to the running drive
+     * at once (and kept as the game speed, so the game's entry hook does not
+     * undo it). Refused (0, nothing changed) in netplay and while a data load
+     * is in progress, so a read never changes timing halfway; the caller
+     * tries again on a later frame. The next
+     * session starts from the configured speed again (cdrom_init). */
+    if (divisor > PSX_MOD_DISC_SPEED_MAX ||
+        (divisor == 0 &&
+         (instant_max_per_frame < 1 || instant_max_per_frame > 256)))
+        return 0;
+    if (psx_netplay_active() || cdrom_load_in_progress()) return 0;
+    cdrom_set_game_speed((int)divisor);
+    cdrom_set_speed((int)divisor);
+    if (divisor == 0) cdrom_set_instant_rate((int)instant_max_per_frame);
+    std::fprintf(stdout, "psxrecomp: mod set disc speed live: divisor %u%s\n",
+                 (unsigned)divisor, divisor == 0 ? " (instant)" : "");
+    std::fflush(stdout);
+    return 1;
+}
+
 extern "C" int psx_mod_set_controller_mode_override(
     uint32_t player, uint32_t controller_mode) {
     if (player >= PSX_MAX_PLAYERS ||

@@ -205,11 +205,43 @@ static int qs_read_save(uint8_t save[SAVE_BYTES])
     return sum == want;
 }
 
+/* A new game's save state (as moa_card_to_save now writes it). */
+static const struct { uint16_t at, n; uint8_t b[64]; } k_new_game[] = {
+#include "moa_arena_run_save.inc"
+};
+
+/* Saves the launcher made before moa_card_to_save wrote a new game's state
+ * left these blocks all zero. Mission progress +3232 (0x8004AC50, copied to
+ * the mission screen's table 0x8019F7A8): T+1 = 0 means "reopen slot 0's
+ * briefing", so MISSIONS skipped the mission source picker; the game's own
+ * new value is -1. Arena opponent counts +3553 (0x8004B67D = 0x8004B5A0 +
+ * 221, from 0x800D5A08 by 0x800BA854) and the arena lock +3562: zero means
+ * empty arenas. +3607 (0x8004B6AB) is the rest of the arena state. A game
+ * save never has any of them all zero, so only those blocks are filled. */
+static void qs_repair_save(uint8_t save[SAVE_BYTES])
+{
+    static const uint16_t blocks[] = { 3232, 3553, 3607 };
+    for (size_t k = 0; k < sizeof k_new_game / sizeof k_new_game[0]; k++) {
+        int want = 0;
+        for (size_t j = 0; j < sizeof blocks / sizeof blocks[0]; j++)
+            want |= k_new_game[k].at == blocks[j];
+        if (!want) continue;
+        const uint16_t at = k_new_game[k].at;
+        const uint16_t n = at == 3232 ? 44 : k_new_game[k].n;   /* the whole progress block */
+        int zero = 1;
+        for (uint16_t i = 0; i < n; i++) zero &= save[at + i] == 0;
+        if (!zero) continue;
+        memcpy(save + at, k_new_game[k].b, k_new_game[k].n);
+        qs_log(at == 3232 ? "moa.start.load_repaired_progress" : "moa.start.load_repaired_arena");
+    }
+}
+
 /* LOAD GAME: §3, §4a steps 2-4. */
 static int qs_load(struct CPUState *cpu)
 {
     static uint8_t save[SAVE_BYTES];
     if (!qs_read_save(save)) { qs_log("moa.start.load_bad_save"); return 0; }
+    qs_repair_save(save);
     qs_scenario(cpu);
     /* The title branch of the menu entry keeps two strips of MENU_TIM 0's
      * colours (StoreImage at 0x800A6EB4 / 0x800A6EC8) and the hub open puts

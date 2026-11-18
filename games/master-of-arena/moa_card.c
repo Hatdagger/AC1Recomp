@@ -671,9 +671,22 @@ static void save_put_name(uint8_t *dst, const char *src)
 
 void moa_card_put_name(uint8_t dst[18], const char *src) { save_put_name(dst, src); }
 
+/* What a new scenario game holds outside the AC (shared with the Rogue Arena
+ * saves, moa_arena_run.c). Left zero, a loaded save had mission progress
+ * +3232 = 0: the mission screen's "reopen this slot's briefing" byte (T+1,
+ * 0x8019F7A9) became slot 0 instead of none (-1), so MISSIONS skipped the
+ * mission source picker; the shop, the arena tables (+3553, +3607) and the
+ * other per-game bytes were empty as well. */
+#define SAVE_SHOP     0x380                    /* 256 on-sale flags (1 = on sale) */
+static const struct { uint16_t at, n; uint8_t b[64]; } k_save_new_game[] = {
+#include "moa_arena_run_save.inc"
+};
+
 void moa_card_to_save(const struct moa_card *c, uint8_t b[MOA_SAVE_BLOCK])
 {
     memset(b, 0, MOA_SAVE_BLOCK);
+    for (size_t k = 0; k < sizeof k_save_new_game / sizeof k_save_new_game[0]; k++)
+        memcpy(b + k_save_new_game[k].at, k_save_new_game[k].b, k_save_new_game[k].n);
     /* PS1 save header: magic, one static icon frame, one block, title. */
     b[0] = 'S'; b[1] = 'C'; b[2] = 0x11; b[3] = 1;
     {
@@ -714,12 +727,15 @@ void moa_card_to_save(const struct moa_card *c, uint8_t b[MOA_SAVE_BLOCK])
             if (byte == 10 || byte == 11 || (byte == 4 && q[byte] == 0)) continue;
             const int k = moa_owned_index(byte, q[byte]);
             if (k >= 0) b[SAVE_OWNED + k] = 1;
+            /* Owned parts leave the shop, as when bought; back weapons stay
+               on sale (as the Rogue Arena saves). */
+            if (k >= 0 && byte != 6 && byte != 7) b[SAVE_SHOP + k] = 0;
         }
         const unsigned mask = q[10] | (unsigned)(q[11] & 0x0F) << 8;
         for (int o = 0; o < 12; o++) {
             if (!(mask & (1u << o))) continue;
             const int k = moa_owned_index(10, o);
-            if (k >= 0) b[SAVE_OWNED + k] = 1;
+            if (k >= 0) { b[SAVE_OWNED + k] = 1; b[SAVE_SHOP + k] = 0; }
         }
     }
     {   /* The game's options travel with the save: zero here means no

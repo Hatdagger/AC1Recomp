@@ -1317,6 +1317,7 @@ struct run_offer {
     uint8_t put_rec[2][13];                    /* the AC with it equipped there */
     char put_lost[2][48];                      /* what that equip throws away ("" none) */
     char name[19], category[56], cost_s[8];
+    char xname[2][19], xcategory[2][56];       /* a set's other parts, as its box shows them */
     uint32_t w;                                /* draw weight (1000 = normal) */
 };
 static struct run_offer run_offer[3];
@@ -1590,7 +1591,13 @@ static int run_set_roll(const uint8_t now[13], int plus, uint64_t *rng, struct r
         memcpy(o->put_rec[0], rec, 13);
         snprintf(o->put_lost[0], sizeof o->put_lost[0], "%s", qw ? qw->name : "");
         snprintf(o->name, sizeof o->name, "%s", qa->name);
-        snprintf(o->category, sizeof o->category, "ARMS SET  WITH %s + %s", qh->name, qb->name);
+        snprintf(o->category, sizeof o->category, "ARMS SET  ARMS");
+        char type[19];
+        snprintf(o->xname[0], sizeof o->xname[0], "%s", qh->name);
+        run_text_at(k_run_tables[MOA_CAT_HAND].addr + (uint32_t)h * k_run_tables[MOA_CAT_HAND].stride + RUN_TYPE_AT, 18, type);
+        snprintf(o->xcategory[0], sizeof o->xcategory[0], "ARMS SET  ARM WEAPON  %s", type);
+        snprintf(o->xname[1], sizeof o->xname[1], "%s", qb->name);
+        snprintf(o->xcategory[1], sizeof o->xcategory[1], "ARMS SET  BLADE");
         snprintf(o->cost_s, sizeof o->cost_s, "%u P", RUN_SET_COST);
         o->w = RUN_W_NORMAL;
         return 1;
@@ -1713,14 +1720,19 @@ static void run_prize_roll(unsigned win)
             models ? "" : " (no model install: no pictures)");
 }
 
-/* Offer i's pictures (a set: the arms, then its gun and blade), n of them. */
-static int run_offer_pics(int i, const uint32_t *pic[3])
+/* Part k of offer i's set (0 the arms, 1 the gun, 2 the blade) as its box
+ * shows it. The number of parts (1 for a lone part). */
+static int run_set_item(int i, int k, const char **category, const char **name, const uint32_t **thumb)
 {
-    int n = 0;
-    if (run_offer_has_thumb[i]) pic[n++] = run_offer_thumb[i];
-    for (int k = 0; k < run_offer[i].xn && k < 2; k++)
-        if (run_offer_has_xthumb[i][k]) pic[n++] = run_offer_xthumb[i][k];
-    return n;
+    const struct run_offer *o = &run_offer[i];
+    if (k <= 0 || k > o->xn) {
+        *category = o->category; *name = o->name;
+        *thumb = run_offer_has_thumb[i] ? run_offer_thumb[i] : NULL;
+    } else {
+        *category = o->xcategory[k - 1]; *name = o->xname[k - 1];
+        *thumb = run_offer_has_xthumb[i][k - 1] ? run_offer_xthumb[i][k - 1] : NULL;
+    }
+    return 1 + o->xn;
 }
 
 /* Where a cycling set picture is at frame t: showing part *k, the next
@@ -1759,22 +1771,22 @@ static int run_prize_draw(void)
         row[i].cost = o->cost_s;
         row[i].thumb = run_offer_has_thumb[i] ? run_offer_thumb[i] : NULL;
         row[i].locked = o->cost > credits;
-        const uint32_t *pic[3];
-        const int np = o->xn ? run_offer_pics(i, pic) : 0;
-        if (np >= 2) {
+        if (o->xn) {                                   /* a set: the box cycles through its parts */
+            const int np = 1 + o->xn;
             int k, wipe;
             (void)run_set_anim(run_prize_frames, np, &k, &wipe);
-            row[i].thumb = pic[k];
-            row[i].thumb_next = wipe ? pic[(k + 1) % np] : NULL;
+            (void)run_set_item(i, k, &row[i].category, &row[i].name, &row[i].thumb);
+            if (wipe) (void)run_set_item(i, (k + 1) % np, &row[i].category_next, &row[i].name_next, &row[i].thumb_next);
             row[i].wipe = wipe;
             row[i].dots = np;
             row[i].dot_on = wipe > RUN_THUMB / 2 ? (k + 1) % np : k;
+            row[i].special = 1;
         }
     }
     row[run_offer_n].name = "PASS";
     row[run_offer_n].cost = "+1 P";
     const int rerolled = run_state.run.reroll_win == run_prize_win + 1u;
-    char title[32], line[40], ask_title[48], ask_line[96];
+    char title[32], line[40], ask_title[48], ask_line[112];
     const unsigned win = run_prize_win + 1u;
     snprintf(title, sizeof title, "PRIZE  RANK %u", (unsigned)(MOA_RUN_SLOTS - (win < MOA_RUN_SLOTS ? win : MOA_RUN_SLOTS - 1u)));
     snprintf(line, sizeof line, "YOU HAVE %u P", (unsigned)credits);
@@ -1804,8 +1816,11 @@ static int run_prize_draw(void)
         for (int i = 0; i < run_prize_ask_n; i++)
             ask[i] = run_prize_ask_kind[i] == ASK_SAVE ? "SAVE FOR LATER" : run_prize_ask_kind[i] == ASK_BACK ? "BACK"
                    : o->nput < 2 ? "EQUIP NOW" : o->put_slot[run_prize_ask_kind[i]] == 6 ? "EQUIP LEFT" : "EQUIP RIGHT";
-        snprintf(ask_title, sizeof ask_title, "%s%s  FOR %s", o->name, o->xn ? " SET" : "", o->cost_s);
-        if (o->nput >= 2)
+        snprintf(ask_title, sizeof ask_title, "%s  FOR %s", o->xn ? "ARMS SET" : o->name, o->cost_s);
+        if (o->xn)
+            snprintf(ask_line, sizeof ask_line, "%s + %s + %s.  REPLACES %s (GONE FOR GOOD)", o->name, o->xname[0],
+                     o->xname[1], o->put_lost[0]);
+        else if (o->nput >= 2)
             snprintf(ask_line, sizeof ask_line, "LEFT REPLACES %s   RIGHT REPLACES %s", o->put_lost[0], o->put_lost[1]);
         else if (o->put_lost[0][0])
             snprintf(ask_line, sizeof ask_line, "EQUIP REPLACES  %s  (GONE FOR GOOD)", o->put_lost[0]);
@@ -1996,9 +2011,11 @@ static void run_prize_frame(void)
     run_prize_frames++;
     if (run_prize_stage == PZ_CHOOSE)                        /* a set's picture cycling */
         for (int i = 0; i < run_offer_n; i++) {
-            const uint32_t *pic[3];
-            int k, wipe, np = run_offer[i].xn ? run_offer_pics(i, pic) : 0;
-            if (np >= 2 && run_set_anim(run_prize_frames, np, &k, &wipe)) { (void)run_prize_draw(); break; }
+            int k, wipe;
+            if (run_offer[i].xn && run_set_anim(run_prize_frames, 1 + run_offer[i].xn, &k, &wipe)) {
+                (void)run_prize_draw();
+                break;
+            }
         }
     if (b == 0xFFFFu) run_prize_armed = 1;
     if (!run_prize_armed || run_prize_frames < 20u || !down) return;

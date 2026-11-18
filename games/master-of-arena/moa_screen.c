@@ -632,6 +632,49 @@ static void cursor_marks(uint32_t *buf, int x0, int x1, int ymid, uint32_t c)
     }
 }
 
+/* One offer row's box and contents (category, name, picture given apart so a
+ * set can show each of its parts). */
+static void prize_offer_box(uint32_t *buf, int W, int x0, int y0, int x1, int y1, int on, int marks,
+                            const struct moa_screen_prize_row *r, const char *category, const char *name,
+                            const uint32_t *thumb)
+{
+    const uint32_t grey = rgb(170, 176, 188), white = rgb(235, 238, 242), gold = rgb(255, 200, 80);
+    const uint32_t red = rgb(220, 80, 70);
+    const int h = y1 - y0;
+    /* A set: a muted bronze frame (brighter when chosen), else the usual blue. */
+    const uint32_t frame_c = r->special ? (on ? rgb(226, 186, 112) : rgb(132, 104, 58))
+                                        : (on ? rgb(130, 200, 255) : rgb(60, 90, 130));
+    fill(buf, x0, y0, x1, y1, on ? rgb(22, 40, 70) : rgb(8, 10, 16));
+    frame_rect(buf, x0, y0, x1, y1, 2, frame_c);
+    if (on && marks) cursor_marks(buf, x0, x1, y0 + h / 2, gold);
+    const uint32_t name_c = r->locked ? rgb(90, 100, 116) : on ? white : rgb(150, 175, 205);
+    char s[56];
+    const int tx = x0 + 6, ty = y0 + (h - 128) / 2;
+    fill(buf, tx, ty, tx + 128, ty + 128, rgb(4, 5, 8));
+    if (thumb) {
+        for (int y = 0; y < 128; y++)
+            for (int x = 0; x < 128; x++) {
+                const uint32_t q = thumb[y * 128 + x];
+                if (q >> 24) buf[(ty + y) * W + tx + x] = r->locked ? dim_px(0xFF000000u | q, 2, 5) : 0xFF000000u | q;
+            }
+    } else {
+        text(buf, NULL, "?", tx + 64, ty + 64, 3, rgb(60, 64, 72));
+    }
+    const int lx = x0 + 156;
+    if (category) { snprintf(s, sizeof s, "%s", category); text_left(buf, s, lx, y0 + 30, 1, r->locked ? rgb(80, 88, 100) : grey); }
+    if (name) { snprintf(s, sizeof s, "%.18s", name); text_left(buf, s, lx, y0 + 66, 3, name_c); }
+    const uint32_t tag_c = r->locked ? rgb(80, 88, 100)
+                         : strcmp(r->tag, "EXPENSIVE") == 0 ? gold
+                         : strcmp(r->tag, "MID") == 0 ? white : rgb(140, 190, 255);
+    snprintf(s, sizeof s, "%s", r->tag);
+    text_left(buf, s, lx, y0 + 104, 2, tag_c);
+    if (r->cost) {
+        snprintf(s, sizeof s, "%s", r->cost);
+        text_left(buf, s, x1 - 28 - text_width(s, 4), y0 + (r->locked ? 56 : h / 2), 4, r->locked ? red : gold);
+        if (r->locked) text_left(buf, "NOT ENOUGH P", x1 - 28 - text_width("NOT ENOUGH P", 1), y0 + 96, 1, red);
+    }
+}
+
 const uint32_t *moa_screen_render_prize(int win_w, int win_h, const struct moa_screen_prize *p,
                                         int see_through, int *out_w, int *out_h)
 {
@@ -656,7 +699,6 @@ const uint32_t *moa_screen_render_prize(int win_w, int win_h, const struct moa_s
     backdrop(buf, W, see_through);
     if (!see_through) vignette(buf, W, CANVAS_H);
     const uint32_t grey = rgb(170, 176, 188), white = rgb(235, 238, 242), gold = rgb(255, 200, 80);
-    const uint32_t red = rgb(220, 80, 70);
     if (p->title) text(buf, NULL, p->title, cx, 56, 3, white);
     fill(buf, cx - 300, 84, cx + 300, 86, rgb(70, 74, 82));
     if (p->line) text(buf, NULL, p->line, cx, 110, 2, gold);
@@ -701,50 +743,41 @@ const uint32_t *moa_screen_render_prize(int win_w, int win_h, const struct moa_s
         const uint32_t name_c = r->locked ? rgb(90, 100, 116) : on ? white : rgb(150, 175, 205);
         char s[56];
         if (offer) {
-            const int tx = x0 + 6, ty = y0 + (h - 128) / 2;
-            fill(buf, tx, ty, tx + 128, ty + 128, rgb(4, 5, 8));
-            if (r->thumb) {
-                const int wipe = r->thumb_next ? (r->wipe < 0 ? 0 : r->wipe > 128 ? 128 : r->wipe) : 0;
-                for (int y = 0; y < 128; y++) {
-                    const uint32_t *src = y < wipe ? r->thumb_next : r->thumb;
-                    for (int x = 0; x < 128; x++) {
-                        const uint32_t q = src[y * 128 + x];
-                        if (q >> 24) buf[(ty + y) * W + tx + x] = r->locked ? dim_px(0xFF000000u | q, 2, 5) : 0xFF000000u | q;
-                    }
+            const int marks = !p->ask_n;
+            const int wipe = r->name_next ? (r->wipe < 0 ? 0 : r->wipe > 128 ? 128 : r->wipe) : 0;
+            const int wp = wipe * h / 128;                 /* rows of the next part shown */
+            if (wp > 0 && wp < h) {
+                /* The whole box wipes from the top to the set's next part. */
+                static uint32_t *keep;
+                static size_t keep_n;
+                const size_t need = (size_t)(x1 - x0 + 1) * (size_t)wp;
+                if (need > keep_n) { free(keep); keep = (uint32_t *)malloc(need * 4u); keep_n = keep ? need : 0; }
+                prize_offer_box(buf, W, x0, y0, x1, y1, on, marks, r, r->category_next, r->name_next, r->thumb_next);
+                if (keep) for (int y = 0; y < wp; y++) memcpy(keep + (size_t)y * (x1 - x0 + 1), buf + (size_t)(y0 + y) * W + x0, (size_t)(x1 - x0 + 1) * 4u);
+                prize_offer_box(buf, W, x0, y0, x1, y1, on, marks, r, r->category, r->name, r->thumb);
+                if (keep) for (int y = 0; y < wp; y++) memcpy(buf + (size_t)(y0 + y) * W + x0, keep + (size_t)y * (x1 - x0 + 1), (size_t)(x1 - x0 + 1) * 4u);
+                const int ly = y0 + wp;                    /* the scan line, a soft glow round it */
+                for (int x = x0 + 2; x < x1 - 1; x++) {
+                    uint32_t *d = &buf[ly * W + x];
+                    *d = blend_px(*d, 200, 240, 255, 220);
+                    if (ly + 1 < y1 - 1) d[W] = blend_px(d[W], 130, 200, 255, 140);
+                    if (ly + 2 < y1 - 1) d[2 * W] = blend_px(d[2 * W], 90, 160, 230, 60);
+                    if (ly - 1 > y0 + 1) d[-W] = blend_px(d[-W], 130, 200, 255, 100);
                 }
-                if (wipe > 0 && wipe < 128) {             /* the scan line, with a soft glow under it */
-                    for (int x = 0; x < 128; x++) {
-                        uint32_t *d = &buf[(ty + wipe) * W + tx + x];
-                        *d = blend_px(*d, 200, 240, 255, 230);
-                        if (wipe + 1 < 128) { d += W; *d = blend_px(*d, 130, 200, 255, 150); }
-                        if (wipe + 2 < 128) { d += W; *d = blend_px(*d, 90, 160, 230, 70); }
-                        if (wipe > 1) { d = &buf[(ty + wipe - 1) * W + tx + x]; *d = blend_px(*d, 130, 200, 255, 110); }
-                    }
-                }
-                if (r->dots > 1) {                        /* which part of the set is showing */
-                    const int n = r->dots > 3 ? 3 : r->dots, dw = 10, dg = 8;
-                    const int dx0 = tx + 64 - (n * dw + (n - 1) * dg) / 2, dy = ty + 128 - 9;
-                    for (int k = 0; k < n; k++) {
-                        const int a = dx0 + k * (dw + dg);
-                        fill(buf, a - 1, dy - 1, a + dw + 1, dy + 5, rgb(4, 5, 8));
-                        fill(buf, a, dy, a + dw, dy + 4, k == r->dot_on ? gold : rgb(60, 70, 86));
-                    }
-                }
+            } else if (wp >= h) {
+                prize_offer_box(buf, W, x0, y0, x1, y1, on, marks, r, r->category_next, r->name_next, r->thumb_next);
             } else {
-                text(buf, NULL, "?", tx + 64, ty + 64, 3, rgb(60, 64, 72));
+                prize_offer_box(buf, W, x0, y0, x1, y1, on, marks, r, r->category, r->name, r->thumb);
             }
-            const int lx = x0 + 156;
-            if (r->category) { snprintf(s, sizeof s, "%s", r->category); text_left(buf, s, lx, y0 + 30, 1, r->locked ? rgb(80, 88, 100) : grey); }
-            if (r->name) { snprintf(s, sizeof s, "%.18s", r->name); text_left(buf, s, lx, y0 + 66, 3, name_c); }
-            const uint32_t tag_c = r->locked ? rgb(80, 88, 100)
-                                 : strcmp(r->tag, "EXPENSIVE") == 0 ? gold
-                                 : strcmp(r->tag, "MID") == 0 ? white : rgb(140, 190, 255);
-            snprintf(s, sizeof s, "%s", r->tag);
-            text_left(buf, s, lx, y0 + 104, 2, tag_c);
-            if (r->cost) {
-                snprintf(s, sizeof s, "%s", r->cost);
-                text_left(buf, s, x1 - 28 - text_width(s, 4), y0 + (r->locked ? 56 : h / 2), 4, r->locked ? red : gold);
-                if (r->locked) text_left(buf, "NOT ENOUGH P", x1 - 28 - text_width("NOT ENOUGH P", 1), y0 + 96, 1, red);
+            if (r->dots > 1) {                            /* which part of the set is up */
+                const int n = r->dots > 3 ? 3 : r->dots, dw = 10, dg = 8;
+                const int tx = x0 + 6, ty = y0 + (h - 128) / 2;
+                const int dx0 = tx + 64 - (n * dw + (n - 1) * dg) / 2, dy = ty + 128 - 9;
+                for (int k = 0; k < n; k++) {
+                    const int a = dx0 + k * (dw + dg);
+                    fill(buf, a - 1, dy - 1, a + dw + 1, dy + 5, rgb(4, 5, 8));
+                    fill(buf, a, dy, a + dw, dy + 4, k == r->dot_on ? rgb(226, 186, 112) : rgb(60, 70, 86));
+                }
             }
         } else {
             snprintf(s, sizeof s, "%s", r->name ? r->name : "PASS");

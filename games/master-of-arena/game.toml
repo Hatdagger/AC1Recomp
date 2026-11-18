@@ -70,8 +70,8 @@ mod_function_entry_funcs = [
     "0x800AC4B4", "0x800BBEA8", "0x80056414", "0x800BC420",
     # Arena Run: the run's opponents (per-opponent loaders, CD queue check)
     "0x800BDE88", "0x800586A0", "0x800589DC",
-    # Rogue Arena overlay hub: hub input state, arena list input state
-    "0x80055848", "0x800BED64",
+    # Rogue Arena overlay hub: hub input state, opponent panel, opponent list
+    "0x80055848", "0x800BED64", "0x800BD044",
     # Rogue Arena boot trace (moa_boot_trace.c, diagnostic): menu routines
     "0x800544A0", "0x80057CB0", "0x80057ED4", "0x80057B28", "0x80057554",
     "0x80056DBC", "0x80056564", "0x800552C0", "0x800AC8E8", "0x80059554",

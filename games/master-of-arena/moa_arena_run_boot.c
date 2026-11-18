@@ -419,9 +419,10 @@ static void run_pad_lock(void);
 static int run_hx;                         /* 0 off, 1 menu, 2 stage list, 3 next battle under way */
 static int run_hx_off;                     /* O: the game's own hub until the player leaves it */
 static uint32_t run_hx_hub_seen = 0xFFFFu; /* frames since the hub's input state last ran */
+static uint32_t run_hx_list_seen = 0xFFFFu;/* frames since the run's arena list state last ran */
 static int run_hx_go_entry = -1;           /* hub entry still to be opened (X pressed by the hub hook) */
 static uint32_t run_hx_go_frames;
-static int run_hx_next;                    /* next battle: 1 at the hub, 2 the arena list's X pressed */
+static int run_hx_next;                    /* next battle: 1 to the list, 2 list X in, 3 detail X in (fight box) */
 static uint32_t run_hx_next_frames, run_hx_next_tries, run_hx_next_t;
 static int run_hx_hold;                    /* write the stage pick until the fight runs */
 static uint8_t run_hx_hold_id;
@@ -1573,7 +1574,7 @@ static void run_hub_entry(struct CPUState *cpu, uint32_t address)
     (void)cpu;
     if (!run_on() || psx_mod_read_word(address) != RUN_SIG_HUB_RESUME) return;
     if (run_watch_phase == 2) run_watch(0);       /* back at the hub */
-    if (run_hx_next == 2) run_hx_fail("next battle: back at the hub, the fight did not start");
+    if (run_hx_next >= 2) run_hx_fail("next battle: back at the hub, the fight did not start");
     run_replay_over("hub");
     if (run_state_ok && run_state.run.over) { run_loss_wait = 0; run_maybe_return(); return; }
     run_reach_hub("moa.run.hub_reached");
@@ -2812,24 +2813,36 @@ static void run_end_frame(void)
  * until the player goes into one of its screens. The game sees no buttons
  * while the list is up.
  *
+ * It also opens over the run's arena list (where the game lands after each
+ * fight) once the result, payout, prize and restock are done (test 6,
+ * user: "as much as possible, overlay should be active").
+ *
  * NEXT BATTLE drives the game's own menus behind a "starting" picture: the
- * hub hook presses X on Arena; the arena list's input state (0x800BED64,
- * a0 = screen state, block at +0x80: +0x60 rows, +0x68 cursor in the 6-row
- * window, +0x69 first row shown; picked row = +0x68 + +0x69 = rank - 1) gets
- * the cursor on the next opponent and an X; the "fight?" box (0x80065858,
- * answer at +0x67: 2 open, 0 the first choice = fight) gets X from the
- * controller until the fight's data loads (0x800C0250).
+ * hub hook presses X on Arena (skipped when already on the list); the arena
+ * list state (0x800BD044, a0 = screen state, block at +0x80: +0x60 rows,
+ * +0x68 cursor in the 6-row window, +0x69 first row shown; picked row =
+ * +0x68 + +0x69 = rank - 1) gets the cursor on the next opponent and an X,
+ * which opens the opponent's panel; the panel's state (0x800BED64, same
+ * block) gets an X, which opens the "fight?" box (0x80065858, answer at
+ * +0x67: 2 open, 0 the first choice = fight); that box gets X from the
+ * controller until the fight's data loads (0x800C0250). Test 6: hooking only
+ * the panel state never fired (the list's X was missing).
+ *
+ * SHOP / GARAGE from the list: O there (back to the hub), then the hub hook
+ * presses X on the entry; a cover picture stays up until the hub opens it.
  *
  * Stage: the arena fight setup writes the opponent's stage into both player
  * blocks +597 (0x800C097C); the pick is written over it every frame from the
  * fight's data load until the fight runs, as AI Battle does. */
-#define RUN_ARENA_INPUT      0x800BED64u
+#define RUN_ARENA_INPUT      0x800BED64u  /* the opponent's panel (O back, X fight?) */
 #define RUN_SIG_ARENA_INPUT  0x27BDFFB0u  /* addiu sp,sp,-80 */
+#define RUN_ARENA_LIST       0x800BD044u  /* the opponent list (up/down, X panel, O hub) */
+#define RUN_SIG_ARENA_LIST   0x27BDFFC0u  /* addiu sp,sp,-64 */
 #define RUN_STAGE_P1         0x800453EDu
 #define RUN_STAGE_P2         0x8004578Du
-#define RUN_HX_GO_GIVE_UP    300u         /* frames for the hub to open a pick */
+#define RUN_HX_GO_GIVE_UP    900u         /* frames for the hub to open a pick (from the list: O first) */
 #define RUN_HX_NEXT_GIVE_UP  900u         /* frames for the fight to start */
-enum { HX_OFF = 0, HX_MENU, HX_STAGES, HX_NEXT };
+enum { HX_OFF = 0, HX_MENU, HX_STAGES, HX_NEXT, HX_BUSY };
 enum { HXR_NEXT = 0, HXR_STAGE, HXR_SHOP, HXR_GARAGE, HXR_COUNT };
 #define RUN_HX_STAGE_OWN     0u
 #define RUN_HX_STAGE_RANDOM  255u
@@ -2845,6 +2858,7 @@ static int run_hx_stage_i = -1;            /* index into k_hx_stage; -1 = not re
 static uint32_t run_hx_frames, run_hx_rep;
 static uint16_t run_hx_held = 0xFFFFu;
 static char run_hx_foe[64];
+static const char *run_hx_busy_title = "";
 static int run_hx_failed_told;
 
 static void run_hx_reset(void)
@@ -2853,6 +2867,7 @@ static void run_hx_reset(void)
     run_hx = HX_OFF;
     run_hx_off = 0;
     run_hx_hub_seen = 0xFFFFu;
+    run_hx_list_seen = 0xFFFFu;
     run_hx_go_entry = -1;
     run_hx_go_frames = 0;
     run_hx_next = 0;
@@ -2955,6 +2970,11 @@ static int run_hx_draw(void)
         l.visible = 7;
         l.marked = run_hx_stage_i;
         l.footer = "UP / DOWN  CHOOSE     X  OK     O  BACK";
+    } else if (run_hx == HX_BUSY) {
+        snprintf(title, sizeof title, "%s", run_hx_busy_title);
+        l.info[0] = bal;
+        l.info[2] = "OPENING...";
+        l.count = 0;
     } else if (run_hx == HX_NEXT) {
         snprintf(title, sizeof title, "NEXT BATTLE");
         l.info[0] = run_hx_foe;
@@ -2996,12 +3016,14 @@ static void run_hx_fail(const char *why)
     run_hx_close();
 }
 
-static void run_hx_open_entry(int entry, const char *name)
+static void run_hx_open_entry(int entry, const char *name, const char *title)
 {
-    run_hx_close();
     run_hx_go_entry = entry;
     run_hx_go_frames = 0;
-    run_log("hub overlay: %s", name);
+    run_hx_busy_title = title;
+    run_hx = HX_BUSY;                                  /* a cover until the hub opens it */
+    if (!run_hx_draw()) run_hx_close();
+    run_log("hub overlay: %s (from the %s)", name, run_hx_hub_seen <= 2u ? "hub" : "arena list");
 }
 
 static void run_hx_start_next(void)
@@ -3009,35 +3031,65 @@ static void run_hx_start_next(void)
     run_hx = HX_NEXT;
     run_hx_next = 1;
     run_hx_next_frames = run_hx_next_tries = run_hx_next_t = 0;
-    run_hx_go_entry = RUN_HUB_ARENA;
+    const int at_hub = run_hx_hub_seen <= 2u;
+    run_hx_go_entry = at_hub ? RUN_HUB_ARENA : -1;     /* on the list already: no hub step */
     run_hx_go_frames = 0;
     if (!run_hx_draw()) run_hx_overlay = 0;          /* no picture: the menus still run */
-    run_log("hub overlay: next battle (%s, stage %s)", run_hx_foe, k_hx_stage[run_hx_stage_i].name);
+    run_log("hub overlay: next battle from the %s (%s, stage %s)", at_hub ? "hub" : "arena list",
+            run_hx_foe, k_hx_stage[run_hx_stage_i].name);
 }
 
-/* The arena list's input state: the cursor on the next opponent, then X. */
-static void run_hx_arena_input(struct CPUState *cpu, uint32_t address)
+/* The run's arena block (a0 + 0x80) when a0 is a screen state of arena 0, else 0. */
+static uint32_t run_hx_a0_block(struct CPUState *cpu)
 {
-    if (!run_hx_next || !run_on() || psx_mod_read_word(address) != RUN_SIG_ARENA_INPUT) return;
     const uint32_t st = cpu->gpr[4];
-    if (st < 0x80000000u || st >= 0x801FFF00u) return;
+    if (st < 0x80000000u || st >= 0x801FFF00u) return 0;
     const uint32_t b = st + 0x80u;
-    if (psx_mod_read_byte(b + 0x5Du) != RUN_ARENA) return;
+    return psx_mod_read_byte(b + 0x5Du) == RUN_ARENA ? b : 0u;
+}
+
+/* Cursor on the next opponent's row and X; 0 = given up. */
+static int run_hx_pick_row(uint32_t b, int step, const char *where)
+{
     const int count = psx_mod_read_byte(b + 0x60u);
-    const int wins = run_state.run.wins;
-    const int row = (int)MOA_RUN_SLOTS - wins - 2;     /* the next opponent's rank - 1 */
-    if (count < 1 || row < 0 || row >= count) { run_hx_fail("next battle: no opponent row on the arena list"); return; }
+    const int row = (int)MOA_RUN_SLOTS - (int)run_state.run.wins - 2;   /* the next opponent's rank - 1 */
+    if (count < 1 || row < 0 || row >= count) { run_hx_fail("next battle: no opponent row on the arena list"); return 0; }
+    if (run_hx_next == step + 1 && ++run_hx_next_t < 30u) return 1;    /* pressed already: give it a moment */
+    if (++run_hx_next_tries > 6u) { run_hx_fail("next battle: 6 X presses on the arena screens and no fight"); return 0; }
     const int vis = count < 6 ? count : 6;
     const int top = row > count - vis ? count - vis : row;
-    if (run_hx_next == 2 && ++run_hx_next_t < 30u) return;   /* back at the list: give it a moment */
-    if (++run_hx_next_tries > 3u) { run_hx_fail("next battle: the arena list took 3 X presses and is still up"); return; }
     psx_mod_write_byte(b + 0x69u, (uint8_t)top);
     psx_mod_write_byte(b + 0x68u, (uint8_t)(row - top));
     psx_mod_write_word(RUN_D_PAD + 0x18u, psx_mod_read_word(RUN_D_PAD + 0x18u) | RUN_PAD_X);
     psx_mod_write_word(RUN_D_PAD + 0x1Cu, psx_mod_read_word(RUN_D_PAD + 0x1Cu) & ~(uint32_t)RUN_PAD_X);
-    run_hx_next = 2;
+    run_hx_next = step + 1;
     run_hx_next_t = 0;
-    run_log("hub overlay: arena list on row %d (rank %d), X (try %u)", row, row + 1, (unsigned)run_hx_next_tries);
+    run_log("hub overlay: %s on row %d (rank %d), X (press %u)", where, row, row + 1, (unsigned)run_hx_next_tries);
+    return 1;
+}
+
+/* The opponent list (every frame it is up). */
+static void run_hx_arena_list(struct CPUState *cpu, uint32_t address)
+{
+    if (!run_on() || psx_mod_read_word(address) != RUN_SIG_ARENA_LIST) return;
+    const uint32_t b = run_hx_a0_block(cpu);
+    if (!b) return;
+    run_hx_list_seen = 0;
+    if (run_hx_go_entry >= 0 && !run_hx_next) {           /* Shop / Garage: back to the hub first */
+        psx_mod_write_word(RUN_D_PAD + 0x18u, psx_mod_read_word(RUN_D_PAD + 0x18u) | RUN_PAD_CIRCLE);
+        psx_mod_write_word(RUN_D_PAD + 0x1Cu, psx_mod_read_word(RUN_D_PAD + 0x1Cu) & ~(uint32_t)RUN_PAD_CIRCLE);
+        return;
+    }
+    if (run_hx_next == 1 || run_hx_next == 2) (void)run_hx_pick_row(b, 1, "arena list");
+}
+
+/* The opponent's panel: X asks "fight?". */
+static void run_hx_arena_input(struct CPUState *cpu, uint32_t address)
+{
+    if (!run_hx_next || !run_on() || psx_mod_read_word(address) != RUN_SIG_ARENA_INPUT) return;
+    const uint32_t b = run_hx_a0_block(cpu);
+    if (!b) return;
+    if (run_hx_next == 2 || run_hx_next == 3) (void)run_hx_pick_row(b, 2, "opponent panel");
 }
 
 /* From the menu's controller sampling while NEXT BATTLE runs: X for the
@@ -3047,7 +3099,7 @@ static int run_hx_menu_pad(void)
     if (run_hx != HX_NEXT) return 0;
     const uint32_t t = run_hx_next_t++;
     psx_mod_write_half(RUN_PAD_BUFFER + 2u,
-                       run_hx_next == 2 && (t % 24u) >= 12u && (t % 24u) < 15u ? (uint16_t)~RUN_PAD_X : (uint16_t)0xFFFFu);
+                       run_hx_next == 3 && (t % 24u) >= 12u && (t % 24u) < 15u ? (uint16_t)~RUN_PAD_X : (uint16_t)0xFFFFu);
     return 1;
 }
 
@@ -3087,13 +3139,17 @@ static void run_hx_frame(void)
         psx_mod_write_byte(RUN_STAGE_P2, run_hx_hold_id);
     }
     if (run_hx_hub_seen < 0xFFFFu) run_hx_hub_seen++;
-    if (run_hx_hub_seen > 30u) run_hx_off = 0;          /* left the hub: the list comes back next time */
+    if (run_hx_list_seen < 0xFFFFu) run_hx_list_seen++;
+    if (run_hx_hub_seen > 30u && run_hx_list_seen > 30u) run_hx_off = 0;   /* left both: back next time */
+    if (run_hx == HX_BUSY && run_hx_go_entry < 0) run_hx_close();          /* the hub opened the pick */
     if (run_hx_go_entry >= 0 && !run_hx_next && ++run_hx_go_frames > RUN_HX_GO_GIVE_UP)
         run_hx_fail("the hub did not open the pick");
     if (run_hx_next && ++run_hx_next_frames > RUN_HX_NEXT_GIVE_UP)
         run_hx_fail("next battle: the fight did not start in 15 s");
     if (run_hx == HX_OFF) {
-        if (run_hx_go_entry >= 0 || run_hx_next || run_hx_off || run_hx_hub_seen > 2u) return;
+        if (run_hx_go_entry >= 0 || run_hx_next || run_hx_off) return;
+        if (run_hx_hub_seen > 2u && run_hx_list_seen > 2u) return;          /* neither screen is waiting */
+        if (run_win_screen || run_pay_due) return;                          /* the result still to pay */
         if (!run_state_ok || run_state.run.over || !run_at_hub || run_autopilot || run_fade) return;
         if (run_show_on || run_show_rank || run_prize_stage || run_prize_due() >= 0 || run_end_stage) return;
         if (run_to_hub || psx_mod_read_byte(RUN_FIGHT_DONE)) return;
@@ -3111,10 +3167,11 @@ static void run_hx_frame(void)
             if (!run_hx_failed_told) { run_hx_failed_told = 1; run_log("hub overlay: could not be drawn; the game's hub stays"); }
             return;
         }
-        run_log("hub overlay: up (P %u, %s)", (unsigned)psx_mod_read_word(RUN_CREDITS), run_hx_foe);
+        run_log("hub overlay: up over the %s (P %u, %s)", run_hx_hub_seen <= 2u ? "hub" : "arena list",
+                (unsigned)psx_mod_read_word(RUN_CREDITS), run_hx_foe);
         return;
     }
-    if (run_hx == HX_NEXT) return;
+    if (run_hx == HX_NEXT || run_hx == HX_BUSY) return;
     const uint16_t b = psx_mod_host_pad_buttons(0);      /* active low */
     const uint16_t held = (uint16_t)~b;
     uint16_t down = (uint16_t)(run_hx_held & ~b);
@@ -3154,7 +3211,7 @@ static void run_hx_frame(void)
         switch (run_hx_cur) {
         case HXR_NEXT:
             if (run_state.run.wins + 1u >= MOA_RUN_SLOTS) {      /* rank 1: pick a refight in the game's list */
-                run_hx_open_entry(RUN_HUB_ARENA, "arena (rank 1: the game's list)");
+                run_hx_open_entry(RUN_HUB_ARENA, "arena (rank 1: the game's list)", "ARENA");
                 break;
             }
             run_hx_start_next();
@@ -3165,8 +3222,8 @@ static void run_hx_frame(void)
             run_hx_stop = run_hx_scur > RUN_HX_STAGES - 7 ? RUN_HX_STAGES - 7 : run_hx_scur;
             (void)run_hx_draw();
             break;
-        case HXR_SHOP:   run_hx_open_entry(1, "shop (the game's)"); break;
-        case HXR_GARAGE: run_hx_open_entry(0, "garage (the game's)"); break;
+        case HXR_SHOP:   run_hx_open_entry(1, "shop (the game's)", "SHOP"); break;
+        case HXR_GARAGE: run_hx_open_entry(0, "garage (the game's)", "GARAGE"); break;
         }
     } else if (down & RUN_PAD_CIRCLE) {
         run_hx_close();
@@ -3229,6 +3286,7 @@ PSX_MOD_CONSTRUCTOR(moa_arena_run_boot_register)
     (void)psx_game_register_offline_function_filter(RUN_TITLE_OPEN, run_title_open_filter);
     (void)psx_game_register_offline_function_entry(RUN_D_HUB_INPUT, run_hub_input_entry);
     (void)psx_game_register_offline_function_entry(RUN_ARENA_INPUT, run_hx_arena_input);
+    (void)psx_game_register_offline_function_entry(RUN_ARENA_LIST, run_hx_arena_list);
     (void)psx_game_register_offline_function_filter(RUN_MOVIE_PLAY, run_movie_filter);
     (void)psx_game_register_offline_function_entry(RUN_HUB_RESUME, run_hub_entry);
     (void)psx_game_register_offline_function_entry(RUN_D_HUB_OPEN, run_hub_open_entry);

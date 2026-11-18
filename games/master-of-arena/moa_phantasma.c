@@ -632,6 +632,60 @@ static const struct { uint8_t mission; uint16_t word; uint32_t xor_; } k_ppm_fix
     { 16u,  3505u, 0x00000008u },   /* #17 stride */
     { 16u,  3508u, 0x00000008u },   /* #17 stride */
     {  3u,  3133u, 0x00005F1Bu },   /* #4 call PP 0x80087A34 -> MoA 0x80090658 */
+    /* Round 2 (2026-11-17, from in-game crash reports): the old port sent every call to
+     * PP 0x80075638 (aim an object along a vector; enemy shots use it) into the middle of
+     * MoA 0x8007D50C, at 0x8007D5AC. That skipped the routine's stack set-up, so each shot
+     * scrambled the caller's registers and stack (crashes, writes into BIOS RAM, dead
+     * triggers). Also #4's effect calls left at Phantasma addresses and #8's callback. */
+    {  0u,  1681u, 0x00000028u },   /* #1 call PP 0x80075638 -> MoA 0x8007D50C */
+    {  0u,  2155u, 0x00000028u },   /* #1 call PP 0x80075638 -> MoA 0x8007D50C */
+    {  0u,  9688u, 0x00000028u },   /* #1 call PP 0x80075638 -> MoA 0x8007D50C */
+    {  0u, 11103u, 0x00000028u },   /* #1 call PP 0x80075638 -> MoA 0x8007D50C */
+    {  1u,  7097u, 0x00000028u },   /* #2 call PP 0x80075638 -> MoA 0x8007D50C */
+    {  1u,  8512u, 0x00000028u },   /* #2 call PP 0x80075638 -> MoA 0x8007D50C */
+    {  2u,  5937u, 0x00000028u },   /* #3 call PP 0x80075638 -> MoA 0x8007D50C */
+    {  2u,  7352u, 0x00000028u },   /* #3 call PP 0x80075638 -> MoA 0x8007D50C */
+    {  3u,  3018u, 0x00005C71u },   /* #4 call PP 0x800875F8 -> MoA 0x8009043C */
+    {  3u,  3055u, 0x0C021E1Cu },   /* #4 call PP 0x80087870 (no MoA match) -> nop */
+    {  3u,  3194u, 0x00000099u },   /* #4 call PP 0x80087BDC -> MoA 0x80090658 (sprite) */
+    {  3u,  7749u, 0x00000028u },   /* #4 call PP 0x80075638 -> MoA 0x8007D50C */
+    {  3u,  9164u, 0x00000028u },   /* #4 call PP 0x80075638 -> MoA 0x8007D50C */
+    {  4u,  8394u, 0x00000028u },   /* #5 call PP 0x80075638 -> MoA 0x8007D50C */
+    {  4u,  9809u, 0x00000028u },   /* #5 call PP 0x80075638 -> MoA 0x8007D50C */
+    {  5u,   668u, 0x00000028u },   /* #6 call PP 0x80075638 -> MoA 0x8007D50C */
+    {  5u,  1397u, 0x00000028u },   /* #6 call PP 0x80075638 -> MoA 0x8007D50C */
+    {  6u,  3982u, 0x00000028u },   /* #7 call PP 0x80075638 -> MoA 0x8007D50C */
+    {  6u,  4949u, 0x00000028u },   /* #7 call PP 0x80075638 -> MoA 0x8007D50C */
+    {  6u, 10909u, 0x00000028u },   /* #7 call PP 0x80075638 -> MoA 0x8007D50C */
+    {  6u, 12324u, 0x00000028u },   /* #7 call PP 0x80075638 -> MoA 0x8007D50C */
+    {  7u,  1460u, 0x00000028u },   /* #8 call PP 0x80075638 -> MoA 0x8007D50C */
+    {  7u,  1934u, 0x00000028u },   /* #8 call PP 0x80075638 -> MoA 0x8007D50C */
+    {  7u,  9682u, 0x00000028u },   /* #8 call PP 0x80075638 -> MoA 0x8007D50C */
+    {  7u, 11097u, 0x00000028u },   /* #8 call PP 0x80075638 -> MoA 0x8007D50C */
+    {  7u,   679u, 0x0000000Fu },   /* #8 callback PP 0x80073DA4 -> MoA 0x8007BC5C (hi) */
+    {  7u,   681u, 0x000081F8u },   /* #8 callback PP 0x80073DA4 -> MoA 0x8007BC5C (lo) */
+    {  8u,  9899u, 0x00000028u },   /* #9 call PP 0x80075638 -> MoA 0x8007D50C */
+    {  8u, 11314u, 0x00000028u },   /* #9 call PP 0x80075638 -> MoA 0x8007D50C */
+    {  9u,  7899u, 0x00000028u },   /* #10 call PP 0x80075638 -> MoA 0x8007D50C */
+    {  9u,  9314u, 0x00000028u },   /* #10 call PP 0x80075638 -> MoA 0x8007D50C */
+    { 10u,  7103u, 0x00000028u },   /* #11 call PP 0x80075638 -> MoA 0x8007D50C */
+    { 10u,  8518u, 0x00000028u },   /* #11 call PP 0x80075638 -> MoA 0x8007D50C */
+    { 11u,  2357u, 0x00000028u },   /* #12 call PP 0x80075638 -> MoA 0x8007D50C */
+    { 11u,  3324u, 0x00000028u },   /* #12 call PP 0x80075638 -> MoA 0x8007D50C */
+    { 12u,  7904u, 0x00000028u },   /* #13 call PP 0x80075638 -> MoA 0x8007D50C */
+    { 12u,  9319u, 0x00000028u },   /* #13 call PP 0x80075638 -> MoA 0x8007D50C */
+    { 13u,  1724u, 0x00000028u },   /* #14 call PP 0x80075638 -> MoA 0x8007D50C */
+    { 13u,  2198u, 0x00000028u },   /* #14 call PP 0x80075638 -> MoA 0x8007D50C */
+    { 13u, 10244u, 0x00000028u },   /* #14 call PP 0x80075638 -> MoA 0x8007D50C */
+    { 13u, 11659u, 0x00000028u },   /* #14 call PP 0x80075638 -> MoA 0x8007D50C */
+    { 14u,  2319u, 0x00000028u },   /* #15 call PP 0x80075638 -> MoA 0x8007D50C */
+    { 14u,  3286u, 0x00000028u },   /* #15 call PP 0x80075638 -> MoA 0x8007D50C */
+    { 14u,  8475u, 0x00000028u },   /* #15 call PP 0x80075638 -> MoA 0x8007D50C */
+    { 14u,  9890u, 0x00000028u },   /* #15 call PP 0x80075638 -> MoA 0x8007D50C */
+    { 15u,  2450u, 0x00000028u },   /* #16 call PP 0x80075638 -> MoA 0x8007D50C */
+    { 15u,  3179u, 0x00000028u },   /* #16 call PP 0x80075638 -> MoA 0x8007D50C */
+    { 15u,  7917u, 0x00000028u },   /* #16 call PP 0x80075638 -> MoA 0x8007D50C */
+    { 15u,  9332u, 0x00000028u },   /* #16 call PP 0x80075638 -> MoA 0x8007D50C */
 };
 #define PPM_FIX_COUNT (sizeof k_ppm_fixes / sizeof k_ppm_fixes[0])
 

@@ -522,10 +522,50 @@ uses as trigger zones):
 | +0x06 | +6 | **point type** (−1 = none / removed); picks the handler module +0xA0 + 4 × type |
 | +0x08 … +0x0F | +8 … +15 | ? |
 | +0x14 | — | controller (allocated by the handler, `0x8007927C`) |
-| +0x1C … +0x21 | — | from block 8's 24-byte record for this type (`0x801E46D8 + 24 × type`); +0x1C = 0xC000 when the type is −1 |
+| +0x10, +0x18 … +0x1A | — | cleared at load |
+| +0x1C | — | **flags**, from block 8 record +0 (0xC000 when the type is −1): **0x4000 = not touchable** (left out of the touch list), **0x2000 = solid** (bumping objects call its message handler), 0x8000 = set when a point removes itself |
+| +0x1E, +0x20 | — | **touch size** (radius, height), from block 8 record +2 / +4 |
 | **+0x22 … +0x27** | +16 … +21 | **event 1**: kind, arg byte, arg u16 (+0x24), arg byte, arg byte |
 | +0x28 | +22 | 0 = repeatable, else one-shot; 2 = event 2 is used too `?` |
 | **+0x2A … +0x2F** | +24 … +29 | **event 2**, same layout |
+
+### Point classes (block 8, 2026-11-17, static)
+
+**Map file block 8** (`0x80078F58`) = u32 count, then count × 24-byte records copied to
+**`0x801E46D8 + 24 × type`**: u16 flags, u16 radius, u16 height, u16 **class**, then 8 u16 (0 in
+every MoA map). The loader copies flags / radius / height into point +0x1C … +0x21. So a point's
+**type** is only an index into its own map's block 8 (type 3 means different things in different
+missions); the **class** (record +6) is what stays the same from map to map. The engine never reads
+the class (an editor label `?`); each mission's point handler (module +0xA0 + 4 × type) decides the
+behaviour. After loading, `0x80078D70` lists every used point without flag 0x4000 at `0x801E63D8`
+(count u16 `0x801E65D8`); `0x80078FE4` / `0x800791A8` test boxes against that list.
+
+**Touching a point:** the player's "use" action (`0x80090E30`, from `0x800849D0`) first looks for an
+object in front of the AC (message 0x8100), else a listed point within 200 × 575 units in front, and
+calls its controller **+0x04 with message 0** = "used / picked up". Objects moving into a **solid**
+point (flag 0x2000, `0x8007A688` and three more callers) call +0x04 with a pointer to hit info
+instead (not 0) = "bumped". Each frame `0x800792B8` runs every point's controller +0x00.
+
+Classes in the 20 MoA maps (handler behaviour read in missions 2, 3, 13):
+
+| Class | Flags | Size | Missions | What it is |
+|---|---|---|---|---|
+| 0xF9 | 0xE004 | — | 1–8, 13, 15 (always points 0, 1, 2) | **combat area boxes**: while the player AC is inside the box (point ± signed bytes +0x22 … +0x27 × 256) its bit (+0x28) is set in player block +0x08. The engine's out-of-area end tests +0x08 & 7 = 1 (see "How a mission ends"). Same handler code in every mission |
+| 0xF8 | 0xC044 | — | 6–10, 13, 14, 17, 18 | **zones**: box limits in +0x22 … +0x27. Used by mission code for "reach the exit" boxes (8 point 4, 10 point 0) and spawn zones, and as **route points** (7, 13; +0x28 = next point). No handler |
+| 0xF7 | 0xC004 | — | 1, 3–8, 13, 15 | **sound box** `?`: each frame calls `0x800537D4(box min, box max, +0x28, +0x2A, +0x2B …)` (sound code near `0x800441D8`) |
+| 0xF4 | 0x4001 | — | 2, 3 | **watcher**: mode +0x22 = 0 watches *n* = +0x23 map sections from +0x24, mode 1 watches *n* points from +0x24; once all are gone it removes itself (type −1, flag 0x8000). Mission code then tests "point removed" (mission 3: points 8–11, mission 2: points 3, 13, 14) |
+| 0xF1, 0xF2, 0xFA | 0x400D, 0x4005, 0x4007 | — | one point each in 1, 3–7, 13, 15 | no handler, not touchable; positions for scripts / camera `?` |
+| 0xFD, 0xFE | 0xC000 | — | all | **plain markers** (positions for scripts and mission code: spawn points, cutscene targets). No handler |
+| 0x33, 0x35, 0x36, 0x37 | 0 | 20–80 wide | 9, 2, 8, 12 | **pickups**: the container (9) and the three hidden parts (2 HD-HELM, 8 WX-ED2, 12 P/CV). Use → event 1 (and 2), effect, removed. See "Hidden parts" below |
+| 0x2F | 0 | 200 × 300 | 18 (points 2–9) | touchable, fires its events (same pickup code) `?` |
+| 0x2C, 0x2D, 0x2E | **0x2000** (solid) | 70 × 40 / 70 × 50 | 2, 12, 14 | **mines** `?`: solid, can sit still (+0x23 = 1, spins), move toward a linked point (+0x23 = 2, next point +0x28) or wander (3); when bumped they blow up once (effect, made untouchable) |
+| 0x30, 0x31 | 0 | 200 × 150 | 1 | touchable, mission-1-only handler `?` |
+| 0x3C, 0x3D | 0 | 300 / 500 | 15 | mission-15-only handler `?` |
+| 0x2B, 0x32 | 0x4000 / 0 | 50 × 400 / 50 × 50 | 12 / 13 | no handler; positions `?` |
+
+So the old "reconcile" item has its answer: +0x22 … +0x27 are **event 1 for pickups**, **box limits
+for zones and area boxes**, and **mode / list for watchers**; the class decides. When porting maps
+(Phantasma), the handler table and block 8 must agree: a type number has no fixed meaning.
 
 **Event dispatcher `0x80090934(kind, a, b, c, d)`** (called only from mission code; a = byte +0x23,
 b = u16 +0x24, c = byte +0x26, d = byte +0x27):
@@ -705,7 +745,8 @@ So chapter-timed (kind 0) mails depend on mission wins **and** arena ranks.
 - Map header fields (80, 19, 4 × 19) and the blocks after it.
 - Objectives, win/lose checks, timer, results and rewards; enemy list; script reader
   `0x80091FFC` (stepped at `0x80092E4C`; writes AC +0x6D/+0x7C/+0x7E/+0x84).
-- Event points: the other point types (0–2, 4, 5) and the block 8 per-type records.
-- Reconcile: the spawn rule reads point +0x22 … +0x27 as box limits, item points use the same bytes as event 1 (per type?).
+- ~~Event points: other types, block 8~~: done, see "Point classes". Still open: classes 0xF1 / 0xF2 /
+  0xFA (who reads them), 0x30 / 0x31 (mission 1), 0x3C / 0x3D (mission 15), 0x2F (mission 18),
+  and whether 0xF7 really is a sound box.
 - Mail: mission mode T+4 = 0 (what it is; it hands out every mail of kinds 0–3 at once); what
   the second delivery call (`0x800AC2D4`) belongs to; Phantasma's own mail table.

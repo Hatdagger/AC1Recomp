@@ -45,6 +45,11 @@ struct moa_parts {
 /* Read the tables from a Master of Arena (USA) disc 1 image. 1 = ok. */
 int moa_parts_load(const char *disc_path, struct moa_parts *out);
 
+/* The same from the menu module's bytes already in memory (the game side
+ * reads them from guest RAM): `mem` holds `bytes` bytes from guest address
+ * `mem_addr`, which must cover 0x800CE690..0x800D2774. 1 = ok. */
+int moa_parts_from_menu(const uint8_t *mem, uint32_t mem_addr, uint32_t bytes, struct moa_parts *out);
+
 const struct moa_part *moa_parts_find(const struct moa_parts *p, int cat, uint8_t id);
 
 /* Sub-group shown in the builder's lists ("Weapon arms", "Missiles", ...;

@@ -48,7 +48,7 @@ const uint32_t *moa_screen_render(int win_w, int win_h, const char *status,
                                   int step, int permille, int limit_secs, float fade,
                                   uint64_t now_ms, int *out_w, int *out_h);
 
-/* A screen of part tiles (shop restock, prize picks): a title, a line
+/* A screen of part tiles (unused since the prize screen; kept): a title, a line
  * under it, up to 8 tiles in rows of 4 and a footer. A tile shows its
  * thumbnail (128x128 0xAARRGGBB, NULL = the category in large text), the
  * part's name and its label (price). Same canvas and font as above;
@@ -91,6 +91,34 @@ struct moa_screen_list {
 };
 const uint32_t *moa_screen_render_list(int win_w, int win_h, const struct moa_screen_list *l,
                                        int see_through, int *out_w, int *out_h);
+
+/* The Rogue Arena prize screen after every win: up to 3 part offers (cheap,
+ * mid, expensive) and PASS, one row each. An offer row shows the part's
+ * picture (128x128 0xAARRGGBB, NULL = the category in large text), its
+ * price tier tag, category and name, and its cost on the right; a locked
+ * row (not enough P) is dimmed and shows `cost` in red. The PASS row has no
+ * picture. When `ask_n` > 0 a box opens over the rows (EQUIP NOW / SAVE FOR
+ * LATER ...) with `ask_line` (what an equip replaces) under its title.
+ * see_through: as for the tiles. */
+struct moa_screen_prize_row {
+    const char *tag;          /* "CHEAP", "MID", "EXPENSIVE", or NULL (PASS) */
+    const char *category;     /* "BACK WEAPON  MISSILES" */
+    const char *name;         /* "PASS" on the pass row */
+    const char *cost;         /* "3 P", "+1 P" */
+    const uint32_t *thumb;    /* 128 x 128, or NULL */
+    int locked;
+};
+struct moa_screen_prize {
+    const char *title, *line;
+    const struct moa_screen_prize_row *row;
+    int count, cursor;
+    const char *ask_title, *ask_line;
+    const char *const *ask;
+    int ask_n, ask_cursor;
+    const char *footer;
+};
+const uint32_t *moa_screen_render_prize(int win_w, int win_h, const struct moa_screen_prize *p,
+                                        int see_through, int *out_w, int *out_h);
 
 /* The victory screen after a run win (fighting-game style). winner and
  * loser: RGBA renders (rows top first, transparent background) of the

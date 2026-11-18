@@ -415,7 +415,7 @@ int moa_run_win(struct moa_run_state *s)
 {
     if (s->run.over || s->run.wins >= MOA_RUN_SLOTS - 1) return 0;
     s->run.wins++;
-    s->run.points++;
+    s->run.points = (uint8_t)(s->run.points + 1u + s->run.income);
     if (s->run.wins > s->run.best) s->run.best = s->run.wins;
     return 1;
 }
@@ -425,8 +425,24 @@ void moa_run_lose(struct moa_run_state *s)
     s->run.over = 1;
 }
 
-/* Version 5 ended after the AC name (the progress block padded to 64). */
+/* Version 5 ended after the AC name (the progress block padded to 64);
+ * version 6 after the milestone prizes (prize_ix), padded as the compiler
+ * laid it out then (progress to 4 bytes, the whole state to 8). */
 #define RUN_V5_BYTES (offsetof(struct moa_run_state, run) + 64u)
+#define RUN_V6_PROGRESS ((offsetof(struct moa_run_progress, prize_wins) + 3u) & ~(size_t)3u)
+#define RUN_V6_BYTES ((offsetof(struct moa_run_state, run) + RUN_V6_PROGRESS + 7u) & ~(size_t)7u)
+
+/* Version 7's fields for an older run: every win so far has had its prize
+ * (none owed), nothing spent or saved, and the card holds the garage. */
+static void run_v7_defaults(struct moa_run_state *s)
+{
+    struct moa_run_progress *r = &s->run;
+    r->prize_wins = r->wins;
+    r->income = r->plus = r->saved_n = 0;
+    memset(r->saved, 0, sizeof r->saved);
+    r->p_spent = r->p_spent_card = 0;
+    r->snap_pending = 0;
+}
 
 int moa_run_load(const char *path, struct moa_run_state *s)
 {
@@ -442,6 +458,12 @@ int moa_run_load(const char *path, struct moa_run_state *s)
         s->run.p_paid = s->run.p_card = s->run.points;
         s->run.prizes = s->run.prize_saved = 0;
         memset(s->run.prize_ix, 0, sizeof s->run.prize_ix);
+        run_v7_defaults(s);
+    } else if (s->version == 6u && got == RUN_V6_BYTES) {
+        /* Milestone prizes: any not yet on the card are added on load (the
+         * game side's reconcile); from here on, a prize after every win. */
+        s->version = MOA_RUN_VERSION;
+        run_v7_defaults(s);
     } else if (got != sizeof *s || s->version != MOA_RUN_VERSION) {
         return 0;
     }
@@ -569,7 +591,7 @@ void moa_run_make_save(const struct moa_run_state *s, uint8_t b[8192])
         if (moa_record_cat(r) != MOA_CAT_BACK)       /* back weapons stay on sale */
             b[RS_SHOP + base + ac[r]] = 0;
     }
-    /* The shop opens empty: restocks at ranks 45, 40 ... 5 and 1 fill it. */
+    /* The shop opens empty and stays so (parts come from the prize screen). */
     memset(b + RS_SHOP, 0, 256);
     const uint32_t p = s->run.points;
     for (int i = 0; i < 4; i++) {

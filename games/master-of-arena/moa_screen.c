@@ -582,6 +582,134 @@ const uint32_t *moa_screen_render_list(int win_w, int win_h, const struct moa_sc
     return buf;
 }
 
+/* ---- prize screen (moa_screen_render_prize) --------------------------------- */
+static uint32_t dim_px(uint32_t p, int num, int den)
+{
+    const uint32_t r = ((p >> 16) & 255u) * (uint32_t)num / (uint32_t)den;
+    const uint32_t g = ((p >> 8) & 255u) * (uint32_t)num / (uint32_t)den;
+    const uint32_t b = (p & 255u) * (uint32_t)num / (uint32_t)den;
+    return (p & 0xFF000000u) | r << 16 | g << 8 | b;
+}
+
+static void cursor_marks(uint32_t *buf, int x0, int x1, int ymid, uint32_t c)
+{
+    for (int k = 0; k < 9; k++) {
+        fill(buf, x0 - 26 + k, ymid - (9 - k), x0 - 25 + k, ymid + (9 - k), c);
+        fill(buf, x1 + 25 - k, ymid - (9 - k), x1 + 26 - k, ymid + (9 - k), c);
+    }
+}
+
+const uint32_t *moa_screen_render_prize(int win_w, int win_h, const struct moa_screen_prize *p,
+                                        int see_through, int *out_w, int *out_h)
+{
+    static uint32_t *buf;
+    static int bw;
+    *out_w = *out_h = 0;
+    if (!s_font_ok || !p) return NULL;
+    int W = CONTENT_W;
+    if (win_w > 0 && win_h > 0) W = (int)((int64_t)CANVAS_H * win_w / win_h);
+    if (W < CONTENT_W) W = CONTENT_W;
+    if (W > MAX_W) W = MAX_W;
+    W &= ~1;
+    if (W != bw || !buf) {
+        free(buf);
+        buf = (uint32_t *)malloc((size_t)W * CANVAS_H * 4u);
+        bw = buf ? W : 0;
+        if (!buf) return NULL;
+    }
+    const int keep_w = s_w, keep_h = s_h;            /* borrow fill()/text(), as the tiles do */
+    s_w = W; s_h = CANVAS_H;
+    const int cx = W / 2;
+    backdrop(buf, W, see_through);
+    const uint32_t grey = rgb(170, 176, 188), white = rgb(235, 238, 242), gold = rgb(255, 200, 80);
+    const uint32_t red = rgb(220, 80, 70);
+    if (p->title) text(buf, NULL, p->title, cx, 56, 3, white);
+    fill(buf, cx - 300, 84, cx + 300, 86, rgb(70, 74, 82));
+    if (p->line) text(buf, NULL, p->line, cx, 110, 2, gold);
+    int count = p->count > 4 ? 4 : p->count;
+    const int rw = 760, rh = 136, ph = 60, gap = 10;
+    int total = 0;
+    for (int i = 0; i < count; i++) total += (p->row[i].tag ? rh : ph) + (i ? gap : 0);
+    const int area_y0 = 138, area_y1 = CANVAS_H - 76;
+    int y0 = area_y0 + (area_y1 - area_y0 - total) / 2;
+    if (y0 < area_y0) y0 = area_y0;
+    const int x0 = cx - rw / 2, x1 = cx + rw / 2;
+    for (int i = 0; i < count; i++) {
+        const struct moa_screen_prize_row *r = &p->row[i];
+        const int offer = r->tag != NULL, h = offer ? rh : ph, on = i == p->cursor;
+        const int y1 = y0 + h;
+        fill(buf, x0, y0, x1, y1, on ? rgb(22, 40, 70) : rgb(8, 10, 16));
+        frame_rect(buf, x0, y0, x1, y1, 2, on ? rgb(130, 200, 255) : rgb(60, 90, 130));
+        if (on && !p->ask_n) cursor_marks(buf, x0, x1, y0 + h / 2, gold);
+        const uint32_t name_c = r->locked ? rgb(90, 100, 116) : on ? white : rgb(150, 175, 205);
+        char s[40];
+        if (offer) {
+            const int tx = x0 + 6, ty = y0 + (h - 128) / 2;
+            fill(buf, tx, ty, tx + 128, ty + 128, rgb(4, 5, 8));
+            if (r->thumb) {
+                for (int y = 0; y < 128; y++)
+                    for (int x = 0; x < 128; x++) {
+                        const uint32_t q = r->thumb[y * 128 + x];
+                        if (q >> 24) buf[(ty + y) * W + tx + x] = r->locked ? dim_px(0xFF000000u | q, 2, 5) : 0xFF000000u | q;
+                    }
+            } else {
+                text(buf, NULL, "?", tx + 64, ty + 64, 3, rgb(60, 64, 72));
+            }
+            const int lx = x0 + 156;
+            if (r->category) { snprintf(s, sizeof s, "%s", r->category); text_left(buf, s, lx, y0 + 30, 1, r->locked ? rgb(80, 88, 100) : grey); }
+            if (r->name) { snprintf(s, sizeof s, "%.18s", r->name); text_left(buf, s, lx, y0 + 66, 3, name_c); }
+            const uint32_t tag_c = r->locked ? rgb(80, 88, 100)
+                                 : strcmp(r->tag, "EXPENSIVE") == 0 ? gold
+                                 : strcmp(r->tag, "MID") == 0 ? white : rgb(140, 190, 255);
+            snprintf(s, sizeof s, "%s", r->tag);
+            text_left(buf, s, lx, y0 + 104, 2, tag_c);
+            if (r->cost) {
+                snprintf(s, sizeof s, "%s", r->cost);
+                text_left(buf, s, x1 - 28 - text_width(s, 4), y0 + (r->locked ? 56 : h / 2), 4, r->locked ? red : gold);
+                if (r->locked) text_left(buf, "NOT ENOUGH P", x1 - 28 - text_width("NOT ENOUGH P", 1), y0 + 96, 1, red);
+            }
+        } else {
+            snprintf(s, sizeof s, "%s", r->name ? r->name : "PASS");
+            text_left(buf, s, x0 + 36, y0 + h / 2, 3, name_c);
+            if (r->cost) {
+                snprintf(s, sizeof s, "%s", r->cost);
+                text_left(buf, s, x1 - 28 - text_width(s, 3), y0 + h / 2, 3, gold);
+            }
+        }
+        y0 = y1 + gap;
+    }
+    if (p->ask_n > 0) {                               /* the question box over the rows */
+        for (int y = 128; y < CANVAS_H - 70; y++)
+            for (int x = 0; x < W; x++) buf[y * W + x] = dim_px(buf[y * W + x], 2, 5);
+        const int n = p->ask_n > 4 ? 4 : p->ask_n;
+        const int bwid = 600, oh = 54, og = 10;
+        const int bh = 120 + n * oh + (n - 1) * og + 26;
+        const int bx0 = cx - bwid / 2, bx1 = cx + bwid / 2;
+        const int by0 = 138 + (CANVAS_H - 76 - 138 - bh) / 2, by1 = by0 + bh;
+        fill(buf, bx0, by0, bx1, by1, rgb(10, 13, 20));
+        frame_rect(buf, bx0, by0, bx1, by1, 2, rgb(130, 200, 255));
+        frame_rect(buf, bx0 + 5, by0 + 5, bx1 - 5, by1 - 5, 1, rgb(40, 60, 90));
+        if (p->ask_title) text(buf, NULL, p->ask_title, cx, by0 + 40, 2, white);
+        if (p->ask_line) text(buf, NULL, p->ask_line, cx, by0 + 80, 1, grey);
+        int oy = by0 + 112;
+        const int ox0 = cx - 230, ox1 = cx + 230;
+        for (int i = 0; i < n; i++, oy += oh + og) {
+            const int on = i == p->ask_cursor;
+            fill(buf, ox0, oy, ox1, oy + oh, on ? rgb(22, 40, 70) : rgb(8, 10, 16));
+            frame_rect(buf, ox0, oy, ox1, oy + oh, 2, on ? rgb(130, 200, 255) : rgb(60, 90, 130));
+            if (on) cursor_marks(buf, ox0, ox1, oy + oh / 2, gold);
+            char s[27];
+            snprintf(s, sizeof s, "%s", p->ask[i] ? p->ask[i] : "");
+            text(buf, NULL, s, cx, oy + oh / 2, 2, on ? white : rgb(120, 150, 185));
+        }
+    }
+    if (p->footer) text(buf, NULL, p->footer, cx, CANVAS_H - 40, 2, grey);
+    s_w = keep_w; s_h = keep_h;
+    s_dirty = 1;
+    *out_w = W; *out_h = CANVAS_H;
+    return buf;
+}
+
 /* ---- victory screen (moa_screen_render_victory) ---------------------------- */
 /* Fighting-game style: solid black bars, a band in the belt's colour with the
  * belt pattern in it, the beaten AC on its back on the right (dark, smoking),

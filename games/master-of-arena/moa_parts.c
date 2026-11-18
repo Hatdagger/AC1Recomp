@@ -61,8 +61,19 @@ int moa_parts_load(const char *disc, struct moa_parts *out)
     const uint32_t from = need & ~2047u;
     uint8_t *m = moa_disc_read_range(disc, "GG/COM/FDAT.T", start + from, last - from, NULL);
     if (!m) return 0;
+    const int ok2 = moa_parts_from_menu(m, MENU_BASE + from, last - from, out);
+    free(m);
+    return ok2;
+}
+
+int moa_parts_from_menu(const uint8_t *mem, uint32_t mem_addr, uint32_t bytes, struct moa_parts *out)
+{
+    memset(out, 0, sizeof *out);
+    if (mem_addr > k_tables[0].addr || mem_addr + bytes < DETAIL_END) return 0;
+    const uint8_t *m = mem;
+    const uint32_t from = mem_addr - MENU_BASE;
 #define AT(addr) (m + ((addr) - MENU_BASE - from))
-    if (memcmp(AT(k_tables[0].addr), "HD-01-SRVT", 10) != 0) { free(m); return 0; }
+    if (memcmp(AT(k_tables[0].addr), "HD-01-SRVT", 10) != 0) return 0;
     for (int c = 0; c < MOA_CAT__COUNT; c++) {
         const uint32_t n = (k_tables[c].end - k_tables[c].addr) / k_tables[c].stride;
         for (uint32_t i = 0; i < n && out->count[c] < MOA_PARTS_MAX; i++) {
@@ -97,7 +108,6 @@ int moa_parts_load(const char *disc, struct moa_parts *out)
         out->option[i].price = (uint32_t)rd16(r + 36) | ((uint32_t)rd16(r + 38) << 16);
     }
 #undef AT
-    free(m);
     return out->count[MOA_CAT_HEAD] > 0 && out->count[MOA_CAT_GEN] > 0;
 }
 

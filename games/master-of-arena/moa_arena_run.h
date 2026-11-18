@@ -83,7 +83,8 @@ void moa_run_game_hand(uint8_t rec[13]);
 /* ---- the run file -------------------------------------------------------- */
 
 #define MOA_RUN_MAGIC   0x4E555241u   /* "ARUN" */
-#define MOA_RUN_VERSION 6u    /* 4 was the 14-opponent demo; 5 had no prizes (still loads) */
+#define MOA_RUN_VERSION 7u    /* 4 was the 14-opponent demo; 5 had no prizes, 6 milestone prizes (both still load) */
+#define MOA_RUN_SAVED_MAX 24u /* parts saved for later */
 
 /* A lineup slot whose arena is MOA_RUN_GHOST is a ghost: `rank` is its
  * index in moa_run_lineup.ghost. */
@@ -131,14 +132,28 @@ struct moa_run_progress {
      * run card holds (its last save). The card's credits are what is left
      * after shopping, so P is added to them, never set from `points`. */
     uint8_t  p_paid, p_card;
-    uint8_t  prizes;               /* bit m: prize pick m taken (MOA_RUN_PRIZE_WINS) */
-    uint8_t  prize_saved;          /* bit m: that prize is on the run card */
-    uint8_t  prize_ix[7];          /* the part's owned index, MOA_RUN_PRIZE_P = P */
+    uint8_t  prizes;               /* version 6 only: bit m, milestone prize m taken */
+    uint8_t  prize_saved;          /* version 6 only: bit m, that prize is on the run card */
+    uint8_t  prize_ix[7];          /* version 6 only: the part's owned index, MOA_RUN_PRIZE_P = P */
+    /* Version 7: a prize screen after every win (cheap / mid / expensive
+     * part offers or PASS for +1 P). Credits = P earned - P spent. */
+    uint8_t  prize_wins;           /* wins whose prize screen is done (taken or passed) */
+    uint8_t  income;               /* extra P per win (the +1 P per victory prize) */
+    uint8_t  plus;                 /* 1 = Human Plus bought */
+    uint8_t  saved_n;              /* parts saved for later (SWAP PARTS) */
+    uint8_t  saved[MOA_RUN_SAVED_MAX];   /* their owned-table indices */
+    uint16_t p_spent;              /* P spent on prizes */
+    uint16_t p_spent_card;         /* how much of that the run card holds */
+    /* The garage right after the last prize change, until the run card has
+     * it (a session that ends before the autosave gets it back on load). */
+    uint8_t  snap_pending;
+    uint8_t  snap_parts[12];       /* 0x80036FB0, the save's part order */
+    uint8_t  snap_opts[2];         /* 0x8003EA70 */
+    uint8_t  snap_owned[256];      /* 0x80036FEC */
 };
 
-/* Prize picks after these wins; prize_ix value for a P prize. */
+/* Version 6's milestone prizes (still read from old run files). */
 #define MOA_RUN_PRIZES      7
-#define MOA_RUN_PRIZE_WINS  { 1, 3, 6, 9, 12, 18, 24 }
 #define MOA_RUN_PRIZE_P     0xFFu
 
 struct moa_run_state {

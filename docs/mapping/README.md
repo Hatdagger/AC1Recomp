@@ -212,10 +212,10 @@ Boot chat → Rogue Arena work (2026-11-17, after reading `rogue-arena-49` up to
   included; once both work, one shared routine could serve both.
 
 Boot chat → Rogue Arena work (2026-11-18):
-- The arena screen loads the **opponent's textures** in `0x800C0D14(records, n)` from its
-  64-byte arena record, between two `0x800C0E7C` swaps; 12 opponent records use a
-  pre-painted texture set (record byte 14). Any direct arena launch or custom opponent must
-  replay it (`boot-loads.md` §7).
+- For reference only (Rogue Arena already does this right: it writes arena records and lets
+  the game's arena screen load them; its ghost records set byte 14 = 0, custom paint). The
+  routine is `0x800C0D14(records, n)`; byte 14 ≠ 0 picks one of 15 pre-painted texture sets,
+  used by 12 disc opponents. Details in `boot-loads.md` §7.
 
 Launch chat → data chat:
 - Stage (compiled +0x05 = player block +0x255) at VS START = byte `0x800D5800[map − 1]`,

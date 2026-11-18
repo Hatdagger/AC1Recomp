@@ -592,6 +592,38 @@ static uint32_t dim_px(uint32_t p, int num, int den)
     return (p & 0xFF000000u) | r << 16 | g << 8 | b;
 }
 
+/* The prize screen's backdrop: dim in the middle (behind the rows), lighter
+ * towards the corners. Factor per pixel in 1/256 (cached per width): dark in
+ * the middle (0.10) up to 1.40 in the far corners. */
+static void vignette(uint32_t *buf, int W, int H)
+{
+    static uint16_t *f;
+    static int fw, fh;
+    if (!f || fw != W || fh != H) {
+        free(f);
+        f = (uint16_t *)malloc((size_t)W * H * sizeof *f);
+        if (!f) { fw = fh = 0; return; }
+        fw = W; fh = H;
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++) {
+                const float dx = (x + 0.5f - W * 0.5f) / (W * 0.5f), dy = (y + 0.5f - H * 0.5f) / (H * 0.5f);
+                float d = sqrtf((dx * dx + dy * dy) * 0.5f);      /* 0 middle, 1 corner */
+                float t = (d - 0.25f) / 0.75f;
+                t = t < 0.0f ? 0.0f : t > 1.0f ? 1.0f : t;
+                t = t * t * (3.0f - 2.0f * t);
+                f[y * W + x] = (uint16_t)((0.10f + 1.30f * t) * 256.0f);
+            }
+    }
+    for (int i = 0; i < W * H; i++) {
+        const uint32_t p = buf[i], k = f[i];
+        uint32_t r = ((p >> 16) & 255u) * k >> 8, g = ((p >> 8) & 255u) * k >> 8, b = (p & 255u) * k >> 8;
+        if (r > 255u) r = 255u;
+        if (g > 255u) g = 255u;
+        if (b > 255u) b = 255u;
+        buf[i] = (p & 0xFF000000u) | r << 16 | g << 8 | b;
+    }
+}
+
 static void cursor_marks(uint32_t *buf, int x0, int x1, int ymid, uint32_t c)
 {
     for (int k = 0; k < 9; k++) {
@@ -622,6 +654,7 @@ const uint32_t *moa_screen_render_prize(int win_w, int win_h, const struct moa_s
     s_w = W; s_h = CANVAS_H;
     const int cx = W / 2;
     backdrop(buf, W, see_through);
+    if (!see_through) vignette(buf, W, CANVAS_H);
     const uint32_t grey = rgb(170, 176, 188), white = rgb(235, 238, 242), gold = rgb(255, 200, 80);
     const uint32_t red = rgb(220, 80, 70);
     if (p->title) text(buf, NULL, p->title, cx, 56, 3, white);

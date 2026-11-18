@@ -43,6 +43,7 @@
 #include "moa_ac_view.h"
 #include "moa_chime.h"
 #include "moa_vs_sound.h"
+#include "moa_render_queue.h"
 #include "moa_music.h"
 #include "moa_screen.h"
 #include "moa_run_record.h"
@@ -4023,6 +4024,7 @@ static unsigned run_vs_shots, run_vs_key;
 static int run_vs_door;
 static uint8_t *run_vs_you_px, *run_vs_foe_px, *run_vs_mini_px[VS_MAX_MINI];
 static uint32_t run_vs_emblem[64 * 64];
+static uint32_t run_vs_mini_emblem[VS_MAX_MINI][64 * 64];   /* boxes without a render */
 static int run_vs_has_emblem;
 static struct moa_screen_vs_mini run_vs_mini[VS_MAX_MINI];
 static int run_vs_mini_n;
@@ -4077,16 +4079,189 @@ static void run_vs_sounds(void)
     run_log("vs: sounds %s", ok ? "ready" : "not made (no sounds)");
 }
 
-static uint8_t *run_vs_render(const uint8_t rec[13], const uint8_t paint[48], int size, float yaw)
+/* ---- the renders, made ahead (user 2026-11-18 13:20) --------------------------
+ * The portraits are rendered on moa_render_queue's worker between fights
+ * (from the victory screen on: prize screen, hub overlay), not at NEXT
+ * BATTLE. The opponents once per win; the player's AC whenever its parts
+ * change (EQUIP NOW, swaps), so only that one is ever redone. At NEXT
+ * BATTLE an opponent render that is not done is dropped: its box shows the
+ * emblem alone. The player's render is waited for: it pops in when done,
+ * until the shutters close. */
+#define VS_PRE_MAX 10
+struct run_vs_pre_box {
+    int rank, big;                     /* big: the 1000 px portrait, else the strip's 400 px */
+    moa_rq_job job;
+    uint8_t *px;
+};
+static struct run_vs_pre_box run_vs_pre[VS_PRE_MAX];
+static int run_vs_pre_n;
+static uint64_t run_vs_pre_seed;
+static uint32_t run_vs_pre_attempt, run_vs_pre_wins = 0xFFFFFFFFu;
+static uint8_t run_vs_pre_me[13 + 48];         /* the player's record + paint the renders are for */
+static int run_vs_pre_me_set;
+static moa_rq_job run_vs_pre_me_job[2];        /* [0] big, [1] strip */
+static uint8_t *run_vs_pre_me_px[2];
+
+static const char *run_vs_models(void)
 {
-    return run_victory_render(rec, paint, size, yaw, 0.06f, 1.3f);
+    const char *mdir = getenv("PSX_MOA_MODELS_DIR");
+    return mdir && mdir[0] ? mdir : NULL;
 }
 
+/* The player's AC: the garage's loadout (the save's part order -> card record) + the run's paint. */
+static void run_vs_me(uint8_t me[13], uint8_t paint[48])
+{
+    uint8_t g[12];
+    for (unsigned i = 0; i < 12; i++) g[i] = psx_mod_read_byte(0x80036FB0u + i);
+    const uint8_t r[13] = { g[0], g[2], g[3], g[11], g[5], g[4], g[6], g[7], g[9], g[8],
+                            psx_mod_read_byte(0x8003EA70u), psx_mod_read_byte(0x8003EA71u), g[1] };
+    memcpy(me, r, 13);
+    moa_run_paint(run_state.lineup.seed, run_state.run.attempt, paint);
+}
+
+/* The next opponent's belt: ranks hi (first) .. lo (its last AC). */
+static int run_vs_belt_of(int foe_rank, int *hi, int *lo)
+{
+    const int belt = moa_hub_rank_tile_index(foe_rank);
+    *hi = belt >= 10 ? 1 : belt == 9 ? 5 : 50 - 5 * belt;
+    *lo = belt >= 10 ? 1 : belt == 9 ? 2 : *hi - 4;
+    return belt;
+}
+
+static void run_vs_pre_drop_me(void)
+{
+    for (int k = 0; k < 2; k++) {
+        moa_rq_drop(run_vs_pre_me_job[k]);
+        run_vs_pre_me_job[k] = 0;
+        free(run_vs_pre_me_px[k]);
+        run_vs_pre_me_px[k] = NULL;
+    }
+    run_vs_pre_me_set = 0;
+}
+
+static void run_vs_pre_drop_all(void)
+{
+    for (int i = 0; i < run_vs_pre_n; i++) {
+        moa_rq_drop(run_vs_pre[i].job);
+        free(run_vs_pre[i].px);
+    }
+    memset(run_vs_pre, 0, sizeof run_vs_pre);
+    run_vs_pre_n = 0;
+    run_vs_pre_wins = 0xFFFFFFFFu;
+    run_vs_pre_drop_me();
+}
+
+/* Collect finished renders (frees the worker's slots). */
+static void run_vs_pre_collect(void)
+{
+    uint8_t *px;
+    for (int i = 0; i < run_vs_pre_n; i++) {
+        struct run_vs_pre_box *b = &run_vs_pre[i];
+        if (!b->job) continue;
+        const int r = moa_rq_take(b->job, &px);
+        if (r == 0) continue;
+        b->job = 0;
+        if (r > 0) b->px = px;
+    }
+    for (int k = 0; k < 2; k++) {
+        if (!run_vs_pre_me_job[k]) continue;
+        const int r = moa_rq_take(run_vs_pre_me_job[k], &px);
+        if (r == 0) continue;
+        run_vs_pre_me_job[k] = 0;
+        if (r > 0) run_vs_pre_me_px[k] = px;
+    }
+}
+
+/* The player's renders for the loadout as it is now (redone when it changes). */
+static void run_vs_pre_player(const char *mdir)
+{
+    uint8_t me[13 + 48];
+    run_vs_me(me, me + 13);
+    if (run_vs_pre_me_set && !memcmp(me, run_vs_pre_me, sizeof me)) return;
+    const int again = run_vs_pre_me_set;
+    run_vs_pre_drop_me();
+    memcpy(run_vs_pre_me, me, sizeof me);
+    run_vs_pre_me_set = 1;
+    run_vs_pre_me_job[0] = moa_rq_submit(mdir, me, me + 13, 1000, 0.55f, 0.06f, 1.3f);
+    run_vs_pre_me_job[1] = moa_rq_submit(mdir, me, me + 13, 400, 0.55f, 0.06f, 1.3f);
+    if (again) run_log("vs: the player's parts changed, their portrait is redone");
+}
+
+/* Per frame between fights: start what the next VS screen needs. */
+static void run_vs_pre_frame(void)
+{
+    run_vs_pre_collect();
+    if (run_vs_pre_n || run_vs_pre_me_set) {
+        if (!run_state_ok || run_state.run.over) { run_vs_pre_drop_all(); return; }   /* nothing to make it for */
+    }
+    if (!run_state_ok || run_state.run.over || !run_at_hub || run_autopilot || run_vs || run_music_fight) return;
+    const char *mdir = run_vs_models();
+    if (!mdir) return;
+    const unsigned wins = run_state.run.wins;
+    if (wins >= MOA_RUN_SLOTS - 1u) return;
+    if (wins != run_vs_pre_wins || run_state.lineup.seed != run_vs_pre_seed ||
+        run_state.run.attempt != run_vs_pre_attempt) {
+        run_vs_pre_drop_all();
+        run_vs_pre_wins = wins;
+        run_vs_pre_seed = run_state.lineup.seed;
+        run_vs_pre_attempt = run_state.run.attempt;
+        const int my_rank = (int)(MOA_RUN_SLOTS - wins), foe_rank = my_rank - 1;
+        int hi, lo;
+        (void)run_vs_belt_of(foe_rank, &hi, &lo);
+        uint8_t r64[64];
+        /* The order the worker takes them: the opponent's portrait, the player's, the strip. */
+        const struct moa_run_pick foe = run_state.lineup.slot[MOA_RUN_SLOTS - (unsigned)foe_rank];
+        if (run_vs_pick_record(foe, r64)) {
+            struct run_vs_pre_box *b = &run_vs_pre[run_vs_pre_n++];
+            b->rank = foe_rank; b->big = 1;
+            b->job = moa_rq_submit(mdir, r64, r64 + 16, 1000, -0.55f, 0.06f, 1.3f);
+        }
+        run_vs_pre_player(mdir);
+        for (int r = hi; r >= lo && run_vs_pre_n < VS_PRE_MAX; r--) {
+            if (r > (int)MOA_RUN_SLOTS - 1) continue;                      /* rank 50: the player's start */
+            const struct moa_run_pick p = run_state.lineup.slot[MOA_RUN_SLOTS - (unsigned)r];
+            if (!run_vs_pick_record(p, r64)) continue;
+            struct run_vs_pre_box *b = &run_vs_pre[run_vs_pre_n++];
+            b->rank = r; b->big = 0;
+            b->job = moa_rq_submit(mdir, r64, r64 + 16, 400, -0.55f, 0.06f, 1.3f);
+        }
+        run_log("vs: renders started for rank %d's fight (%d opponent renders, the player's 2)", foe_rank, run_vs_pre_n);
+        return;
+    }
+    run_vs_pre_player(mdir);
+}
+
+/* At NEXT BATTLE: an opponent's render, or NULL (not done: dropped). */
+static uint8_t *run_vs_pre_get(int rank, int big, int *dropped)
+{
+    for (int i = 0; i < run_vs_pre_n; i++) {
+        struct run_vs_pre_box *b = &run_vs_pre[i];
+        if (b->rank != rank || b->big != big) continue;
+        if (b->px) return b->px;
+        if (b->job) { moa_rq_drop(b->job); b->job = 0; (*dropped)++; }
+        return NULL;
+    }
+    return NULL;
+}
+
+/* While the VS screen is up: the player's renders as they land. 1 = changed. */
+static int run_vs_take_me(void)
+{
+    run_vs_pre_collect();
+    int changed = 0;
+    if (!run_vs_you_px && run_vs_pre_me_px[0]) { run_vs_you_px = run_vs_pre_me_px[0]; changed = 1; }
+    for (int i = 0; i < run_vs_mini_n; i++)
+        if (run_vs_mini[i].kind == MOA_VS_YOU && !run_vs_mini[i].rgba && run_vs_pre_me_px[1]) {
+            run_vs_mini[i].rgba = run_vs_pre_me_px[1];
+            changed = 1;
+        }
+    return changed;
+}
+
+/* The renders belong to the run_vs_pre_* store: the screen only points at them. */
 static void run_vs_free(void)
 {
-    free(run_vs_you_px); free(run_vs_foe_px);
     run_vs_you_px = run_vs_foe_px = NULL;
-    for (int i = 0; i < VS_MAX_MINI; i++) { free(run_vs_mini_px[i]); run_vs_mini_px[i] = NULL; }
     run_vs_mini_n = 0;
 }
 
@@ -4101,16 +4276,26 @@ static void run_vs_open(void)
     run_vs_free();
     run_backdrop_frame();
     run_vs_sounds();
+    const char *mdir = run_vs_models();
+    if (mdir) {
+        /* Nothing made ahead for this fight (should not happen): start it now;
+         * the opponents' renders then miss this screen, the player's still lands. */
+        if (wins != run_vs_pre_wins || run_state.lineup.seed != run_vs_pre_seed ||
+            run_state.run.attempt != run_vs_pre_attempt) {
+            run_log("vs: no renders made ahead for this fight");
+            run_vs_pre_drop_all();
+        }
+        run_vs_pre_player(mdir);
+    }
+    run_vs_pre_collect();
+    int dropped = 0;
     const int my_rank = (int)(MOA_RUN_SLOTS - wins), foe_rank = my_rank - 1;
     run_vs_my_rank = wins ? my_rank : 0;
     run_vs_foe_rank = foe_rank;
-    /* The player: the garage's AC (the save's part order -> card record). */
-    uint8_t g[12], paint[48];
-    for (unsigned i = 0; i < 12; i++) g[i] = psx_mod_read_byte(0x80036FB0u + i);
-    const uint8_t me[13] = { g[0], g[2], g[3], g[11], g[5], g[4], g[6], g[7], g[9], g[8],
-                             psx_mod_read_byte(0x8003EA70u), psx_mod_read_byte(0x8003EA71u), g[1] };
-    moa_run_paint(run_state.lineup.seed, run_state.run.attempt, paint);
-    run_vs_you_px = run_vs_render(me, paint, 1000, 0.55f);
+    /* The player. */
+    uint8_t me[13], paint[48];
+    run_vs_me(me, paint);
+    run_vs_you_px = run_vs_pre_me_px[0];
     run_vs_my_frac = run_vs_frac(me);
     run_hx_name((const uint8_t *)run_state.run.pilot, 16, run_vs_my_pilot, sizeof run_vs_my_pilot);
     run_hx_name((const uint8_t *)run_state.run.ac, 16, run_vs_my_ac, sizeof run_vs_my_ac);
@@ -4118,50 +4303,47 @@ static void run_vs_open(void)
     /* The opponent: the lineup's next rank. */
     const struct moa_run_pick foe = run_state.lineup.slot[MOA_RUN_SLOTS - (unsigned)foe_rank];
     uint8_t r64[64];
-    run_vs_foe_frac = 0.55f;
-    if (run_vs_pick_record(foe, r64)) {
-        run_vs_foe_px = run_vs_render(r64, r64 + 16, 1000, -0.55f);
-        run_vs_foe_frac = run_vs_frac(r64);
-    }
+    run_vs_foe_frac = run_vs_pick_record(foe, r64) ? run_vs_frac(r64) : 0.55f;
+    run_vs_foe_px = run_vs_pre_get(foe_rank, 1, &dropped);
     run_vs_has_emblem = run_vs_pick_emblem(foe, run_vs_emblem);
     run_pick_names(foe, run_vs_ac, run_vs_pilot, sizeof run_vs_ac);
     /* The strip: the next opponent's belt, beaten first, then YOU, the next, the rest. */
-    const int belt = moa_hub_rank_tile_index(foe_rank);
-    const int hi = belt >= 10 ? 1 : belt == 9 ? 5 : 50 - 5 * belt, lo = belt >= 10 ? 1 : belt == 9 ? 2 : hi - 4;
+    int hi, lo;
+    const int belt = run_vs_belt_of(foe_rank, &hi, &lo);
     run_vs_band = k_belt_band[belt < 0 ? 0 : belt > 10 ? 10 : belt];
     if (hi == lo) snprintf(run_vs_belt, sizeof run_vs_belt, "%s BELT  %d", k_victory_belt_name[belt], hi);
     else snprintf(run_vs_belt, sizeof run_vs_belt, "%s BELT  %d-%d", k_victory_belt_name[belt], hi, lo);
-    int beaten = 0;
-    for (int r = hi; r >= lo && run_vs_mini_n < VS_MAX_MINI; r--) {
-        if (r > (int)MOA_RUN_SLOTS - 1 || r < my_rank) continue;       /* rank 50: the player's start */
-        struct moa_screen_vs_mini *m = &run_vs_mini[run_vs_mini_n];
-        memset(m, 0, sizeof *m);
-        const struct moa_run_pick p = run_state.lineup.slot[MOA_RUN_SLOTS - (unsigned)r];
-        if (run_vs_pick_record(p, r64)) run_vs_mini_px[run_vs_mini_n] = run_vs_render(r64, r64 + 16, 400, -0.55f);
-        m->rgba = run_vs_mini_px[run_vs_mini_n]; m->size = 400; m->rank = r; m->kind = MOA_VS_DOWN;
-        run_vs_mini_n++;
-        beaten++;
+    int beaten = 0, emblems = 0;
+    for (int pass = 0; pass < 3; pass++) {
+        /* pass 0: the beaten (hi .. my rank), 1: YOU, 2: the next and the rest */
+        const int from = pass == 0 ? hi : foe_rank, to = pass == 0 ? my_rank : lo;
+        for (int r = from; r >= to && run_vs_mini_n < VS_MAX_MINI; r--) {
+            if (pass == 0 && r > (int)MOA_RUN_SLOTS - 1) continue;     /* rank 50: the player's start */
+            struct moa_screen_vs_mini *m = &run_vs_mini[run_vs_mini_n];
+            memset(m, 0, sizeof *m);
+            m->size = 400;
+            if (pass == 1) {
+                m->rgba = run_vs_pre_me_px[1]; m->kind = MOA_VS_YOU; m->rank = my_rank;
+                run_vs_mini_n++;
+                break;
+            }
+            m->rank = r;
+            m->rgba = run_vs_pre_get(r, 0, &dropped);
+            if (!m->rgba) {
+                const struct moa_run_pick p = run_state.lineup.slot[MOA_RUN_SLOTS - (unsigned)r];
+                if (run_vs_pick_emblem(p, run_vs_mini_emblem[run_vs_mini_n])) {
+                    m->emblem = run_vs_mini_emblem[run_vs_mini_n];
+                    emblems++;
+                }
+            }
+            if (pass == 0) { m->kind = MOA_VS_DOWN; beaten++; }
+            else { m->kind = r == foe_rank ? MOA_VS_NEXT : MOA_VS_AHEAD; m->top = r == lo; }
+            run_vs_mini_n++;
+        }
     }
     for (int i = 0; i < beaten; i++) {                    /* the last three on counts 3, 2, 1 */
         const int from_end = beaten - 1 - i;
         run_vs_mini[i].slash_at = from_end >= 3 ? -9.0f : VS_C0 + (float)(4 - from_end) * VS_STEP;
-    }
-    if (run_vs_mini_n < VS_MAX_MINI) {
-        struct moa_screen_vs_mini *m = &run_vs_mini[run_vs_mini_n];
-        memset(m, 0, sizeof *m);
-        run_vs_mini_px[run_vs_mini_n] = run_vs_render(me, paint, 400, 0.55f);
-        m->rgba = run_vs_mini_px[run_vs_mini_n]; m->size = 400; m->kind = MOA_VS_YOU; m->rank = my_rank;
-        run_vs_mini_n++;
-    }
-    for (int r = foe_rank; r >= lo && run_vs_mini_n < VS_MAX_MINI; r--) {
-        struct moa_screen_vs_mini *m = &run_vs_mini[run_vs_mini_n];
-        memset(m, 0, sizeof *m);
-        const struct moa_run_pick p = run_state.lineup.slot[MOA_RUN_SLOTS - (unsigned)r];
-        if (run_vs_pick_record(p, r64)) run_vs_mini_px[run_vs_mini_n] = run_vs_render(r64, r64 + 16, 400, -0.55f);
-        m->rgba = run_vs_mini_px[run_vs_mini_n]; m->size = 400; m->rank = r;
-        m->kind = r == foe_rank ? MOA_VS_NEXT : MOA_VS_AHEAD;
-        m->top = r == lo;
-        run_vs_mini_n++;
     }
     run_vs = 1;
     run_vs_frames = 0;
@@ -4170,8 +4352,12 @@ static void run_vs_open(void)
     run_vs_door = 0;
     run_vs_key++;
     psx_mod_counter_add("moa.run.vs_screen", 1);
+    if (dropped) psx_mod_counter_add("moa.run.vs_render_dropped", dropped);
     run_log("vs: up, rank %d vs %s / %s (rank %d), %s, %d beaten in the belt%s", my_rank, run_vs_pilot, run_vs_ac,
-            foe_rank, run_vs_belt, beaten, run_vs_you_px ? "" : " (no 3D model install: empty boxes)");
+            foe_rank, run_vs_belt, beaten, mdir ? "" : " (no 3D model install: empty boxes)");
+    if (mdir)
+        run_log("vs: renders ready: opponent %s, player %s; %d dropped (not done), %d boxes show the emblem alone",
+                run_vs_foe_px ? "yes" : "no", run_vs_you_px ? "yes" : "not yet (waits)", dropped, emblems);
 }
 
 static void run_vs_close(const char *why)
@@ -4224,6 +4410,12 @@ static void run_vs_frame(void)
     } else if (!run_vs_door && sh >= MOA_VS_SHUTTER_MEET - MOA_VS_DOOR_PEAK) {
         run_vs_door = 1;
         (void)moa_vs_sound_door();
+    }
+    /* The player's render, if it was still being made: in it comes (the still
+     * layer is redrawn once), until the shutters start. */
+    if (sh < 0.0f && run_vs_take_me()) {
+        run_vs_key++;
+        run_log("vs: the player's portrait landed at %.2f s", t);
     }
     struct moa_screen_vs v;
     memset(&v, 0, sizeof v);
@@ -4489,6 +4681,7 @@ static void run_frame_hook(void)
     run_boot_black_frame();
     run_cover_frame();
     run_vs_frame();
+    run_vs_pre_frame();
     {
         const unsigned wins = run_state.run.wins < MOA_RUN_SLOTS ? run_state.run.wins : MOA_RUN_SLOTS - 1u;
         moa_music_frame(run_music_scene(), (int)(MOA_RUN_SLOTS - wins));

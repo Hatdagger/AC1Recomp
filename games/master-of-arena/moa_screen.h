@@ -167,6 +167,7 @@ int moa_screen_victory_typed(const struct moa_screen_victory *v);
 enum { MOA_VS_DOWN = 0, MOA_VS_YOU, MOA_VS_NEXT, MOA_VS_AHEAD };
 struct moa_screen_vs_mini {
     const uint8_t *rgba; int size;   /* square render, or NULL (an empty box) */
+    const uint32_t *emblem;          /* 64x64 0xAARRGGBB, drawn when there is no render, or NULL */
     int rank;                        /* shown under the box */
     int kind;                        /* MOA_VS_* */
     int top;                         /* the belt's last AC: a bigger box */

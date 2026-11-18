@@ -1249,6 +1249,37 @@ static void vs_put_outlined(uint32_t *dst, const uint32_t *ac, int w, int h, int
 
 /* A portrait box: a dark gradient in the side's colour, the emblem big and
  * dim (pixel-doubled, then smooth), a floor shade, the AC outlined. */
+/* A 64x64 emblem into a box, es x es at (ex, ey): pixel-doubled, then
+ * smooth-scaled, at `opacity`. */
+static void vs_emblem(uint32_t *p, int bw, int bh, const uint32_t *emblem, int ex, int ey, int es, float opacity)
+{
+    for (int y = 0; y < es; y++) {
+        const int Y = ey + y;
+        if (Y < 0 || Y >= bh) continue;
+        for (int x = 0; x < es; x++) {
+            const int X = ex + x;
+            if (X < 0 || X >= bw) continue;
+            const float u = (x + 0.5f) * 128.0f / es - 0.5f, v = (y + 0.5f) * 128.0f / es - 0.5f;
+            const int u0 = (int)floorf(u), v0 = (int)floorf(v);
+            const float fu = u - u0, fv = v - v0;
+            float acc[4] = { 0, 0, 0, 0 };
+            for (int k = 0; k < 4; k++) {
+                int uu = u0 + (k & 1), vv = v0 + (k >> 1);
+                uu = uu < 0 ? 0 : uu > 127 ? 127 : uu;
+                vv = vv < 0 ? 0 : vv > 127 ? 127 : vv;
+                const uint32_t q = emblem[(vv / 2) * 64 + uu / 2];
+                const float wgt = ((k & 1) ? fu : 1.0f - fu) * ((k >> 1) ? fv : 1.0f - fv);
+                const float al = (q >> 24) / 255.0f;
+                acc[0] += wgt * al; acc[1] += wgt * al * ((q >> 16) & 255);
+                acc[2] += wgt * al * ((q >> 8) & 255); acc[3] += wgt * al * (q & 255);
+            }
+            if (acc[0] <= 0.0f) continue;
+            p[Y * bw + X] = blend_px(p[Y * bw + X], (uint32_t)(acc[1] / acc[0]), (uint32_t)(acc[2] / acc[0]),
+                                     (uint32_t)(acc[3] / acc[0]), (uint32_t)(acc[0] * opacity * 255.0f));
+        }
+    }
+}
+
 static uint32_t *vs_panel(const struct moa_screen_vs_side *s, int side, uint32_t tint)
 {
     const int bw = VS_PW, bh = VS_PH;
@@ -1260,33 +1291,8 @@ static uint32_t *vs_panel(const struct moa_screen_vs_side *s, int side, uint32_t
     }
     if (s->emblem) {
         const int es = (int)(bh * 1.15f);
-        const int ex = (bw - es) / 2 + (side < 0 ? (int)(bw * 0.10f) : -(int)(bw * 0.10f));
-        const int ey = (bh - es) / 2 - (int)(bh * 0.06f);
-        for (int y = 0; y < es; y++) {
-            const int Y = ey + y;
-            if (Y < 0 || Y >= bh) continue;
-            for (int x = 0; x < es; x++) {
-                const int X = ex + x;
-                if (X < 0 || X >= bw) continue;
-                const float u = (x + 0.5f) * 128.0f / es - 0.5f, v = (y + 0.5f) * 128.0f / es - 0.5f;
-                const int u0 = (int)floorf(u), v0 = (int)floorf(v);
-                const float fu = u - u0, fv = v - v0;
-                float acc[4] = { 0, 0, 0, 0 };
-                for (int k = 0; k < 4; k++) {
-                    int uu = u0 + (k & 1), vv = v0 + (k >> 1);
-                    uu = uu < 0 ? 0 : uu > 127 ? 127 : uu;
-                    vv = vv < 0 ? 0 : vv > 127 ? 127 : vv;
-                    const uint32_t q = s->emblem[(vv / 2) * 64 + uu / 2];
-                    const float wgt = ((k & 1) ? fu : 1.0f - fu) * ((k >> 1) ? fv : 1.0f - fv);
-                    const float al = (q >> 24) / 255.0f;
-                    acc[0] += wgt * al; acc[1] += wgt * al * ((q >> 16) & 255);
-                    acc[2] += wgt * al * ((q >> 8) & 255); acc[3] += wgt * al * (q & 255);
-                }
-                if (acc[0] <= 0.0f) continue;
-                p[Y * bw + X] = blend_px(p[Y * bw + X], (uint32_t)(acc[1] / acc[0]), (uint32_t)(acc[2] / acc[0]),
-                                         (uint32_t)(acc[3] / acc[0]), (uint32_t)(acc[0] * 0.62f * 255.0f));
-            }
-        }
+        vs_emblem(p, bw, bh, s->emblem, (bw - es) / 2 + (side < 0 ? (int)(bw * 0.10f) : -(int)(bw * 0.10f)),
+                  (bh - es) / 2 - (int)(bh * 0.06f), es, 0.62f);
     }
     for (int y = 0; y < bh; y++) {
         const float t = (y / (float)bh - 0.55f) / 0.45f;
@@ -1490,6 +1496,9 @@ const uint32_t *moa_screen_render_vs(int win_w, int win_h, const struct moa_scre
             if (m->rgba) {
                 uint32_t *ac = vs_crop(m->rgba, m->size, w, h, m->kind == MOA_VS_YOU ? -1 : 1, 0.62f);
                 if (ac) { vs_put_outlined(p, ac, w, h, 2, 200); free(ac); }
+            } else if (m->emblem) {                      /* no render: the emblem alone */
+                const int es = h * 9 / 10;
+                vs_emblem(p, w, h, m->emblem, (w - es) / 2, (h - es) / 2, es, 0.62f);
             }
             mcol[i] = p;
             if (m->kind == MOA_VS_DOWN && (mgrey[i] = (uint32_t *)malloc((size_t)w * h * 4u)) != NULL)

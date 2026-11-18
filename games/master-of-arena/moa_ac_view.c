@@ -17,6 +17,7 @@
 #include <windows.h>
 #else
 #include <dirent.h>
+#include <pthread.h>
 #include <sys/stat.h>
 #endif
 
@@ -348,7 +349,7 @@ static int fixed_frame(const char *dir) {
     return 1;
 }
 
-moa_acv *moa_acv_load(const char *dir, const uint8_t rec[13], const uint8_t paint[48]) {
+static moa_acv *acv_load_unlocked(const char *dir, const uint8_t rec[13], const uint8_t paint[48]) {
     moa_acv *v = load_ac(dir, rec, paint);
     if (!v) return NULL;
     if (fixed_frame(dir)) {
@@ -376,7 +377,7 @@ static int kind_of_folder(const char *kind) {
     return ACR_PART_NONE;
 }
 
-moa_acv *moa_acv_load_part(const char *dir, const char *kind, int index, const uint8_t paint[48]) {
+static moa_acv *acv_load_part_unlocked(const char *dir, const char *kind, int index, const uint8_t paint[48]) {
     char base[1100], path[1300];
     snprintf(base, sizeof base, "%s/models/menu/%s/%02d", dir, kind, index);
     snprintf(path, sizeof path, "%s/part.toml", base);
@@ -431,6 +432,34 @@ moa_acv *moa_acv_load_part(const char *dir, const char *kind, int index, const u
             v->solo_mesh[k].v[t].p[2] -= 0.5f * (lo[2] + hi[2]);
         }
     frame_model(v);
+    return v;
+}
+
+/* Loading may run on two threads at once (the VS screen's renders run on
+ * moa_render_queue's worker while the game's thread draws part pictures):
+ * the shared framing above and the PNG decoder's tables are built on first
+ * use, so loads take turns. Renders need no lock. */
+#if defined(_WIN32)
+static SRWLOCK s_load_lock = SRWLOCK_INIT;
+static void load_lock(void) { AcquireSRWLockExclusive(&s_load_lock); }
+static void load_unlock(void) { ReleaseSRWLockExclusive(&s_load_lock); }
+#else
+static pthread_mutex_t s_load_lock = PTHREAD_MUTEX_INITIALIZER;
+static void load_lock(void) { pthread_mutex_lock(&s_load_lock); }
+static void load_unlock(void) { pthread_mutex_unlock(&s_load_lock); }
+#endif
+
+moa_acv *moa_acv_load(const char *dir, const uint8_t rec[13], const uint8_t paint[48]) {
+    load_lock();
+    moa_acv *v = acv_load_unlocked(dir, rec, paint);
+    load_unlock();
+    return v;
+}
+
+moa_acv *moa_acv_load_part(const char *dir, const char *kind, int index, const uint8_t paint[48]) {
+    load_lock();
+    moa_acv *v = acv_load_part_unlocked(dir, kind, index, paint);
+    load_unlock();
     return v;
 }
 

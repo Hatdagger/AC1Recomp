@@ -347,6 +347,16 @@ has its own hook.
   event (answers part of the "reconcile" open item: it depends on how the point is used).
 - **Message numbers** are global (FDAT 205, see "Message texts" below), so each mission's lines
   name who is who.
+- **Ravens beaten in missions count in the arena** (2026-11-17): when a named Raven dies, the
+  mission calls **`0x800907D0(n)`**: if `0x8003EAC9` = 0 (not a sub-arena fight) it sets **bit 1 of
+  byte `0x8004B5D5 + n`**, i.e. entry *n* of a 50-byte per-rank table at `0x8004B5D6` (Ex Arena
+  save block `0x8004B5A0` +0x36, right before the Ex Arena opponent flags at `0x8004B608`; arena 0
+  has 50 ranks). *n* is the Raven's **arena-0 rank**: the briefings confirm The Wolf "ranked 14th"
+  = 14 and William "ranked 15th" = 15. Calls: Regulon 22 (m4), Toll-Keeper 29 (m3), Stalker 16
+  (m5), Barrel 18 (m6), Lucky Hopper 27 (m7), Evil Kiss 17 (m8), The Wolf 14 (m9), William 15
+  (m10), Goldy 24 + Super Bow 28 (m11), Hercules 21 (m14). Missions 16–19 make no call. That
+  bit 1 is the arena's own "beaten" bit is likely but not checked against the arena code `?`
+  (for the arena / save lanes: a mod that adds Ravens to missions should call it too).
 
 ### Per mission
 
@@ -361,7 +371,7 @@ Placement = the record number (0x801E6748 + 44 × N), AP = its +0x1A. Sections =
 | 4 | Recover Meteorite | destroy the five units (**placements 5–9**, AP 1,600; msg 6); then msg 94, **Regulon** (placement 4, AP 15,000) appears (script 1, msgs 7/8); destroy him → msg 9 "Well done" | — |
 | 5 | Enemy Fortress | destroy the defenders: when fewer than 10 placements are left, **8 reinforcements** spawn (placements 15–22, table `0x800AA2B0`); when only one is left, msg 20 "The enemy has hired a Raven… Stalker" and script 0 bring in **Stalker** (placement 5, AP 15,000); destroy him | — |
 | 6 | Assist Marine Lab | destroy the five MTs (every placement but 4–6; briefing: "MTs x 5"): flag `0x800AD838` = 1 and doors 132 / 133 unlock. When door 132 opens: Fritz's unit (placement 5) leaves, **Barrel** (placement 4, AP 5,000) and **placement 6** (AP 18,000) spawn (scripts 0x1301, 0x202, msg 37). **Destroy placement 6.** If Barrel is still alive then, a scripted ending (script 0x1304) plays first; Barrel dying or falling (object +0x0A > 30,000) shows msg 123 | — |
-| 7 | Retrieve Secret Files | destroy **placement 5 = the Armored Car** (AP 3,000; briefing: "Your target is the Armored Car, ignore all other enemies"). Placement 12 spawns with msg 38 "The airport should be just ahead. Destroy him before he escapes"; msgs 39/40 name **Lucky Hopper** = placement 4 (AP 13,000), optional (destroying it only plays a sound) | **the car escapes**: it drives a fixed route and the mission fails when it reaches the last route point (see "Routes" below): hook +0x08 event 0 → car stopped, script 0x900, msg 158, 0x100. The car stays parked until the player AC stands on **map section 39** (player object +0x30); then msg 38 plays, the car's type handler is re-run (route restarts at point 6) and placement 12 spawns near the route's end |
+| 7 | Retrieve Secret Files | destroy **placement 5 = the Armored Car** (AP 3,000; briefing: "Your target is the Armored Car, ignore all other enemies"). Placement 12 spawns with msg 38 "The airport should be just ahead. Destroy him before he escapes"; msgs 39/40 name **Lucky Hopper** = placement 4 (AP 13,000), optional (destroying it only records rank 27 as beaten, see "Shared pieces") | **the car escapes**: it drives a fixed route and the mission fails when it reaches the last route point (see "Routes" below): hook +0x08 event 0 → car stopped, script 0x900, msg 158, 0x100. The car stays parked until the player AC stands on **map section 39** (player object +0x30); then msg 38 plays, the car's type handler is re-run (route restarts at point 6) and placement 12 spawns near the route's end |
 | 8 | Cavern Invasion | destroy **Evil Kiss** (placement 4, AP 18,000; msgs 41–43) → msg 44 "Evacuate immediately!" → **reach the exit box** (event point 4: x −4,768 … −2,976, y −1,780 … 12, z −9,536 … −7,232) | — |
 | 9 | Enter Abandoned Mine | no end call in the module. Destroying **The Wolf** (placement 4, AP 18,000; msgs 45–47) unlocks door section 169 (clears its locked-message byte); when that door opens, msg 48 "Your target is that container. Retrieve it."; **touch the container** = event point 1 (kind 5, message 153, no part) | — |
 | 10 | Board Spaceship | **reach the exit box** (event point 0); the pad is then ignored for 50 frames, script 0x200. **William** (placement 5, AP 10,000; msgs 49–51) is optional | — |

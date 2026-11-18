@@ -122,7 +122,7 @@ distinct engine routines per mission; most used: `0x8007C290`, `0x80015138`, `0x
 |---|---|---|
 | +0x00 | `0x80091390` ← main loop `0x80052608` | **every frame** (mission logic) |
 | +0x04 | `0x80052590` | **once at start** (mission init) |
-| +0x08 | `0x80090B28`, arg = event number | mission-specific event: event kind 9 of the dispatcher `0x80090934` (see "Event points") |
+| +0x08 | `0x80090B28`, arg = event number; also called straight from the route follower in missions 7 and 13 (see "Routes") | mission-specific event: event kind 9 of the dispatcher `0x80090934` (see "Event points") |
 | +0xA0 … | `0x80078EF4`: `*(module + 0xA0 + 4 × point+0x06)` | **handler per event-point type** (see "Event points") |
 | +0x0C | not found yet | — |
 | +0x10 | `0x8007EE6C`, arg = object | per-object callback `?` |
@@ -357,21 +357,21 @@ Placement = the record number (0x801E6748 + 44 × N), AP = its +0x1A. Sections =
 | 0 | Eliminate Fugitive | walk up to the automatic door in **section 290** (see above) | — |
 | 1 | Defend Submarine | destroy the three attackers (**placements 10, 11, 12**, AP 8,000 each; msg 23 mentions a battle cruiser); a 660-frame wait follows (msgs 26 "Repairs are almost complete", 27 "…We will be submerging now"), then **stand on the submarine** (sections 56/55/54, on the deck within 10 units of floor height) | **fall into the sea** (player object +0x0A > 256; msg 25 warns, then 158); **section 56 destroyed** (submarine hull, handler 3, HP 30,000; only the first of the three sections is checked `?`) |
 | 2 | Destroy Berserk MTs | **every placement destroyed**. Placements 9–12 respawn (flag 0x10) until **section 143** (breakable, HP 3,000) is destroyed: its event (kind 9, *b* = 0) runs hook +0x08, which clears their flag 0x10 and removes point 3 (msg 28 "The production line has been stopped"). Gate locks: sections 69 / 70 (HP 2,000) unlock gates 141 / 72 (msg 160) | — |
-| 3 | Destroy Cannon | touch the **four bomb points** (points 8–11; each fires hook +0x08 with 0–3, counter `0x800AB828`); at 4: msg 30, **Toll-Keeper** (placement 5, AP 13,000) appears (script 1, msgs 98, 31, 32); destroy him → timer stops, msg 33 "We're coming in to retrieve you", placement 7 spawns, script 0x102 | **5-minute timer** (6,600 ticks, started when the intro ends): time out = 0x100. The module also has a "cannon fires" sequence (screen flash, script 0x100, msg 158) for the last 10 ticks, gated on byte `0x800AB894`, which the module never sets itself `?` |
+| 3 | Destroy Cannon | touch the **four bomb points** (points 8–11; each fires hook +0x08 with 0–3, counter `0x800AB828`); at 4: msg 30, **Toll-Keeper** (placement 5, AP 13,000) appears (script 1, msgs 98, 31, 32); destroy him → timer stops, msg 33 "We're coming in to retrieve you", placement 7 spawns, script 0x102 | **5-minute timer** (6,600 ticks, started when the intro ends): **the cannon fires** when 10 ticks or fewer are left (screen flash, script 0x100, msg 158, fail). Byte `0x800AB894` is module data that starts at **1** in the file (a one-shot guard, cleared when the sequence starts), so this always runs at time-out (corrected 2026-11-17) |
 | 4 | Recover Meteorite | destroy the five units (**placements 5–9**, AP 1,600; msg 6); then msg 94, **Regulon** (placement 4, AP 15,000) appears (script 1, msgs 7/8); destroy him → msg 9 "Well done" | — |
 | 5 | Enemy Fortress | destroy the defenders: when fewer than 10 placements are left, **8 reinforcements** spawn (placements 15–22, table `0x800AA2B0`); when only one is left, msg 20 "The enemy has hired a Raven… Stalker" and script 0 bring in **Stalker** (placement 5, AP 15,000); destroy him | — |
 | 6 | Assist Marine Lab | destroy the five MTs (every placement but 4–6; briefing: "MTs x 5"): flag `0x800AD838` = 1 and doors 132 / 133 unlock. When door 132 opens: Fritz's unit (placement 5) leaves, **Barrel** (placement 4, AP 5,000) and **placement 6** (AP 18,000) spawn (scripts 0x1301, 0x202, msg 37). **Destroy placement 6.** If Barrel is still alive then, a scripted ending (script 0x1304) plays first; Barrel dying or falling (object +0x0A > 30,000) shows msg 123 | — |
-| 7 | Retrieve Secret Files | destroy **placement 5 = the Armored Car** (AP 3,000; briefing: "Your target is the Armored Car, ignore all other enemies"). Placement 12 spawns with msg 38 "The airport should be just ahead. Destroy him before he escapes"; msgs 39/40 name **Lucky Hopper** = placement 4 (AP 13,000), optional (destroying it only plays a sound) | **the car escapes** (briefing: the thief "must have planned an alternate means of escape"; msg 38). Code: hook +0x08 event 0 → script 0x900, msg 158, 0x100; what fires it not found yet |
+| 7 | Retrieve Secret Files | destroy **placement 5 = the Armored Car** (AP 3,000; briefing: "Your target is the Armored Car, ignore all other enemies"). Placement 12 spawns with msg 38 "The airport should be just ahead. Destroy him before he escapes"; msgs 39/40 name **Lucky Hopper** = placement 4 (AP 13,000), optional (destroying it only plays a sound) | **the car escapes**: it drives a fixed route and the mission fails when it reaches the last route point (see "Routes" below): hook +0x08 event 0 → car stopped, script 0x900, msg 158, 0x100. The car stays parked until the player AC stands on **map section 39** (player object +0x30); then msg 38 plays, the car's type handler is re-run (route restarts at point 6) and placement 12 spawns near the route's end |
 | 8 | Cavern Invasion | destroy **Evil Kiss** (placement 4, AP 18,000; msgs 41–43) → msg 44 "Evacuate immediately!" → **reach the exit box** (event point 4: x −4,768 … −2,976, y −1,780 … 12, z −9,536 … −7,232) | — |
 | 9 | Enter Abandoned Mine | no end call in the module. Destroying **The Wolf** (placement 4, AP 18,000; msgs 45–47) unlocks door section 169 (clears its locked-message byte); when that door opens, msg 48 "Your target is that container. Retrieve it."; **touch the container** = event point 1 (kind 5, message 153, no part) | — |
 | 10 | Board Spaceship | **reach the exit box** (event point 0); the pad is then ignored for 50 frames, script 0x200. **William** (placement 5, AP 10,000; msgs 49–51) is optional | — |
 | 11 | Attack Terrorists | destroy **Goldy and Super Bow** (placements 4 and 5, AP 13,000 each, spawned at start with script; msgs 55–58) | — |
 | 12 | Assist MTs | destroy the six enemies (**placements 4–9**, AP 5,000, list `0x800AA0D8`) | **all three allies** (placements 10, 11, 12, list `0x800AA0F0`) destroyed: each death shows msg 102/103/104, then msg 59 "My squad has been destroyed", 158 |
-| 13 | Assault Transports | **every placement destroyed** (briefing: trucks x3 = placements 4–6, AP 3,000; MTs x4 = placements 7–10, AP 4,000; placement 15, AP 20,000 `?`); when fewer than 8 are left, msg 93 and 4 reinforcements (placements 11–14, AP 950) | **any unit escapes** (briefing: "If even one unit escapes, the mission will be a failure"). Code: hook +0x08 event 0 → msg 158, 0x100, but nothing in module 13 calls the event dispatcher, so the escape most likely ends the mission through a script (see below) `?` |
+| 13 | Assault Transports | **every placement destroyed** (briefing: trucks x3 = placements 4–6, AP 3,000; MTs x4 = placements 7–10, AP 4,000); when fewer than 8 are left, msg 93 and 4 reinforcements (placements 11–14, AP 950). **Placement 15** (type 4, AP 20,000) is not a target: on spawn it takes over the camera (M+0x12 = 0xFFFF, M+0x0C bits 0x2400) and it **removes itself** (`0x8007EE04`, so +0x00 = 3) once it is past ±32,000 on x or z, or after its AP hits 0 and it falls; so it never blocks the "all destroyed" check (an intro flyover `?`) | **a truck escapes**: each truck drives the route point 4 → point 5 (z 10,000 → −2,500) from the moment it spawns; reaching the end runs hook +0x08 event 0 (msg 158, 0x100, once, flag `0x800AABFC`) and removes the truck (see "Routes" below) |
 | 14 | Attack Chrome HQ | destroy **placement 4 = Hercules** (Sub-Arena AC, AP 19,000; name from the briefing) | **3-minute timer** (3,960 ticks; msg 60 "Time limit 3 minutes", 61): at 3 ticks left msg 62 "Time is up. Retreat!", script, 158 |
 | 15 | Destroy Giant Tank | **every placement destroyed** (placements 4–10) | — |
 | 16 | Eliminate Intruders | when door section 24 opens, **Nine-Ball** (placement 30, AP 15,000) spawns (script 0x1200; msgs 64–66); **destroy Nine-Ball** → msgs 69 "all enemy units have retreated", 70. The other intruders are optional in the code, although the briefing says "Destroy all enemies" | — |
-| 17 | Defend Laboratory | three waves of two MTs (placements **4+5, 6+7, 8+9**, AP 5,000; next wave when both are destroyed, gate messages 73/71/72/74); then **Hustler One** (placement 10, AP 18,000; msg 75 when first hit); **bring his AP to 0** → he's kept alive (+0x49 = 255), script 0x800, complete | briefing objective "Defend all gates"; no gate-lost check in the module `?` |
+| 17 | Defend Laboratory | three waves of two MTs (placements **4+5, 6+7, 8+9**, AP 5,000; next wave when both are destroyed, gate messages 73/71/72/74); then **Hustler One** (placement 10, AP 18,000; msg 75 when first hit); **bring his AP to 0** → he's kept alive (+0x49 = 255), script 0x800, complete | briefing objective "Defend all gates", but **there is no gate-lost failure**: module 17 has no map-section handlers at all (so no breakable gates) and only one end call (the win at `0x800A20A4`). Only the engine's AC-destroyed / out-of-area ends apply |
 | 18 | Enter Factory | when door section 68 opens, **placements 4 and 5** (AP 17,000 each) spawn (script 0x800; msgs 107–110 "???"); destroy both → msg 114, doors 92/93 get command 0x8201 (open + unlock); **door section 96 opens** → 64-frame fade → 0x80 (no message), then the engine starts the Final Mission | — |
 | 19 | Final Mission | intro states 0–5 (placement 4 spawns, scripts 0x200–0x202, 0x803); then **bring placement 4's AP to 0** (AP 16,800) → 40-frame fade → 0x80 | — |
 
@@ -381,10 +381,37 @@ stated objective, and the briefings name the targets in 7, 13 and 14. RetroAchie
 separate "defeat all enemies in Retrieve Secret Files" achievement, which fits Lucky Hopper being
 optional.
 
-**Two more ways a mission can end** (2026-11-17): a mission's hook +0x08 is only reachable through
-event kind 9 (dispatcher `0x80090934` → `0x80090B1C`), and the **script reader has an "end mission"
-command** (`0x800927C4`: u16 operand, code = operand & 0x7FFF, bit 15 also sets M+0x10 = 1). So
-an end that no module code explains (mission 13's escape) is probably in a script.
+**Two more ways a mission can end** (2026-11-17): the **script reader has an "end mission"
+command** (`0x800927C4`: u16 operand, code = operand & 0x7FFF, bit 15 also sets M+0x10 = 1), and
+a mission's hook +0x08 can end it. In the engine, hook +0x08 is only called through event kind 9
+(dispatcher `0x80090934` → `0x80090B1C`), but **missions 7 and 13 call it themselves** from their
+route follower (below); no other MoA module does (all 20 scanned).
+
+### Routes (escaping vehicles, 2026-11-17, static)
+
+Missions 7 and 13 move their getaway vehicles along a chain of **event points used as route
+points** (point type 2 in mission 7, type 3 in mission 13; neither type has a point handler, so the
+points are plain data):
+
+- The vehicle's type handler (mission 7 type 3 `0x800A2720`, mission 13 type 2 `0x800A30EC`) stores
+  the **first route point** in object **+0x118** (mission 7: point 6, mission 13: point 4) and sets
+  the movement routine (mission 7 `0x800A2350`, mission 13 the same code at `0x800A2D14`) through
+  `0x8007CEBC`.
+- Each frame the vehicle turns toward the point (`0x800136E0`: at most 96 of 4,096 angle units, about
+  8°, per frame) and checks a box around it:
+  **x and z within ±64, y within −72 … +64**. Inside it, it reads the point's **+0x28 (file byte 22)
+  = next point number**: not 0 → +0x118 = `0x801E49D8 + 52 × next`; **0 → the end of the route:
+  hook +0x08 is called with event 0**, which ends the mission as failed. Mission 13 also removes the
+  truck (`0x8007EE04`).
+- So for route points, +0x28 is "next point", not the one-shot flag that item points use (the two
+  readings belong to different point users).
+- Routes: mission 7 = points **6 → 7 → 8 → 5 → 14 → 15 → 18 → 17 → 16 → 19 → 11 → 12 → 13 (end)**,
+  ending at (−3,200, 0, −3,751), next to placement 12; mission 13 = **4 → 5 (end)**, (1,300, −250,
+  10,000) → (1,300, −250, −2,500).
+
+For mods: a route can be lengthened, shortened or redrawn by editing map block 9 (positions and
+byte 22) without touching code; setting the last point's byte 22 to its own number would make the
+vehicle loop forever and never escape.
 
 Timers: only missions 3 and 14 start one. Kill counts are never numbers in the code: missions
 check named placements (by +0x00 = 3) or "all placements gone". Protect targets: mission 1 (the
@@ -656,10 +683,11 @@ So chapter-timed (kind 0) mails depend on mission wins **and** arena ranks.
 - What `0x8003EA29` (from T+1160) does in the engine; what T+8 counts.
 - Mission 0's three type handlers (`0x800A1680`, `0x800A1EA8`, `0x800A1F50`): what they set up.
 - Messages 5 and 7; what `0x80093844(0x1300 / 0x301)` runs (cutscene / script `?`).
-- ~~Other missions' win checks~~: done, see "How each mission is won". Left from it: what fires
-  event 0 in missions 7 and 13 (the escape fail; briefings confirm escape = failure, the code path
-  is not found: check the scripts and the event-point type handlers), who sets mission 3's
-  `0x800AB894`, mission 17's "Defend all gates" (no gate-lost check found), placement 15 in mission 13.
+- ~~Other missions' win checks~~: done, see "How each mission is won". ~~Leftovers~~ done
+  2026-11-17: the escapes in 7 and 13 are the route follower (see "Routes"), mission 3's
+  `0x800AB894` starts at 1 (cannon fires at time-out), mission 17 has no gate-lost check,
+  mission 13's placement 15 removes itself. Still open: what mission 7's placement 12 is (type 1,
+  spawned with msg 38 next to the route's end; a plane `?`) and what script 0x900 shows.
 - File blocks 0–6, 8–10; the 36-byte type parameters; the 32 × 32 grid in block 6.
 - Hooks +0x0C, +0x18, +0x1C; the event numbers passed to +0x08.
 - Mission number 40: which menu screen uses it.

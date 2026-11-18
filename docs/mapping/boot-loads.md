@@ -178,7 +178,7 @@ Runs on power-on **and after every fight**:
 - **The hub never loads the AC's textures.** Whatever ran before it must have queued
   `0x800822B0` (LOAD finish, NEW GAME, or the arena return path).
 
-### 4d. The three AC helpers in the finish (2026-11-18)
+### 4d. The AC helpers in the finish (2026-11-18)
 
 None of them changes a full, legal AC, so a real save (or a launcher save with a legal build)
 comes through untouched.

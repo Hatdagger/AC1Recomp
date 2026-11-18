@@ -146,7 +146,7 @@ Runs on power-on **and after every fight**:
    `0x80093BC4`, `0x800A2318`, `0x800A2020`, 0x8003EA82 = 1.
 3. **The card screen's finish `0x8005CE68`** (runs only when LOAD succeeds):
    - owned parts 0x80036FEC → **0x8003EB20** (256 bytes)
-   - `0x80090FD8` part lists, `0x80083130` defaults for empty required slots
+   - `0x80090FD8` part lists, `0x80083130` defaults for empty required slots (both in §4d)
    - opened from the title: `0x80067244(1)` + **`0x800822B0` = queue the AC's part textures**
      (from the hub's DATA screen: `0x80081E20` garage rebuild as well)
    - **wait for the disc queue**
@@ -177,6 +177,26 @@ Runs on power-on **and after every fight**:
     garage, 0x80036FB0), **MODEL slot 16 ← MENU_TMD 2**, waits again.
 - **The hub never loads the AC's textures.** Whatever ran before it must have queued
   `0x800822B0` (LOAD finish, NEW GAME, or the arena return path).
+
+### 4d. The three AC helpers in the finish (2026-11-18)
+
+None of them changes a full, legal AC, so a real save (or a launcher save with a legal build)
+comes through untouched.
+- **`0x80090FD8` = owned-part bitmasks.** For each part kind (mask pointers `0x800CDE44`, part
+  counts `0x800CDE6C`), bit i is set when owned copy 0x8003EB20 holds part i of that kind
+  (id from `0x800996AC(kind, i)`). Masks at 0x8004B508 … 0x8004B560 (8 bytes each). The garage
+  and shop lists read them.
+- **`0x8008859C(kind)`** = the first owned part of a kind (lowest set bit), 255 if none.
+- **`0x80083130` = fill empty slots.** Each garage slot that is 255 gets `0x8008859C` of its
+  kind. Then the combination rules, run on every AC: tank legs (id ≥ 27) → booster 255, and a
+  back weapon 40–42 / 44 / 46 on either side is removed `?` (meaning not read); hand slot 15
+  checked against the legs through a jump table (0x80052358) `?`. A build the game itself made
+  never breaks these, so nothing changes.
+- **`0x80067244(flag)` = stand-ins for empty slots.** Only for slots that are 255: MODEL
+  queue of the first owned part of that kind (MENU_TMD entry + per-kind offset 3, 14, 54, 78,
+  96, 202, 237), TIM queue of its textures (same entries as §7, texture set from
+  **0x8003EA72**, the player's own byte 14), then `0x80083130` when flag ≠ 0. A full AC loads
+  nothing here; its models and textures come from the hub open and `0x800822B0`.
 
 ## 5. VS setup (`0x800AB500` row 192 → `0x800B0CB4`)
 
@@ -277,6 +297,3 @@ save). `moa_card_to_save` starts from it since branch `load-game-fixes`.
   strips the title branch stores (0x800A6EB4 / 0x800A6EC8); the direct start opens the hub
   before that store. Fix (store them after the SCENARIO pictures) merged in 3a8e581 with the
   mission picker fix (§9a); both waiting for the user's test of master.
-- `0x80067244(1)`: loads fallback files for empty slots. Exact entries not listed.
-- What `0x80090FD8` / `0x80083130` change when the save already has a full AC (probably
-  nothing for the AC, but the part lists at 0x8003EB20 feed the garage and shop).

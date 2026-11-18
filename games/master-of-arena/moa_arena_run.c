@@ -323,8 +323,13 @@ int moa_run_start_ac(const struct moa_parts *p, uint64_t seed, uint8_t rec[13])
         }
         moa_build_fit(rec);                           /* the garage's rules: no two-slot unit beside another */
         moa_run_game_hand(rec);                       /* never the NO WEAPON row */
-        const int armed = rec[4] != 255 || rec[5] != 255 || rec[6] != 255 ||
-                          rec[7] != 255 || (rec[2] >= 12 && rec[2] != 255);
+        /* A real main gun: a hand weapon or weapon arms with attack power.
+         * Any weapon used to do (user, 2026-11-18: runs began with only a
+         * blade, only radars or only a rocket); back units and blades stay
+         * optional extras. */
+        const struct moa_part *gun = rec[2] >= 12 && rec[2] != 255 ? moa_parts_find(p, MOA_CAT_ARMS, rec[2])
+                                   : rec[4] != 255 ? moa_parts_find(p, MOA_CAT_HAND, rec[4]) : NULL;
+        const int armed = gun && gun->attack > 0;
         struct moa_build_check t;
         moa_build_check(p, rec, 0, &t);
         if (armed && !t.blocked && !t.leg_over && !t.arm_over && !t.energy_over &&

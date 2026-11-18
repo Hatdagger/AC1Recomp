@@ -155,6 +155,8 @@ if(TARGET psx-master-of-arena)
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_arena_run_boot.c"
         # Rogue Arena hub background by rank (karate belt tiles).
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_hub_rank_bg.c"
+        # Rogue Arena victory sting and type tick (synthesized, private SPU voices).
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_chime.c"
         # START GAME > LOAD GAME / NEW GAME / LAUNCH GAME (launcher).
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_quick_start.c"
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_run_record.c"

@@ -32,6 +32,10 @@ int moa_screen_ready(void);
 void moa_screen_set_units(const struct moa_screen_unit *unit1,
                           const struct moa_screen_unit *unit2);
 
+/* The opaque backdrop of the tile, choice and list screens: a tile of
+ * 0xRRGGBB pixels (64x64 at most), repeated at 3x. NULL: the steel plate. */
+void moa_screen_set_backdrop(const uint32_t *rgb_tile, int w, int h);
+
 /* The steps a session goes through, shown in a row under the bar. */
 enum { MOA_STEP_SETUP = 0, MOA_STEP_STAGING, MOA_STEP_GATHERING, MOA_STEP_COMPLETE, MOA_STEP_COUNT };
 
@@ -87,6 +91,29 @@ struct moa_screen_list {
 };
 const uint32_t *moa_screen_render_list(int win_w, int win_h, const struct moa_screen_list *l,
                                        int see_through, int *out_w, int *out_h);
+
+/* The victory screen after a run win (fighting-game style). winner and
+ * loser: RGBA renders (rows top first, transparent background) of the
+ * player's AC and of the beaten one (drawn on its back); either may be NULL.
+ * band: the belt colour 0xRRGGBB; the belt pattern is the backdrop tile
+ * (moa_screen_set_backdrop). The layers are built once per `key`; each call
+ * draws the frame at time `t`: the beaten AC slides in from the left, the
+ * winner from the right, YOU WIN stamps in with a flash at 0.36 s. */
+struct moa_screen_victory {
+    const uint8_t *winner; int winner_w, winner_h;
+    const uint8_t *loser;  int loser_w, loser_h;
+    uint32_t band;
+    const char *rank, *pay, *beaten;
+    const char *line[2];
+    const char *status;
+    float t;                  /* seconds since the screen opened (the animation) */
+    unsigned key;
+};
+const uint32_t *moa_screen_render_victory(int win_w, int win_h, const struct moa_screen_victory *v,
+                                          int *out_w, int *out_h);
+/* How many words of the two lines are shown at v->t (typed in one at a
+ * time after the flash): a caller plays a tick each time it grows. */
+int moa_screen_victory_words(const struct moa_screen_victory *v);
 
 #ifdef __cplusplus
 }

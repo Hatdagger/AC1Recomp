@@ -64,6 +64,10 @@ mod_function_entry_funcs = [
     "0x80070F1C",
     # boot exe: archive sector read (instant loading, mod_builtin_moa_loading.c)
     "0x800167A0",
+    # boot exe: loading screen before an engine, and SsUtKeyOn (Rogue Arena:
+    # the overlay is released at the loading screen; menu sounds muted while
+    # the run drives the menus behind a picture)
+    "0x80012348", "0x800227D4",
     # menu: mission source picker (mod_builtin_moa_phantasma.c)
     "0x80095058", "0x80056528", "0x80093CD8",
     # Arena Run (moa_arena_run_boot.c): LOAD GAME menu, arena result, hub pick

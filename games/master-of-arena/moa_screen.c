@@ -349,13 +349,32 @@ const uint32_t *moa_screen_render(int win_w, int win_h, const char *status,
 }
 
 /* ---- part tiles (moa_screen_render_tiles) ---------------------------------- */
-/* The steel backdrop at half brightness, or (see-through) a dark veil the
- * live game shows through. */
+/* A tile for the opaque backdrop (moa_screen_set_backdrop), drawn at 3x so a
+ * 64x64 tile matches the hub's own pixel size on a 720-line canvas. */
+#define BACK_MAX 64
+#define BACK_SCALE 3
+static uint32_t s_back[BACK_MAX * BACK_MAX];
+static int s_back_w, s_back_h;
+
+void moa_screen_set_backdrop(const uint32_t *rgb_tile, int w, int h)
+{
+    if (!rgb_tile || w <= 0 || h <= 0 || w > BACK_MAX || h > BACK_MAX) { s_back_w = s_back_h = 0; return; }
+    for (int i = 0; i < w * h; i++) s_back[i] = 0xFF000000u | (rgb_tile[i] & 0xFFFFFFu);
+    s_back_w = w;
+    s_back_h = h;
+}
+
+/* Opaque: the backdrop tile when one is set, else the steel plate at half
+ * brightness. See-through: a dark veil the live game shows through. */
 static void backdrop(uint32_t *buf, int W, int see_through)
 {
     for (int y = 0; y < s_h; y++)
         for (int x = 0; x < W; x++) {
             if (see_through) { buf[y * W + x] = 0xB4101216u; continue; }
+            if (s_back_w) {
+                buf[y * W + x] = s_back[((y / BACK_SCALE) % s_back_h) * s_back_w + (x / BACK_SCALE) % s_back_w];
+                continue;
+            }
             const uint32_t c = tile_px(x & 63, y & 63);
             buf[y * W + x] = rgb((int)((c >> 16) & 255) / 2, (int)((c >> 8) & 255) / 2, (int)(c & 255) / 2);
         }
@@ -561,4 +580,311 @@ const uint32_t *moa_screen_render_list(int win_w, int win_h, const struct moa_sc
     s_dirty = 1;
     *out_w = W; *out_h = CANVAS_H;
     return buf;
+}
+
+/* ---- victory screen (moa_screen_render_victory) ---------------------------- */
+/* Fighting-game style: solid black bars, a band in the belt's colour with the
+ * belt pattern in it, the beaten AC on its back on the right (dark, smoking),
+ * the winner large on the left rising out of the band, the bottom bar in front
+ * of both, the lines on black. Animated by v->t (seconds): the beaten AC
+ * slides in from the left (0-0.20 s), the winner from the right
+ * (0.15-0.36 s), YOU WIN stamps in with a white flash at 0.36 s (the chime's
+ * chord), the lines follow. The layers are built once per `key`. */
+static uint32_t blend_px(uint32_t d, uint32_t r, uint32_t g, uint32_t b, uint32_t a)
+{
+    const uint32_t dr = (d >> 16) & 255, dg = (d >> 8) & 255, db = d & 255;
+    return 0xFF000000u | ((dr * (255 - a) + r * a) / 255) << 16 |
+           ((dg * (255 - a) + g * a) / 255) << 8 | ((db * (255 - a) + b * a) / 255);
+}
+
+static int alpha_box(const uint8_t *p, int w, int h, int *x0, int *y0, int *x1, int *y1)
+{
+    *x0 = w; *y0 = h; *x1 = -1; *y1 = -1;
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++)
+            if (p[(y * w + x) * 4 + 3] > 8) {
+                if (x < *x0) *x0 = x;
+                if (x > *x1) *x1 = x;
+                if (y < *y0) *y0 = y;
+                if (y > *y1) *y1 = y;
+            }
+    return *x1 >= *x0;
+}
+
+/* A sprite (RGBA) from a crop of the source, scaled (ang = 0) or scaled and
+ * turned about the crop's centre (nearest pixel). */
+static uint8_t *sprite_make(const uint8_t *src, int sw, int sh, int bx0, int by0, int bx1, int by1,
+                            float scale, float ang, int *ow, int *oh)
+{
+    const float c = cosf(ang), s = sinf(ang);
+    const float hw = (bx1 - bx0 + 1) * 0.5f * scale, hh = (by1 - by0 + 1) * 0.5f * scale;
+    const int w = (int)(fabsf(hw * c) + fabsf(hh * s)) * 2 + 2, h = (int)(fabsf(hw * s) + fabsf(hh * c)) * 2 + 2;
+    uint8_t *o = (uint8_t *)calloc((size_t)w * h, 4);
+    if (!o) return NULL;
+    const float scx = (bx0 + bx1 + 1) * 0.5f, scy = (by0 + by1 + 1) * 0.5f;
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++) {
+            const float dx = x - w * 0.5f, dy = y - h * 0.5f;
+            const float ux = (dx * c + dy * s) / scale, uy = (-dx * s + dy * c) / scale;
+            const int sx = (int)floorf(scx + ux), sy = (int)floorf(scy + uy);
+            if (sx < bx0 || sy < by0 || sx > bx1 || sy > by1 || sx >= sw || sy >= sh) continue;
+            memcpy(o + (y * w + x) * 4, src + (sy * sw + sx) * 4, 4);
+        }
+    *ow = w; *oh = h;
+    return o;
+}
+
+/* A black edge r pixels wide around the sprite's shape: 0xAARRGGBB result. */
+static uint32_t *sprite_outline(const uint8_t *sp, int w, int h, int r)
+{
+    uint8_t *t = (uint8_t *)calloc((size_t)w * h, 1);
+    uint32_t *o = (uint32_t *)calloc((size_t)w * h, 4);
+    if (!t || !o) { free(t); free(o); return NULL; }
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++) {
+            uint8_t v = 0;
+            for (int k = -r; k <= r && !v; k++) {
+                const int X = x + k;
+                if (X >= 0 && X < w && sp[(y * w + X) * 4 + 3] > 8) v = 1;
+            }
+            t[y * w + x] = v;
+        }
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++) {
+            const uint8_t *q = sp + (y * w + x) * 4;
+            if (q[3] > 8) { o[y * w + x] = (uint32_t)q[3] << 24 | (uint32_t)q[0] << 16 | (uint32_t)q[1] << 8 | q[2]; continue; }
+            for (int k = -r; k <= r; k++) {
+                const int Y = y + k;
+                if (Y >= 0 && Y < h && t[Y * w + x]) { o[y * w + x] = 0xFF000000u; break; }
+            }
+        }
+    free(t);
+    return o;
+}
+
+static void blit(uint32_t *buf, int W, int H, const uint32_t *sp, int w, int h, int px, int py)
+{
+    for (int y = 0; y < h; y++) {
+        const int Y = py + y;
+        if (Y < 0 || Y >= H) continue;
+        for (int x = 0; x < w; x++) {
+            const int X = px + x;
+            if (X < 0 || X >= W) continue;
+            const uint32_t q = sp[y * w + x], a = q >> 24;
+            if (a > 8) buf[Y * W + X] = blend_px(buf[Y * W + X], (q >> 16) & 255, (q >> 8) & 255, q & 255, a);
+        }
+    }
+}
+
+static void soft_disc(uint32_t *buf, int W, int H, int cx, int cy, int r, uint32_t c, int a, int y_clip)
+{
+    for (int y = cy - r; y <= cy + r; y++) {
+        if (y < 0 || y >= H || y >= y_clip) continue;
+        for (int x = cx - r; x <= cx + r; x++) {
+            if (x < 0 || x >= W) continue;
+            const float d = sqrtf((float)((x - cx) * (x - cx) + (y - cy) * (y - cy))) / (float)r;
+            if (d >= 1.0f) continue;
+            const int al = (int)(a * (1.0f - d) * (1.0f - d));
+            buf[y * W + x] = blend_px(buf[y * W + x], (c >> 16) & 255, (c >> 8) & 255, c & 255, (uint32_t)al);
+        }
+    }
+}
+
+static void text_edged(uint32_t *buf, const char *s, int x0, int cy, int scale, uint32_t c)
+{
+    const int cx = x0 + text_width(s, scale) / 2;
+    for (int dy = -1; dy <= 1; dy++)
+        for (int dx = -1; dx <= 1; dx++)
+            if (dx || dy) text(buf, NULL, s, cx + dx * scale, cy + dy * scale, scale, rgb(0, 0, 0));
+    text(buf, NULL, s, cx, cy, scale, c);
+}
+
+static float ease_out(float u) { if (u <= 0.0f) return 0.0f; if (u >= 1.0f) return 1.0f; u = 1.0f - u; return 1.0f - u * u * u; }
+
+int moa_screen_victory_words(const struct moa_screen_victory *v);
+
+const uint32_t *moa_screen_render_victory(int win_w, int win_h, const struct moa_screen_victory *v,
+                                          int *out_w, int *out_h)
+{
+    static uint32_t *bg, *bg_landed, *buf, *spr_down, *spr_win;
+    static int bw, dw, dh, dpx, dpy, ww_, wh_, wpx, wpy, sx[8], sy[8], nsparks;
+    static int smx[14], smy[14], nsmoke;
+    static unsigned key_done = 0xFFFFFFFFu;
+    *out_w = *out_h = 0;
+    if (!s_font_ok || !v) return NULL;
+    int W = CONTENT_W;
+    if (win_w > 0 && win_h > 0) W = (int)((int64_t)CANVAS_H * win_w / win_h);
+    if (W < CONTENT_W) W = CONTENT_W;
+    if (W > MAX_W) W = MAX_W;
+    W &= ~1;
+    const int H = CANVAS_H;
+    if (W != bw || !bg || !bg_landed || !buf) {
+        free(bg); free(bg_landed); free(buf);
+        bg = (uint32_t *)malloc((size_t)W * H * 4u);
+        bg_landed = (uint32_t *)malloc((size_t)W * H * 4u);
+        buf = (uint32_t *)malloc((size_t)W * H * 4u);
+        bw = bg && bg_landed && buf ? W : 0;
+        key_done = 0xFFFFFFFFu;
+        if (!bw) return NULL;
+    }
+    const int keep_w = s_w, keep_h = s_h;
+    s_w = W; s_h = H;
+    const int by0 = 128, by1 = 452;
+    const int br = (int)((v->band >> 16) & 255), bgc = (int)((v->band >> 8) & 255), bb = (int)(v->band & 255);
+    if (key_done != v->key) {
+        /* the background: black, the band with the belt pattern pressed in */
+        for (int i = 0; i < W * H; i++) bg[i] = 0xFF000000u;
+        for (int y = by0; y < by1; y++)
+            for (int x = 0; x < W; x++) {
+                float k = 1.0f;
+                if (s_back_w) {
+                    const uint32_t c = s_back[((y / BACK_SCALE) % s_back_h) * s_back_w + (x / BACK_SCALE) % s_back_w];
+                    int m = (int)((c >> 16) & 255);
+                    if ((int)((c >> 8) & 255) > m) m = (int)((c >> 8) & 255);
+                    if ((int)(c & 255) > m) m = (int)(c & 255);
+                    k = 1.0f - 0.22f * (m > 40 ? 1.0f : (float)m / 40.0f);
+                }
+                bg[y * W + x] = rgb((int)(br * k), (int)(bgc * k), (int)(bb * k));
+            }
+        fill(bg, 0, by0 - 6, W, by0 - 3, rgb(br, bgc, bb));
+        memcpy(bg_landed, bg, (size_t)W * H * 4u);
+        free(spr_down); free(spr_win);
+        spr_down = spr_win = NULL;
+        nsparks = nsmoke = 0;
+        int x0, y0, x1, y1;
+        /* the beaten AC: on its back, dark; its shadow and smoke once landed */
+        if (v->loser && alpha_box(v->loser, v->loser_w, v->loser_h, &x0, &y0, &x1, &y1)) {
+            int w = 0, h = 0;
+            uint8_t *sp = sprite_make(v->loser, v->loser_w, v->loser_h, x0, y0, x1, y1,
+                                      400.0f / (float)(y1 - y0 + 1), 1.675f, &w, &h);
+            int ax0, ay0, ax1, ay1;
+            if (sp && alpha_box(sp, w, h, &ax0, &ay0, &ax1, &ay1)) {
+                for (int i = 0; i < w * h; i++) {
+                    uint8_t *q = sp + i * 4;
+                    q[0] = (uint8_t)(q[0] * 0.41f + 10.0f);
+                    q[1] = (uint8_t)(q[1] * 0.41f + 7.5f);
+                    q[2] = (uint8_t)(q[2] * 0.41f + 7.5f);
+                }
+                spr_down = sprite_outline(sp, w, h, 3);
+                dw = w; dh = h;
+                dpx = W - 40 - ax1; dpy = by1 + 22 - ay1;
+                for (int k = 0; k < 6; k++)
+                    soft_disc(bg_landed, W, H, dpx + ax0 + (ax1 - ax0) * k / 5, by1 - 12, 50, 0x3C1E00u, 70, by1);
+                uint32_t r = 0x2545F491u ^ v->key;
+                for (int i = 0; i < 14; i++) {                  /* smoke: drawn per frame, rising */
+                    r = r * 1664525u + 1013904223u;
+                    smx[i] = dpx + ax0 + 60 + (int)((r >> 16) % 260u);
+                    r = r * 1664525u + 1013904223u;
+                    smy[i] = dpy + ay0 + 20 + (int)((r >> 16) % 32u) - 16;
+                }
+                nsmoke = 14;
+                for (int i = 0; i < 8; i++) {
+                    r = r * 1664525u + 1013904223u;
+                    sx[i] = dpx + ax0 + 60 + (int)((r >> 16) % (unsigned)((ax1 - ax0) > 120 ? (ax1 - ax0) - 120 : 1));
+                    r = r * 1664525u + 1013904223u;
+                    sy[i] = dpy + ay0 + 10 + (int)((r >> 16) % (unsigned)((ay1 - ay0) > 30 ? (ay1 - ay0) - 30 : 1));
+                }
+                nsparks = 8;
+            }
+            free(sp);
+        }
+        /* the winner: from the head down, rising out of the band */
+        if (v->winner && alpha_box(v->winner, v->winner_w, v->winner_h, &x0, &y0, &x1, &y1)) {
+            const int ah = y1 - y0 + 1;
+            const int cy0 = y0 + ah / 10, cy1 = y0 + ah * 86 / 100;
+            int w = 0, h = 0;
+            uint8_t *sp = sprite_make(v->winner, v->winner_w, v->winner_h, x0 - 40 < 0 ? 0 : x0 - 40, cy0,
+                                      x1 + 40 >= v->winner_w ? v->winner_w - 1 : x1 + 40, cy1,
+                                      640.0f / (float)(cy1 - cy0), 0.0f, &w, &h);
+            if (sp) {
+                spr_win = sprite_outline(sp, w, h, 5);
+                ww_ = w; wh_ = h;
+                wpx = W * 60 / 1280; if (wpx < 30) wpx = 30;
+                wpy = 20;
+            }
+            free(sp);
+        }
+        key_done = v->key;
+    }
+    const float t = v->t;
+    memcpy(buf, t >= 0.20f ? bg_landed : bg, (size_t)W * H * 4u);
+    if (spr_down && t >= 0.20f) {                          /* smoke rising and thinning, looped */
+        const float k = t < 0.6f ? (t - 0.20f) / 0.4f : 1.0f;
+        for (int i = 0; i < nsmoke; i++) {
+            const float u = fmodf(t * 0.35f + (float)i / (float)nsmoke, 1.0f);   /* 0 = at the AC, 1 = gone */
+            const int r = 22 + (int)(u * 42.0f);
+            soft_disc(buf, W, H, smx[i] + (int)(u * 30.0f), smy[i] - (int)(u * 150.0f), r, 0x3C3A38u,
+                      (int)(150.0f * k * (1.0f - u)), by1);
+        }
+    }
+    if (spr_down) {
+        const int x = (int)(-dw + (dpx + dw) * ease_out(t / 0.20f));
+        blit(buf, W, H, spr_down, dw, dh, x, dpy);
+        if (t >= 0.20f) {                                  /* sparks, twinkling */
+            const int f = (int)(t * 25.0f);
+            for (int i = 0; i < nsparks; i++) {
+                if ((f + i * 3) % 7 >= 3) continue;
+                soft_disc(buf, W, H, sx[i], sy[i], 9, 0xFFC860u, 160, by1);
+                fill(buf, sx[i] - 6, sy[i], sx[i] + 7, sy[i] + 2, rgb(255, 240, 180));
+                fill(buf, sx[i], sy[i] - 6, sx[i] + 2, sy[i] + 7, rgb(255, 240, 180));
+            }
+        }
+    }
+    if (spr_win && t >= 0.15f) {
+        const int x = (int)(W + (wpx - W) * ease_out((t - 0.15f) / 0.21f));
+        blit(buf, W, H, spr_win, ww_, wh_, x, wpy);
+    }
+    /* the bottom bar is in front of both */
+    fill(buf, 0, by1 + 6, W, H, rgb(0, 0, 0));
+    fill(buf, 0, by1 + 2, W, by1 + 5, rgb(br, bgc, bb));
+    const uint32_t white = rgb(240, 240, 240), gold = rgb(255, 200, 72), grey = rgb(170, 176, 190);
+    text_left(buf, "ROGUE ARENA", 36, 42, 2, grey);
+    if (t >= 0.36f) {
+        const int sc = t < 0.44f ? 8 : 6;
+        text_edged(buf, "YOU WIN", W * 600 / 1280 - (sc - 6) * 30, 196, sc, white);
+        if (v->rank) text_left(buf, v->rank, W - 36 - text_width(v->rank, 4), 52, 4, white);
+        if (v->pay) text_left(buf, v->pay, W - 36 - text_width(v->pay, 3), 100, 3, gold);
+    }
+    if (t >= 0.60f && v->beaten) text_left(buf, v->beaten, W - 40 - text_width(v->beaten, 2), by1 + 32, 2, grey);
+    {   /* the lines, a word at a time once the flash is over */
+        int left = moa_screen_victory_words(v);
+        for (int i = 0; i < 2 && left > 0; i++) {
+            if (!v->line[i]) continue;
+            char part[64];
+            int k = 0, words = 0;
+            const char *q = v->line[i];
+            while (q[k] && k < 63) {
+                if (q[k] != ' ' && (k == 0 || q[k - 1] == ' ') && ++words > left) break;
+                part[k] = q[k];
+                k++;
+            }
+            while (k > 0 && part[k - 1] == ' ') k--;
+            part[k] = 0;
+            left -= words > left ? left : words;
+            const int sc = text_width(v->line[i], 3) <= W - 140 ? 3 : 2;
+            text_left(buf, part, 100, 546 + i * 56, sc, white);
+        }
+    }
+    if (t >= 0.60f && v->status) text_left(buf, v->status, W - 36 - text_width(v->status, 2), H - 30, 2, grey);
+    if (t >= 0.36f && t < 0.60f) {                         /* the flash */
+        const uint32_t a = (uint32_t)(230.0f * (1.0f - (t - 0.36f) / 0.24f));
+        for (int i = 0; i < W * H; i++) buf[i] = blend_px(buf[i], 255, 255, 255, a);
+    }
+    s_w = keep_w; s_h = keep_h;
+    s_dirty = 1;
+    *out_w = W; *out_h = H;
+    return buf;
+}
+
+/* Words of the two lines shown at v->t: none before 0.62 s, then one every
+ * 0.09 s. */
+int moa_screen_victory_words(const struct moa_screen_victory *v)
+{
+    if (!v || v->t < 0.62f) return 0;
+    int total = 0;
+    for (int i = 0; i < 2; i++)
+        for (const char *q = v->line[i]; q && *q; q++)
+            if (*q != ' ' && (q == v->line[i] || q[-1] == ' ')) total++;
+    const int n = 1 + (int)((v->t - 0.62f) / 0.09f);
+    return n < total ? n : total;
 }

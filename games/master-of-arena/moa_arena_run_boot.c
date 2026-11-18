@@ -41,6 +41,7 @@
 #include "moa_arena_run.h"
 #include "moa_hub_rank_bg.h"
 #include "moa_ac_view.h"
+#include "moa_chime.h"
 #include "moa_screen.h"
 #include "moa_run_record.h"
 #include "moa_boot_trace.h"
@@ -412,6 +413,8 @@ static uint32_t run_loss_wait;             /* frames until the loss screen opens
 static int run_end_stage;                  /* 0 not up, 1 choosing, 2 picked: back to the launcher */
 static int run_end_cur, run_end_armed, run_end_overlay;
 static int run_end_choice = -1;            /* the pick: 0 retry, 1 new, 2 quit */
+static int run_show_on;                    /* defined with the restock picture */
+static int run_prize_stage;                /* defined with the prize picks */
 static uint32_t run_end_frames;
 static uint16_t run_end_held;
 static int run_overlay_up(void);
@@ -458,6 +461,43 @@ static uint32_t run_irq_again;            /* frames until the second interrupt s
  * session. PSX_MOA_RUN_FAST_LOAD=1 keeps fast loading (A/B). The waits below
  * that assume fast loads get longer while it is off. */
 static int run_disc_slow;                 /* 0 not yet, 1 real speed, -1 kept fast */
+
+/* The cover: an opaque picture over the game from the menu's restart after a
+ * fight (the hub reloading) through the arena screen's results, until the hub
+ * overlay takes over. Phase 1 loading, 2 results. The controls are locked
+ * while it is up; the screens it hides finish on their own timers. */
+static int run_cover;
+static int run_cover_drawn;
+/* The victory screen: the cover's first picture after a win. */
+static int run_victory_who = -1;          /* arena 0 entry beaten last; -1 none */
+static int run_victory_ready;             /* the renders are made for this cover */
+static unsigned run_victory_key;
+/* It stays up, animating, until the game behind it is ready (the results
+ * done: the hub overlay could open) and the player presses X; the hub
+ * overlay waits for that (run_hx_frame). */
+static int run_victory_hold;
+static uint32_t run_victory_frames;
+static int run_victory_words_shown, run_victory_armed;
+static uint16_t run_victory_held = 0xFFFFu;
+static uint32_t run_cover_frames, run_cover_idle;
+static void run_cover_end(const char *why);
+static void run_backdrop_frame(void);
+
+/* Sounds. The game's menu sound effects go through the exe's SsUtKeyOn
+ * (0x800227D4: vab, prog, tone, note, fine, vol L, vol R); the menu's bank
+ * id is the halfword at 0x801B1A80. The arena list uses tone 1 (cursor),
+ * 2 (X) and 0 (O). The overlay plays those for its own menus (queued from
+ * the frame hook, played from the menu's controller sampling, where a guest
+ * call is safe); the game's own effects are muted while the run drives its
+ * menus behind a picture (NEXT BATTLE, the cover, the payout). */
+#define RUN_SS_KEYON         0x800227D4u
+#define RUN_MENU_VAB         0x801B1A80u
+#define RUN_LOADING_SCREEN   0x80012348u  /* exe: the loading picture before an engine */
+enum { RUN_SE_BACK = 0, RUN_SE_CURSOR = 1, RUN_SE_OK = 2 };
+static int run_se_queue = -1;
+static uint32_t run_se_age;               /* frames queued; dropped after a few (no menu running) */
+static int run_se_own;
+static void run_se(int tone) { run_se_queue = tone; run_se_age = 0; }
 #define RUN_SLOW(n) (run_disc_slow == 1 ? (n) * 4u : (n))
 
 static void run_watch(int phase)
@@ -512,6 +552,11 @@ static void run_check_session(void)
     run_end_stage = run_end_cur = run_end_armed = run_end_overlay = 0;
     run_end_choice = -1;
     run_disc_slow = 0;
+    run_cover = run_cover_drawn = 0;
+    run_se_queue = -1;
+    run_victory_who = -1;
+    run_victory_ready = 0;
+    run_victory_hold = 0;
     run_end_frames = 0;
     run_end_held = 0xFFFFu;
     run_sent = run_told = 0;
@@ -636,7 +681,20 @@ static void run_menu_entry(struct CPUState *cpu, uint32_t address)
     run_check_session();
     run_enabled = -1;
     if (!run_on() || psx_mod_read_word(address) != RUN_SIG_MENU_ENTRY) return;
-    if (run_at_hub) return;                   /* already handed over */
+    if (run_at_hub) {                         /* already handed over: a fight is over */
+        if (run_state_ok && !run_state.run.over && !run_cover) {
+            run_cover = 1;
+            run_cover_drawn = 0;
+            run_cover_frames = run_cover_idle = 0;
+            run_victory_ready = 0;
+            run_victory_hold = run_victory_who >= 0;
+            run_victory_frames = 0;
+            run_victory_words_shown = run_victory_armed = 0;
+            run_victory_held = 0xFFFFu;
+            run_log("cover: up while the menu reloads%s", run_victory_who >= 0 ? " (victory screen)" : "");
+        }
+        return;
+    }
     run_autopilot = 1;
     run_ticks = run_frames = 0;
     run_stage = STAGE_TITLE;
@@ -896,12 +954,54 @@ static void run_newgame_entry(struct CPUState *cpu, uint32_t address)
 
 static void run_direct_hub_frame(struct CPUState *cpu);
 
+/* A queued overlay sound, through the game's SsUtKeyOn with the menu's
+ * bank (only here: the menu is live and a guest call is safe). The three
+ * stack arguments go below the caller's frame; GPRs are restored after. */
+static void run_se_flush(struct CPUState *cpu)
+{
+    if (run_se_queue < 0) return;
+    const int tone = run_se_queue;
+    run_se_queue = -1;
+    const int16_t vab = (int16_t)psx_mod_read_half(RUN_MENU_VAB);
+    if (vab < 0 || vab > 15) return;
+    const uint32_t sp0 = cpu->gpr[29], sp = sp0 - 64u;
+    psx_mod_write_word(sp + 16u, 0u);       /* fine */
+    psx_mod_write_word(sp + 20u, 127u);     /* volume L */
+    psx_mod_write_word(sp + 24u, 127u);     /* volume R */
+    cpu->gpr[29] = sp;
+    run_se_own = 1;
+    (void)psx_mod_call_guest(cpu, RUN_SS_KEYON, cpu->gpr[31], (uint32_t)(int32_t)vab, 0u, (uint32_t)tone, 60u);
+    run_se_own = 0;
+    cpu->gpr[29] = sp0;
+}
+
+/* The game's own sound effects, muted while the run drives the menus behind
+ * a picture. Never in a fight (the cover and NEXT BATTLE end before one). */
+static int run_keyon_filter(struct CPUState *cpu, uint32_t address)
+{
+    (void)address;
+    if (run_se_own || !run_on()) return 0;
+    if (!(run_autopilot || (run_at_hub && (run_hx || run_cover || run_to_hub)))) return 0;
+    cpu->gpr[2] = 0xFFFFFFFFu;               /* SsUtKeyOn: no voice */
+    psx_mod_counter_add("moa.run.game_sound_muted", 1);
+    return 1;
+}
+
 static void run_menu_input_entry(struct CPUState *cpu, uint32_t address)
 {
     run_idle = 0;
     if (run_overlay_up() && run_on()) {
         const uint32_t w = psx_mod_read_word(address);
-        if ((w == RUN_SIG_INPUT_A || w == RUN_SIG_INPUT_B) && !run_hx_menu_pad()) run_pad_lock();
+        if (w != RUN_SIG_INPUT_A && w != RUN_SIG_INPUT_B) return;
+        run_se_flush(cpu);
+        if (run_hx_menu_pad()) return;
+        /* Under the cover only, the restock's own O presses still go in. */
+        if (run_cover && !run_show_on && !run_prize_stage && !run_end_stage && !run_hx &&
+            !(run_state_ok && run_state.run.over) && run_to_hub == TOHUB_PRESSING && run_to_hub_o) {
+            psx_mod_write_half(RUN_PAD_BUFFER + 2u, (uint16_t)~RUN_PAD_CIRCLE);
+            return;
+        }
+        run_pad_lock();
         return;
     }
     if (run_to_hub == TOHUB_PRESSING && run_to_hub_o && !run_autopilot && run_on()) {
@@ -1425,9 +1525,9 @@ static int run_prize_present(int choosing, const char *title, const char *line,
         for (int i = 0; i < run_prize_n; i++) labels[i] = run_prize_opt[i].label;
         const uint32_t *px = choosing
             ? moa_screen_render_choice(ww, wh, title, line, labels, run_prize_n, run_prize_cur,
-                                       "UP / DOWN  CHOOSE     X  TAKE", see, &w, &h)
+                                       "UP / DOWN  CHOOSE     X  TAKE", 0, &w, &h)
             : moa_screen_render_tiles(ww, wh, title, line, tile, tile ? 1 : 0,
-                                      "PRESS ANY BUTTON", see, &w, &h);
+                                      "PRESS ANY BUTTON", 0, &w, &h);
         if (!px) return 0;
         if (see && psx_mod_set_overlay_image(px, w, h)) { run_prize_overlay = 1; return 1; }
         if (!see) {
@@ -1567,15 +1667,18 @@ static void run_prize_frame(void)
     if (b == 0xFFFFu) run_prize_armed = 1;
     if (!run_prize_armed || run_prize_frames < 20u || !down) return;
     if (run_prize_stage == 2) {
+        run_se(RUN_SE_OK);
         run_prize_stage = 0;
         run_prize_hide();
         run_log("prize: closed");
         return;
     }
     if (down & (RUN_PAD_UP | RUN_PAD_DOWN)) {
+        run_se(RUN_SE_CURSOR);
         run_prize_cur = (run_prize_cur + ((down & RUN_PAD_UP) ? run_prize_n - 1 : 1)) % run_prize_n;
         run_prize_draw_choice();
     } else if (down & RUN_PAD_X) {
+        run_se(RUN_SE_OK);
         run_prize_take();
     }
 }
@@ -1587,6 +1690,7 @@ static void run_hub_entry(struct CPUState *cpu, uint32_t address)
     (void)cpu;
     if (!run_on() || psx_mod_read_word(address) != RUN_SIG_HUB_RESUME) return;
     if (run_watch_phase == 2) run_watch(0);       /* back at the hub */
+    if (run_cover == 1) { run_cover = 2; run_cover_drawn = 0; run_cover_idle = 0; }
     if (run_hx_next >= 2) run_hx_fail("next battle: back at the hub, the fight did not start");
     run_replay_over("hub");
     if (run_state_ok && run_state.run.over) { run_loss_wait = 0; run_maybe_return(); return; }
@@ -1711,6 +1815,7 @@ static int run_book_win(uint8_t who, const char *where)
     if (!moa_run_win(&run_state)) return 0;
     *word |= bit;
     run_win_told = who;                                  /* the fight calls again every frame */
+    run_victory_who = who;                               /* the victory screen after the fight */
     run_win_screen++;
     {   /* a ghost: its card is saved at the arena screen (run_ghost_save) */
         const struct moa_run_pick p = run_state.lineup.slot[MOA_RUN_SLOTS - 1u - who];
@@ -1769,6 +1874,7 @@ static void run_result_entry(struct CPUState *cpu, uint32_t address)
 {
     if (!run_on() || psx_mod_read_word(address) != RUN_SIG_RESULT) return;
     if (run_watch_phase == 2) run_watch(0);       /* back at the arena screen */
+    if (run_cover == 1) { run_cover = 2; run_cover_drawn = 0; run_cover_idle = 0; }
     run_replay_over("arena screen");
     run_maybe_return();
     if (!run_at_hub || !run_state_ok) {
@@ -2739,7 +2845,10 @@ static void run_watch_dump(void)
  * the two. */
 static int run_overlay_up(void)
 {
-    return run_show_on || run_prize_stage || run_end_stage || run_hx;
+    /* A booked loss locks the controls at once: the RUN OVER screen comes
+     * RUN_LOSS_FRAMES later, and the game must not take presses meanwhile. */
+    return run_show_on || run_prize_stage || run_end_stage || run_hx || run_cover ||
+           (run_state_ok && run_state.run.over);
 }
 
 static void run_pad_lock(void)
@@ -2762,7 +2871,7 @@ static int run_end_draw(void)
     for (int pass = 0; pass < 2; pass++) {
         const int see = pass == 0;
         const uint32_t *px = moa_screen_render_choice(ww, wh, title, line, k_run_end_label, 3, run_end_cur,
-                                                      "UP / DOWN  CHOOSE     X  OK", see, &w, &h);
+                                                      "UP / DOWN  CHOOSE     X  OK", 0, &w, &h);
         if (!px) return 0;
         if (see && psx_mod_set_overlay_image(px, w, h)) { run_end_overlay = 1; return 1; }
         if (!see) {
@@ -2821,9 +2930,11 @@ static void run_end_frame(void)
     if (b == 0xFFFFu) run_end_armed = 1;
     if (!run_end_armed || run_end_frames < 20u || !down) return;
     if (down & (RUN_PAD_UP | RUN_PAD_DOWN)) {
+        run_se(RUN_SE_CURSOR);
         run_end_cur = (run_end_cur + ((down & RUN_PAD_UP) ? 2 : 1)) % 3;
         (void)run_end_draw();
     } else if (down & (RUN_PAD_X | RUN_PAD_START)) {
+        run_se(RUN_SE_OK);
         run_end_pick(run_end_cur);
     }
 }
@@ -3003,7 +3114,7 @@ static int run_hx_draw(void)
         snprintf(title, sizeof title, "NEXT BATTLE");
         l.info[0] = run_hx_foe;
         l.info[1] = values[HXR_STAGE] && run_hx_stage_i > 0 ? stage_v : NULL;
-        l.info[2] = "STARTING THE FIGHT...";
+        l.info[2] = run_hx_next ? "STARTING THE FIGHT..." : "LOADING THE FIGHT...";
         l.count = 0;
     } else {
         snprintf(title, sizeof title, "ROGUE ARENA  RANK %u", (unsigned)(MOA_RUN_SLOTS - wins));
@@ -3018,9 +3129,13 @@ static int run_hx_draw(void)
     }
     int ww = 0, wh = 0, w = 0, h = 0;
     psx_mod_window_size(&ww, &wh);
-    const uint32_t *px = moa_screen_render_list(ww, wh, &l, 1, &w, &h);
+    const uint32_t *px = moa_screen_render_list(ww, wh, &l, 0, &w, &h);
     if (!px || !psx_mod_set_overlay_image(px, w, h)) return 0;
     run_hx_overlay = 1;
+    if (run_cover) {                                   /* the hub overlay takes over */
+        run_cover = run_cover_drawn = 0;
+        run_log("cover: the hub overlay takes over (%u frames)", (unsigned)run_cover_frames);
+    }
     return 1;
 }
 
@@ -3136,7 +3251,9 @@ static void run_hx_fight_setup(void)
         psx_mod_counter_add("moa.run.hub_next_battle", 1);
         run_hx_next = 0;
         run_hx_go_entry = -1;
-        run_hx_close();
+        /* The picture stays up until the game's own loading screen
+         * (run_loading_screen_entry), or the fight itself runs. */
+        if (run_hx == HX_NEXT) (void)run_hx_draw();
     }
     run_hx_stage_load();
     const uint8_t id = k_hx_stage[run_hx_stage_i].id;
@@ -3172,6 +3289,7 @@ static void run_hx_frame(void)
         run_hx_fail(run_disc_slow == 1 ? "next battle: the fight did not start in 60 s"
                                        : "next battle: the fight did not start in 15 s");
     if (run_hx == HX_OFF) {
+        if (run_victory_hold) return;                                       /* until X on the victory screen */
         if (run_hx_go_entry >= 0 || run_hx_next || run_hx_off) return;
         if (run_hx_hub_seen > 2u && run_hx_list_seen > 2u) return;          /* neither screen is waiting */
         if (run_win_screen || run_pay_due) return;                          /* the result still to pay */
@@ -3213,26 +3331,31 @@ static void run_hx_frame(void)
     const int up = (down & RUN_PAD_UP) != 0, dn = (down & RUN_PAD_DOWN) != 0;
     if (run_hx == HX_STAGES) {
         if (up || dn) {
+            run_se(RUN_SE_CURSOR);
             run_hx_scur = (run_hx_scur + (up ? RUN_HX_STAGES - 1 : 1)) % RUN_HX_STAGES;
             if (run_hx_scur < run_hx_stop) run_hx_stop = run_hx_scur;
             if (run_hx_scur >= run_hx_stop + 7) run_hx_stop = run_hx_scur - 6;
             (void)run_hx_draw();
         } else if (down & RUN_PAD_X) {
+            run_se(RUN_SE_OK);
             run_hx_stage_i = run_hx_scur;
             run_hx_stage_save();
             run_log("hub overlay: stage %s (kept for the next fights)", k_hx_stage[run_hx_stage_i].name);
             run_hx = HX_MENU;
             (void)run_hx_draw();
         } else if (down & RUN_PAD_CIRCLE) {
+            run_se(RUN_SE_BACK);
             run_hx = HX_MENU;
             (void)run_hx_draw();
         }
         return;
     }
     if (up || dn) {
+        run_se(RUN_SE_CURSOR);
         run_hx_cur = (run_hx_cur + (up ? HXR_COUNT - 1 : 1)) % HXR_COUNT;
         (void)run_hx_draw();
     } else if (down & (RUN_PAD_X | RUN_PAD_START)) {
+        run_se(RUN_SE_OK);
         switch (run_hx_cur) {
         case HXR_NEXT:
             if (run_state.run.wins + 1u >= MOA_RUN_SLOTS) {      /* rank 1: pick a refight in the game's list */
@@ -3251,10 +3374,264 @@ static void run_hx_frame(void)
         case HXR_GARAGE: run_hx_open_entry(0, "garage (the game's)", "GARAGE"); break;
         }
     } else if (down & RUN_PAD_CIRCLE) {
+        run_se(RUN_SE_BACK);
         run_hx_close();
         run_hx_off = 1;
         run_log("hub overlay: closed, the game's hub");
     }
+}
+
+/* ---- victory screen (the cover after a win) ----------------------------------- */
+/* Band colours by belt (moa_hub_rank_tile_index order). */
+static const uint32_t k_belt_band[11] = {
+    0xE1E1DCu, 0xECA824u, 0xEC701Cu, 0x40A848u, 0x3070D0u, 0x8048B8u,
+    0xCC2828u, 0x8C542Cu, 0x36363Cu, 0x8C1C1Cu, 0xB08C28u,
+};
+static const char *const k_victory_line[] = {
+    "THE ARENA IS STARTING TO KNOW YOUR NAME.",
+    "ONE STEP CLOSER TO THE TOP.",
+    "THEY NEVER SAW IT COMING.",
+    "THAT ONE WILL NEED A NEW AC.",
+    "THE CROWD WANTS MORE.",
+    "YOUR SPONSORS ARE WATCHING.",
+    "CLEAN WORK, RAVEN.",
+    "NEXT.",
+};
+static uint8_t *run_victory_win, *run_victory_lose;
+static char run_victory_beaten[64], run_victory_l0[48], run_victory_l1[48], run_victory_rank[16];
+
+/* AC and pilot names of a lineup pick (upper case). */
+static void run_pick_names(struct moa_run_pick p, char *ac, char *pilot, size_t cap)
+{
+    ac[0] = pilot[0] = 0;
+    if (p.arena == MOA_RUN_GHOST && p.rank < MOA_RUN_SLOTS) {
+        const struct moa_run_ghost *g = &run_state.lineup.ghost[p.rank];
+        run_hx_name((const uint8_t *)g->ac, 16, ac, cap);
+        run_hx_name((const uint8_t *)g->pilot, 16, pilot, cap);
+    } else if (p.arena != MOA_RUN_PLAYER) {
+        uint8_t rec[48];
+        const uint32_t ix = run_index();
+        if (ix && run_menu_lba() && run_record(ix, p, KIND_NAMES, 48u, rec)) {
+            run_hx_name(rec, 24, pilot, cap);
+            run_hx_name(rec + 24, 24, ac, cap);
+        }
+    }
+}
+
+/* Render one AC (13-byte record + 48 paint bytes) into a new RGBA buffer. */
+static uint8_t *run_victory_render(const uint8_t rec[13], const uint8_t paint[48], int size,
+                                   float yaw, float pitch, float zoom)
+{
+    const char *mdir = getenv("PSX_MOA_MODELS_DIR");
+    if (!mdir || !mdir[0]) return NULL;
+    moa_acv *v = moa_acv_load(mdir, rec, paint);
+    if (!v) return NULL;
+    uint8_t *px = (uint8_t *)calloc((size_t)size * (size_t)size, 4u);
+    if (px) moa_acv_render_ex(v, yaw, pitch, 0.0f, zoom, 0u, NULL, size, size, px);
+    moa_acv_free(v);
+    return px;
+}
+
+/* Once per win: the two renders and the lines. */
+static void run_victory_prepare(void)
+{
+    free(run_victory_win); free(run_victory_lose);
+    run_victory_win = run_victory_lose = NULL;
+    /* The winner: the garage's AC (the save's part order -> card record). */
+    uint8_t g[12], paint[48];
+    for (unsigned i = 0; i < 12; i++) g[i] = psx_mod_read_byte(0x80036FB0u + i);
+    const uint8_t rec[13] = { g[0], g[2], g[3], g[11], g[5], g[4], g[6], g[7], g[9], g[8],
+                              psx_mod_read_byte(0x8003EA70u), psx_mod_read_byte(0x8003EA71u), g[1] };
+    moa_run_paint(run_state.lineup.seed, run_state.run.attempt, paint);
+    run_victory_win = run_victory_render(rec, paint, 900, -0.45f, 0.10f, 1.15f);
+    /* The beaten one: its arena record (parts, then paint at +16). */
+    const unsigned who = (unsigned)run_victory_who;
+    char ac[25] = "", pilot[25] = "";
+    if (who < MOA_RUN_SLOTS) {
+        const struct moa_run_pick p = run_state.lineup.slot[MOA_RUN_SLOTS - 1u - who];
+        uint8_t r64[64];
+        int ok = 0;
+        if (p.arena == MOA_RUN_GHOST && p.rank < MOA_RUN_SLOTS) {
+            moa_run_ghost_record(&run_state.lineup.ghost[p.rank], run_state.lineup.seed, r64);
+            ok = 1;
+        } else if (p.arena != MOA_RUN_PLAYER) {
+            const uint32_t ix = run_index();
+            ok = ix && run_menu_lba() && run_record(ix, p, KIND_BUILDS, 64u, r64);
+        }
+        if (ok) run_victory_lose = run_victory_render(r64, r64 + 16, 640, 0.6f, 0.25f, 1.0f);
+        run_pick_names(p, ac, pilot, sizeof ac);
+    }
+    if (ac[0] && pilot[0]) snprintf(run_victory_beaten, sizeof run_victory_beaten, "%s / %s  DOWN", ac, pilot);
+    else snprintf(run_victory_beaten, sizeof run_victory_beaten, "%s  DOWN", ac[0] ? ac : pilot[0] ? pilot : "OPPONENT");
+    const unsigned wins = run_state.run.wins < MOA_RUN_SLOTS ? run_state.run.wins : MOA_RUN_SLOTS - 1u;
+    const unsigned rank = MOA_RUN_SLOTS - wins;
+    snprintf(run_victory_rank, sizeof run_victory_rank, "RANK %u", rank);
+    snprintf(run_victory_l0, sizeof run_victory_l0, "RANK %u IS YOURS.", rank);
+    if (rank == 1) snprintf(run_victory_l1, sizeof run_victory_l1, "NO ONE IS LEFT ABOVE YOU.");
+    else if (rank <= 10) snprintf(run_victory_l1, sizeof run_victory_l1, "%u MORE TO THE TOP.", rank - 1u);
+    else {
+        uint64_t q = run_state.lineup.seed ^ ((uint64_t)wins * 0x9E3779B97F4A7C15ull) ^ run_state.run.attempt;
+        const uint32_t n = (uint32_t)(sizeof k_victory_line / sizeof k_victory_line[0]);
+        snprintf(run_victory_l1, sizeof run_victory_l1, "%s", k_victory_line[moa_run_below(&q, n)]);
+    }
+    run_victory_key++;
+    run_victory_ready = 1;
+    run_log("victory: %s %s, %s%s", run_victory_l0, run_victory_l1, run_victory_beaten,
+            run_victory_win ? "" : " (no 3D model install: text only)");
+}
+
+/* One frame of it; `ready`: the prompt instead of the loading line. */
+static int run_victory_draw(int ready)
+{
+    static const char *const k_dots[4] = { "", ".", "..", "..." };
+    char status[40];
+    const float t = (float)run_victory_frames / 60.0f;
+    if (ready) snprintf(status, sizeof status, "%s", ((run_victory_frames / 30u) & 1u) ? "" : "X  CONTINUE");
+    else snprintf(status, sizeof status, "LOADING%s", k_dots[(run_victory_frames / 20u) % 4u]);
+    const unsigned wins = run_state.run.wins < MOA_RUN_SLOTS ? run_state.run.wins : MOA_RUN_SLOTS - 1u;
+    struct moa_screen_victory v;
+    memset(&v, 0, sizeof v);
+    v.winner = run_victory_win; v.winner_w = v.winner_h = run_victory_win ? 900 : 0;
+    v.loser = run_victory_lose; v.loser_w = v.loser_h = run_victory_lose ? 640 : 0;
+    v.band = k_belt_band[moa_hub_rank_tile_index((int)(MOA_RUN_SLOTS - wins))];
+    v.rank = run_victory_rank;
+    v.pay = "+1 P";
+    v.beaten = run_victory_beaten;
+    v.line[0] = run_victory_l0;
+    v.line[1] = run_victory_l1;
+    v.status = status[0] ? status : NULL;
+    v.t = t;
+    v.key = run_victory_key;
+    const int words = moa_screen_victory_words(&v);
+    if (words > run_victory_words_shown) { run_victory_words_shown = words; (void)moa_chime_tick(); }
+    int ww = 0, wh = 0, w = 0, h = 0;
+    psx_mod_window_size(&ww, &wh);
+    const uint32_t *px = moa_screen_render_victory(ww, wh, &v, &w, &h);
+    return px && psx_mod_set_overlay_image(px, w, h);
+}
+
+/* ---- the cover (see run_cover) --------------------------------------------- */
+static void run_cover_end(const char *why)
+{
+    if (!run_cover) return;
+    if (run_cover_drawn && !run_hx && !run_prize_stage && !run_end_stage)
+        (void)psx_mod_set_overlay_image(NULL, 0, 0);
+    run_cover = run_cover_drawn = 0;
+    run_log("cover: down (%s, %u frames)", why, (unsigned)run_cover_frames);
+}
+
+static int run_cover_draw(void)
+{
+    static const char *const k_dots[4] = { "", ".", "..", "..." };
+    char title[40], bal[40], what[40];
+    const unsigned wins = run_state.run.wins < MOA_RUN_SLOTS ? run_state.run.wins : MOA_RUN_SLOTS - 1u;
+    snprintf(title, sizeof title, "ROGUE ARENA  RANK %u", (unsigned)(MOA_RUN_SLOTS - wins));
+    snprintf(bal, sizeof bal, "BALANCE  %u P", (unsigned)psx_mod_read_word(RUN_CREDITS));
+    snprintf(what, sizeof what, "%s%s", run_cover == 1 ? "BACK TO THE ARENA" : "RESULTS",
+             k_dots[(run_cover_frames / 20u) % 4u]);
+    if (run_cover_frames == 0 || !run_hx_foe[0]) run_hx_foe_text();
+    struct moa_screen_list l;
+    memset(&l, 0, sizeof l);
+    l.title = title;
+    l.info[0] = bal;
+    l.info[1] = run_hx_foe;
+    l.info[2] = what;
+    l.marked = -1;
+    int ww = 0, wh = 0, w = 0, h = 0;
+    psx_mod_window_size(&ww, &wh);
+    const uint32_t *px = moa_screen_render_list(ww, wh, &l, 0, &w, &h);
+    return px && psx_mod_set_overlay_image(px, w, h);
+}
+
+/* Per frame while the cover is up. */
+static void run_cover_frame(void)
+{
+    if (!run_cover) return;
+    run_cover_frames++;
+    if (run_hx) { run_cover = run_cover_drawn = 0; return; }       /* the hub overlay has it */
+    if (!run_state_ok || run_state.run.over) { run_cover_end("the run is over"); return; }
+    if (!run_victory_hold && run_cover_frames > RUN_SLOW(60u * 30u)) { run_cover_end("timed out"); return; }
+    if (run_show_on || run_prize_stage || run_end_stage) run_victory_hold = 0;   /* they take over */
+    if (run_show_on) {                       /* the restock picture is the loading image */
+        if (run_cover_drawn) (void)psx_mod_set_overlay_image(NULL, 0, 0);
+        run_cover_drawn = 0;
+        return;
+    }
+    if (run_prize_stage || run_end_stage) { run_cover_drawn = 0; return; }   /* their own picture */
+    /* Results done and nothing left to show: the hub overlay could open. */
+    const int settled = run_cover == 2 && !psx_mod_read_byte(RUN_FIGHT_DONE) && !run_win_screen && !run_pay_due &&
+                        run_prize_due() < 0 && !run_show_rank && !run_to_hub;
+    /* After a win: the victory screen, animating every other frame, until
+     * the game behind it has settled and the player presses X. */
+    if (run_victory_hold) {
+        if (!run_victory_ready) {
+            if (!run_show_font()) { run_victory_hold = 0; goto plain; }
+            run_backdrop_frame();
+            run_victory_prepare();
+            if (moa_chime_play()) psx_mod_counter_add("moa.run.victory_chime", 1);
+        }
+        run_victory_frames++;
+        const int ready = settled && run_victory_frames > 90u;
+        const uint16_t b = psx_mod_host_pad_buttons(0);          /* active low */
+        const uint16_t down = (uint16_t)(run_victory_held & ~b);
+        run_victory_held = b;
+        if (b == 0xFFFFu) run_victory_armed = 1;
+        if (ready && run_victory_armed && (down & (RUN_PAD_X | RUN_PAD_START))) {
+            run_victory_hold = 0;
+            run_victory_who = -1;
+            run_se(RUN_SE_OK);
+            run_log("victory: X after %u frames", (unsigned)run_victory_frames);
+            return;                                              /* the hub overlay opens next */
+        }
+        if (!run_cover_drawn || (run_victory_frames & 1u)) {
+            if (run_victory_draw(ready)) { run_cover_drawn = 1; return; }
+            run_victory_hold = 0;                                /* not drawable: the plain cover */
+            run_victory_who = -1;
+        } else return;
+    }
+plain:
+    if (settled) {
+        if (++run_cover_idle > 120u) { run_cover_end("the hub overlay did not open"); return; }
+    } else run_cover_idle = 0;
+    if (!run_cover_drawn || run_cover_frames % 20u == 0u) {
+        if (!run_show_font() || !run_cover_draw()) { run_cover_end("could not be drawn"); return; }
+        run_cover_drawn = 1;
+    }
+}
+
+/* The game's loading screen before an engine (exe 0x80012348): the overlay
+ * hands the screen back here, before the next match. */
+static void run_loading_screen_entry(struct CPUState *cpu, uint32_t address)
+{
+    (void)cpu; (void)address;
+    if (!run_on()) return;
+    if (run_hx) {
+        run_log("hub overlay: released at the game's loading screen");
+        run_hx_close();
+    }
+    run_cover_end("the game's loading screen");
+}
+
+/* The opaque screens' backdrop: the belt tile of the run's rank, as the hub. */
+static void run_backdrop_frame(void)
+{
+    static int last = -1;
+    if (!run_state_ok) return;
+    const unsigned wins = run_state.run.wins < MOA_RUN_SLOTS ? run_state.run.wins : MOA_RUN_SLOTS - 1u;
+    const int rank = (int)(MOA_RUN_SLOTS - wins);
+    if (rank == last) return;
+    last = rank;
+    const uint8_t *pix = NULL;
+    const uint16_t *clut = NULL;
+    (void)moa_hub_rank_tile(rank, &pix, &clut);
+    if (!pix || !clut) { moa_screen_set_backdrop(NULL, 0, 0); return; }
+    static uint32_t rgb[64 * 64];
+    for (int i = 0; i < 64 * 64; i++) {
+        const uint16_t c = clut[(pix[i >> 1] >> ((i & 1) * 4)) & 15u];
+        const uint32_t r = (c & 31u) * 255u / 31u, g = ((c >> 5) & 31u) * 255u / 31u, b = ((c >> 10) & 31u) * 255u / 31u;
+        rgb[i] = r << 16 | g << 8 | b;
+    }
+    moa_screen_set_backdrop(rgb, 64, 64);
 }
 
 static void run_disc_frame(void)
@@ -3280,6 +3657,8 @@ static void run_frame_hook(void)
     if (!run_on()) return;
     run_apply_fixes();
     run_disc_frame();
+    run_backdrop_frame();
+    if (run_se_queue >= 0 && ++run_se_age > 6u) run_se_queue = -1;   /* no menu to play it */
     if (run_watch_phase && run_at_hub && ++run_watch_count == run_watch_limit()) run_watch_dump();
     if (run_irq_again && --run_irq_again == 0) { run_irq_log(0); run_cd_state_line("2 s later"); }
     if (run_at_hub && !run_autopilot && !run_watch_phase && ++run_idle == RUN_WATCH_IDLE) {
@@ -3298,6 +3677,7 @@ static void run_frame_hook(void)
     if (run_loss_wait) run_loss_wait--;      /* the return itself is made in a guest hook */
     run_end_frame();
     run_hx_frame();
+    run_cover_frame();
     if (run_autopilot && run_stage == STAGE_BACK) {
         if (++run_frames - run_back_start >= (run_direct ? RUN_DIRECT_HOLD : RUN_BACK_FRAMES))
             run_finish_handover();
@@ -3354,5 +3734,7 @@ PSX_MOD_CONSTRUCTOR(moa_arena_run_boot_register)
     (void)psx_game_register_offline_instruction(RUN_A0_CURSOR, RUN_A0_CURSOR_I, run_a0_cursor);
     (void)psx_game_register_offline_instruction(RUN_A0_CLEAR, RUN_A0_CLEAR_I, run_a0_clear);
     (void)psx_game_register_offline_instruction(RUN_A0_FLIP, RUN_A0_FLIP_I, run_a0_flip);
+    (void)psx_game_register_offline_function_entry(RUN_LOADING_SCREEN, run_loading_screen_entry);
+    (void)psx_game_register_offline_function_filter(RUN_SS_KEYON, run_keyon_filter);
     mod_register_frame_hook(run_frame_hook);
 }

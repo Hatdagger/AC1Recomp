@@ -228,6 +228,7 @@ struct moa_screen_vs {
     uint32_t band;                   /* belt colour, 0xRRGGBB */
     float t;                         /* seconds since the screen opened */
     int count;                       /* 5..1 on screen, 0 none */
+    int standby;                     /* no count yet: STANDBY where the count goes */
     float shutter;                   /* seconds since the shutters started closing, < 0 none */
     float black;                     /* 0..1 fade to black over everything */
 };

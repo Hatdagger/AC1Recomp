@@ -4794,9 +4794,22 @@ static int run_victory_draw(int ready)
  * over as soon as they meet (user 2026-11-18 12:29). Silent but for the
  * shots and the shutters. Renders from the 3D model install; without it,
  * the boxes are empty. */
-#define VS_C0        0.6f          /* the count starts */
+#define VS_C0        0.6f          /* the count starts at the earliest */
 #define VS_STEP      1.0f          /* a second per number */
-#define VS_SHUT      (VS_C0 + 5.0f * VS_STEP)
+/* The count's start, paced to the load (user test 14:40: the fight came
+ * 11-23 s after NEXT BATTLE while the count always ended at 5.6 s, a long
+ * black wait). The card holds on STANDBY while the run drives the game's
+ * menus; once the game's loading screen starts, the count is placed so the
+ * shutters are shut and black just as the fight runs. From the loading
+ * screen the load took 412-435 frames in the user's log (2026-11-18); the
+ * estimate is learned from each fight. */
+#define VS_LOAD_EST0 7.1f
+#define VS_LATE      25.0f         /* no loading screen seen by then: count anyway */
+#define VS_SHUT      (run_vs_c0 + 5.0f * VS_STEP)
+static float run_vs_c0 = -1.0f;    /* screen time the count starts, < 0 not yet planned */
+static float run_vs_rel = -1.0f;   /* screen time the game's loading screen started */
+static float run_vs_load_est = VS_LOAD_EST0;
+static int8_t run_vs_slash_k[16];  /* strip box i: its slash's count step from the end (0 = count 1), -1 none */
 #define VS_FADE_AT   0.7f          /* after the shutters start: fade to black ... */
 #define VS_FADE_LEN  0.4f
 #define VS_MAX_MINI  8
@@ -5126,10 +5139,13 @@ static void run_vs_open(void)
             run_vs_mini_n++;
         }
     }
+    for (int i = 0; i < 16; i++) run_vs_slash_k[i] = -1;
     for (int i = 0; i < beaten; i++) {                    /* the last three on counts 3, 2, 1 */
         const int from_end = beaten - 1 - i;
-        run_vs_mini[i].slash_at = from_end >= 3 ? -9.0f : VS_C0 + (float)(4 - from_end) * VS_STEP;
+        run_vs_mini[i].slash_at = from_end >= 3 ? -9.0f : 1.0e6f;   /* placed with the count */
+        if (from_end < 3 && i < 16) run_vs_slash_k[i] = (int8_t)from_end;
     }
+    run_vs_c0 = run_vs_rel = -1.0f;
     run_vs = 1;
     run_vs_frames = 0;
     run_vs_fight_at = run_vs_shut_at = -1;
@@ -5163,7 +5179,37 @@ static void run_vs_fight_runs(void)
     if (run_vs && run_vs_fight_at < 0) {
         run_vs_fight_at = (int32_t)run_vs_frames;
         run_log("vs: the fight runs at %.2f s", run_vs_frames / 60.0);
+        if (run_vs_rel >= 0.0f) {                         /* learn the load's length */
+            float m = (float)run_vs_frames / 60.0f - run_vs_rel;
+            if (m < 2.0f) m = 2.0f;
+            if (m > 20.0f) m = 20.0f;
+            run_vs_load_est = 0.5f * run_vs_load_est + 0.5f * m;
+            run_log("vs: the load took %.2f s from the loading screen (next estimate %.2f s)", m, run_vs_load_est);
+        }
     }
+}
+
+/* Place the count (at screen time `now`, the loading screen just started or
+ * it never came): the shutters start so that they are shut and the fade is
+ * black when the fight should run. */
+static void run_vs_plan(float now, const char *why)
+{
+    if (run_vs_c0 >= 0.0f) return;
+    float c0 = now + run_vs_load_est - 5.0f * VS_STEP - (VS_FADE_AT + VS_FADE_LEN) - 0.15f;
+    if (c0 < now) c0 = now;
+    if (c0 < VS_C0) c0 = VS_C0;
+    run_vs_c0 = c0;
+    for (int i = 0; i < run_vs_mini_n && i < 16; i++)
+        if (run_vs_slash_k[i] >= 0) run_vs_mini[i].slash_at = c0 + (float)(4 - run_vs_slash_k[i]) * VS_STEP;
+    run_log("vs: count planned at %.2f s (%s at %.2f s, load about %.2f s)", c0, why, now, run_vs_load_est);
+}
+
+/* The game's loading screen before the fight (run_loading_screen_entry). */
+static void run_vs_loading(void)
+{
+    if (!run_vs || run_vs_rel >= 0.0f) return;
+    run_vs_rel = (float)run_vs_frames / 60.0f;
+    run_vs_plan(run_vs_rel, "loading screen");
 }
 
 /* Per frame while it is up. */
@@ -5174,10 +5220,11 @@ static void run_vs_frame(void)
     const float t = (float)run_vs_frames / 60.0f;
     run_vs_frames++;
     if (!run_hx_next) psx_mod_write_half(RUN_PAD_BUFFER + 2u, 0xFFFFu);   /* controls locked (not while the run drives the menus) */
+    if (run_vs_c0 < 0.0f && t >= VS_LATE) run_vs_plan(t, "no loading screen seen");
     /* The shutters: at the end of the count, or at once when the fight runs early. */
-    if (run_vs_shut_at < 0 && (t >= VS_SHUT || run_vs_fight_at >= 0)) {
+    if (run_vs_shut_at < 0 && ((run_vs_c0 >= 0.0f && t >= VS_SHUT) || run_vs_fight_at >= 0)) {
         run_vs_shut_at = (int32_t)run_vs_frames - 1;
-        if (run_vs_fight_at >= 0 && t < VS_SHUT) run_log("vs: the fight is ready at %.2f s: count cut, shutters", t);
+        if (run_vs_fight_at >= 0 && (run_vs_c0 < 0.0f || t < VS_SHUT)) run_log("vs: the fight is ready at %.2f s: count cut, shutters", t);
     }
     const float sh = run_vs_shut_at >= 0 ? (float)(run_vs_frames - 1u - (uint32_t)run_vs_shut_at) / 60.0f : -1.0f;
     /* Hand over: the fight runs and the shutters are shut (early: as soon as
@@ -5190,9 +5237,9 @@ static void run_vs_frame(void)
     /* Sounds: one shot with each slash (the last 1-3 counts, as many as ACs
      * beaten in the belt, at most 3; none beaten = silent); the shutters' slam
      * on the meet. */
-    if (sh < 0.0f) {
+    if (sh < 0.0f && run_vs_c0 >= 0.0f) {
         while (run_vs_shots < run_vs_shots_n &&
-               t >= VS_C0 + (float)(2u + (3u - run_vs_shots_n) + run_vs_shots) * VS_STEP) {
+               t >= run_vs_c0 + (float)(2u + (3u - run_vs_shots_n) + run_vs_shots) * VS_STEP) {
             if (moa_vs_sound_shot(run_vs_shots + 1u == run_vs_shots_n)) psx_mod_counter_add("moa.run.vs_shot", 1);
             run_vs_shots++;
         }
@@ -5216,8 +5263,9 @@ static void run_vs_frame(void)
     v.mini = run_vs_mini; v.mini_n = run_vs_mini_n;
     v.belt = run_vs_belt; v.band = run_vs_band;
     v.t = t;
-    v.count = (sh < 0.0f && t >= VS_C0) ? 5 - (int)((t - VS_C0) / VS_STEP) : 0;
+    v.count = (sh < 0.0f && run_vs_c0 >= 0.0f && t >= run_vs_c0) ? 5 - (int)((t - run_vs_c0) / VS_STEP) : 0;
     if (v.count < 1) v.count = 0;
+    v.standby = sh < 0.0f && (run_vs_c0 < 0.0f || t < run_vs_c0);
     v.shutter = sh;
     v.black = sh < 0.0f ? 0.0f : (sh - VS_FADE_AT) / VS_FADE_LEN;
     if (v.black < 0.0f) v.black = 0.0f;
@@ -5330,6 +5378,7 @@ static void run_loading_screen_entry(struct CPUState *cpu, uint32_t address)
     (void)cpu; (void)address;
     if (!run_on()) return;
     if (run_at_hub && !run_autopilot) run_music_fight = 1;   /* the game's own fight music from here */
+    run_vs_loading();
     if (run_hx) {
         run_log("hub overlay: released at the game's loading screen");
         run_hx_close();

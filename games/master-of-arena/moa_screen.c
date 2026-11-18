@@ -1733,6 +1733,10 @@ const uint32_t *moa_screen_render_vs(int win_w, int win_h, const struct moa_scre
         snprintf(s, sizeof s, "%d", v->count);
         text(buf, NULL, s, cx, 322 + 40, 5, gold);
     }
+    else if (v->standby) {                           /* waiting on the load: a slow pulse */
+        const float k = 0.55f + 0.45f * (0.5f + 0.5f * sinf(v->t * 3.0f));
+        text(buf, NULL, "STANDBY", cx, 322 + 40, 3, rgb((int)(255 * k), (int)(200 * k), (int)(80 * k)));
+    }
     if (v->shutter >= 0.0f) vs_shutters(buf, W, v->shutter, band);
     if (v->black > 0.0f) {
         const uint32_t a = (uint32_t)((v->black > 1.0f ? 1.0f : v->black) * 255.0f);

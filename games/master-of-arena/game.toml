@@ -85,6 +85,8 @@ mod_function_entry_funcs = [
     "0x800633A4", "0x800BA64C", "0x800C0E7C", "0x800822B0",
     # boot trace, from the boot chat's boot-loads.md: model, sound bank, card screen's finish
     "0x80057F74", "0x80058700", "0x8005CE68",
+    # Rogue Arena music (moa_music.cpp): the menu song's start
+    "0x80064F24",
 ]
 
 # Instruction hooks of the game's plugins (psxrecomp/runtime/src/

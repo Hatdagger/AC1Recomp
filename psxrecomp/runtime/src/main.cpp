@@ -2862,6 +2862,10 @@ static void sdl_drc_callback(void* /*user*/, Uint8* stream, int len) {
     if (!s_drc_ready) { std::memset(stream, 0, (size_t)len); return; }
     int frames = len / (int)(2 * sizeof(int16_t)); /* stereo S16 */
     rab_pull(&s_drc, reinterpret_cast<int16_t*>(stream), frames);
+    /* Host music (mods): on the device's clock, so it plays through loads,
+     * fast forward and the turbo mute (mod_host_music.c). */
+    psx_host_music_mix(reinterpret_cast<int16_t*>(stream), frames,
+                       g_audio_host_rate, host_volume_get());
     /* T3 tap in bridge mode: the exact device-rate bytes the host consumes.
      * This callback is the tap's single writer while the bridge is active. */
     audio_trace_pcm(AUDIO_TAP_HOST, reinterpret_cast<const int16_t*>(stream),
@@ -4221,6 +4225,7 @@ static void shutdown_runtime(void) {
         sdl_audio_device = 0;
     }
     if (s_drc_ready) { rab_free(&s_drc); s_drc_ready = false; }
+    psx_mod_music_stop(0);   /* a mod's music never outlives its session */
     close_controller();
     debug_server_shutdown();
     host_sampler_stop();
@@ -4239,6 +4244,7 @@ static void teardown_game_session_keep_lobby(void) {
         sdl_audio_device = 0;
     }
     if (s_drc_ready) { rab_free(&s_drc); s_drc_ready = false; }
+    psx_mod_music_stop(0);   /* a mod's music never outlives its session */
     close_controller();
     if (g_vk_active) {
         vk_renderer_shutdown();
@@ -4404,6 +4410,9 @@ static void sdl_audio_pump(bool discard_output = false) {
         }
     }
     if (legacy) {
+        /* Host music (mods); the push model only feeds while the game's
+         * audio is pumped, so it pauses with the turbo mute here. */
+        psx_host_music_mix(sdl_audio_buf, frames, 44100, host_volume_get());
         /* T3 tap: the exact post-fade bytes handed to the host audio queue. */
         audio_trace_pcm(AUDIO_TAP_HOST, sdl_audio_buf, frames);
         psx_sdl_audio_queue(sdl_audio_device, sdl_audio_buf, (uint32_t)frames * bytes_per_frame);

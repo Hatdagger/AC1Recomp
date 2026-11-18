@@ -285,6 +285,24 @@ int psx_mod_spu_private_voice_play(unsigned slot,uint32_t bank,const uint16_t re
 void psx_mod_spu_private_voice_stop(uint32_t mask);
 int psx_mod_spu_private_voice_volume(unsigned slot,uint16_t left,uint16_t right);
 uint32_t psx_mod_spu_private_voice_active(void);
+/* Host music channel for offline title mods (mod_host_music.c): a stereo
+ * 16-bit PCM track mixed into the speakers on the audio device's own clock,
+ * after the game's sound and at the player's volume. It touches no emulated
+ * state (no SPU, RAM or guest time), so it keeps playing through loads, fast
+ * forward, the turbo mute and stalls, and savestates, rewind and netplay never
+ * see it. play() copies `frames` interleaved L/R frames at `rate` Hz
+ * (8000..192000); at the end it goes back to frame `loop_start` (frames or
+ * more: play once). A track already playing fades out over fade_ms while the
+ * new one fades in. Any thread. Returns 0 on bad input or no memory. */
+int psx_mod_music_play(const int16_t *pcm, uint32_t frames, uint32_t rate,
+                       uint32_t loop_start, uint32_t fade_ms);
+void psx_mod_music_stop(uint32_t fade_ms);
+/* The channel's level, 0..1000 (start 1000), reached over fade_ms. */
+void psx_mod_music_level(uint32_t permille, uint32_t fade_ms);
+/* 1 while a track is audible (until a stop or crossfade has faded it out). */
+int psx_mod_music_active(void);
+/* Host side: the audio output adds the channel to its buffer. */
+void psx_host_music_mix(int16_t *out, int frames, int rate, int volume_pct);
 /* PsyQ LoadImage completed synchronously: texture-cache flush, GP0 A0h
  * rectangle copy of w*h 16-bit pixels from guest RAM (provenance attributed
  * per word), then GP1(04h) DMA direction CPU->GP0 for uploads the library

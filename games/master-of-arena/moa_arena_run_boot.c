@@ -42,6 +42,7 @@
 #include "moa_hub_rank_bg.h"
 #include "moa_ac_view.h"
 #include "moa_chime.h"
+#include "moa_music.h"
 #include "moa_screen.h"
 #include "moa_run_record.h"
 #include "moa_boot_trace.h"
@@ -370,7 +371,7 @@ static uint32_t run_back_start;
 static int run_stage;
 static uint32_t run_newgame_seen;          /* run_frames when that menu last ran */
 static int run_result_seen;                /* this fight's result is booked */
-static uint32_t run_pay;                   /* what the next payout pays: 1 on a new win, else 0 */
+static uint32_t run_pay;                   /* 1: the next payout follows a new win (it pays 0 now) */
 static int run_prize_paid;                 /* a new win was just paid: its prize may open now */
 static int run_save_pending;               /* a win waits for the autosave */
 static unsigned run_win_screen;            /* booked wins waiting for the arena screen (P, restock) */
@@ -419,6 +420,17 @@ static uint32_t run_end_frames;
 static uint16_t run_end_held;
 static int run_overlay_up(void);
 static void run_pad_lock(void);
+/* Boot black screen: from the menu's start until the player has control
+ * (the hub overlay is up), so the hub never shows half-built during the
+ * boot. Locks the controls once the run has handed over. */
+static int run_boot_black;                 /* 0 off, 1 overlay picture, 2 loading-screen fallback */
+/* Music (moa_music.cpp): a fight is loading or running (the game's music). */
+static int run_music_fight;
+static void run_boot_black_up(void);
+/* The direct boot started the menu song: no fast forward, so it is heard. */
+static int run_boot_music;
+static void run_log(const char *fmt, ...);
+static uint32_t run_boot_black_frames, run_boot_black_after;
 /* Overlay hub (step 1; see "overlay hub" near the end of the file). */
 static int run_hx;                         /* 0 off, 1 menu, 2 stage list, 3 next battle under way */
 static int run_hx_off;                     /* O: the game's own hub until the player leaves it */
@@ -493,6 +505,7 @@ static void run_backdrop_frame(void);
 #define RUN_SS_KEYON         0x800227D4u
 #define RUN_MENU_VAB         0x801B1A80u
 #define RUN_LOADING_SCREEN   0x80012348u  /* exe: the loading picture before an engine */
+#define RUN_MUSIC_START      0x80064F24u  /* menu: the menu song's start (moa_music.cpp) */
 enum { RUN_SE_BACK = 0, RUN_SE_CURSOR = 1, RUN_SE_OK = 2 };
 static int run_se_queue = -1;
 static uint32_t run_se_age;               /* frames queued; dropped after a few (no menu running) */
@@ -558,6 +571,10 @@ static void run_check_session(void)
     run_victory_ready = 0;
     run_victory_hold = 0;
     run_end_frames = 0;
+    run_boot_black = 0;
+    run_boot_black_frames = run_boot_black_after = 0;
+    run_music_fight = run_boot_music = 0;
+    moa_music_reset(run_log);
     run_end_held = 0xFFFFu;
     run_sent = run_told = 0;
     run_fixes = 0;
@@ -681,6 +698,8 @@ static void run_menu_entry(struct CPUState *cpu, uint32_t address)
     run_check_session();
     run_enabled = -1;
     if (!run_on() || psx_mod_read_word(address) != RUN_SIG_MENU_ENTRY) return;
+    run_music_fight = 0;
+    moa_music_menu_entry();                   /* the menu clears its song's flag here */
     if (run_at_hub) {                         /* already handed over: a fight is over */
         if (run_state_ok && !run_state.run.over && !run_cover) {
             run_cover = 1;
@@ -699,6 +718,7 @@ static void run_menu_entry(struct CPUState *cpu, uint32_t address)
     run_ticks = run_frames = 0;
     run_stage = STAGE_TITLE;
     run_set_ff(1);
+    run_boot_black_up();
     psx_mod_counter_add("moa.run.boot", 1);
     run_log("boot: menu reached, autopilot on");
 }
@@ -780,6 +800,13 @@ static int run_direct_boot(struct CPUState *cpu)
         (void)psx_mod_call_guest(cpu, k_run_d_scenario[i], ra, 0, 0, 0, 0);
     for (uint32_t i = 0; i < 8u; i++) psx_mod_write_byte(RUN_D_PLUS + i, 0);
     (void)psx_mod_call_guest(cpu, RUN_D_TASKS_CLEAR, ra, 2, 0, 0, 0);
+    /* The menu song now, so it plays through the rest of the boot (the hub
+     * open's own start is then skipped, moa_music_start_filter). Without fast
+     * forward from here: under it the sound is muted. */
+    if (moa_music_boot_start(cpu, ra)) {
+        run_boot_music = 1;
+        psx_mod_request_fast_forward(0);
+    }
     (void)psx_mod_call_guest(cpu, RUN_D_PICTURES, ra, 4, 0, 0, 0);
     (void)psx_mod_call_guest(cpu, RUN_D_PICTURES, ra, 4, 1, 0, 0);
     (void)psx_mod_call_guest(cpu, RUN_D_PICTURES, ra, 4, 4, 0, 0);
@@ -990,6 +1017,10 @@ static int run_keyon_filter(struct CPUState *cpu, uint32_t address)
 static void run_menu_input_entry(struct CPUState *cpu, uint32_t address)
 {
     run_idle = 0;
+    if (run_on()) {
+        const uint32_t w = psx_mod_read_word(address);
+        if (w == RUN_SIG_INPUT_A || w == RUN_SIG_INPUT_B) moa_music_menu_frame(cpu);
+    }
     if (run_overlay_up() && run_on()) {
         const uint32_t w = psx_mod_read_word(address);
         if (w != RUN_SIG_INPUT_A && w != RUN_SIG_INPUT_B) return;
@@ -1720,8 +1751,8 @@ static uint8_t run_rank_now(uint32_t st)
 static void run_autosave(struct CPUState *cpu)
 {
     if (!run_save_pending) return;
-    /* The win's 1 P comes with the game's payout: save once it is paid (or
-     * after about 5 s of arena screen, should the payout never run). */
+    /* Save once the game's payout state has run (it now pays 0; the win's
+     * 1 P is already in the credits), or after about 5 s of arena screen. */
     if (run_pay_due && ++run_pay_wait < 300u) return;
     run_pay_due = 0;
     run_save_pending = 0;
@@ -1919,14 +1950,15 @@ static void run_result_entry(struct CPUState *cpu, uint32_t address)
     }
     (void)run_book_win(who, "arena screen");             /* nothing if the fight booked it */
     if (!run_win_screen) return;
-    /* The game's prize screen pays this win's 1 P. Any other P not yet in the
-     * credits (a win booked in a fight that never reached this screen) is
-     * added here. Added, never set: the credits are what shopping left. */
+    /* This win's 1 P, and any other P not yet in the credits (a win booked in
+     * a fight that never reached this screen), go straight into the credits:
+     * the game's payout pays 0, so its money window never shows. Added, never
+     * set: the credits are what shopping left. */
     run_win_screen = 0;
     struct moa_run_progress *r = &run_state.run;
     const uint32_t owed = r->points > r->p_paid ? (uint32_t)(r->points - r->p_paid) : 1u;
     const uint32_t credits = psx_mod_read_word(RUN_CREDITS);
-    psx_mod_write_word(RUN_CREDITS, credits + owed - 1u);
+    psx_mod_write_word(RUN_CREDITS, credits + owed);
     r->p_paid = r->points;
     (void)moa_run_save(run_file_path(), &run_state);
     run_pay = 1;
@@ -1943,9 +1975,10 @@ static void run_result_entry(struct CPUState *cpu, uint32_t address)
     }
 }
 
-/* The payout after a run fight: the game's prize screen shows and pays
- * run_pay (1 P on a new win, nothing on a refight), not arena 0's stock
- * money (which paid 20000). */
+/* The payout after a run fight. The win's 1 P is already in the credits
+ * (the result hook), so the game's payout pays 0: money 0 skips its "C"
+ * window (docs/mapping/arena-prizes.md), and the run's records carry no part
+ * prize, so nothing shows. run_pay still says whether this was a new win. */
 static void run_payout_entry(struct CPUState *cpu, uint32_t address)
 {
     if (!run_on() || !run_at_hub || psx_mod_read_word(address) != RUN_SIG_PAYOUT) return;
@@ -1969,9 +2002,9 @@ static void run_payout_entry(struct CPUState *cpu, uint32_t address)
     /* A restock win: its picture now, over the arena screen (as a prize
      * does), instead of after the game's ~23 s result wait and the hub. */
     if (run_pay && run_state_ok && run_restock_win(run_state.run.wins)) run_restock_catch_up("arena screen");
-    psx_mod_write_word(tab + 8u * who, run_pay);
+    psx_mod_write_word(tab + 8u * who, 0u);
     run_pay_due = 0;
-    run_log("payout: %u (stock %u), credits %u", (unsigned)run_pay, (unsigned)was,
+    run_log("payout: window skipped, new win %u (stock %u), credits %u", (unsigned)run_pay, (unsigned)was,
             (unsigned)psx_mod_read_word(RUN_CREDITS));
     run_pay = 0;
 }
@@ -2848,7 +2881,7 @@ static int run_overlay_up(void)
     /* A booked loss locks the controls at once: the RUN OVER screen comes
      * RUN_LOSS_FRAMES later, and the game must not take presses meanwhile. */
     return run_show_on || run_prize_stage || run_end_stage || run_hx || run_cover ||
-           (run_state_ok && run_state.run.over);
+           (run_boot_black && !run_autopilot) || (run_state_ok && run_state.run.over);
 }
 
 static void run_pad_lock(void)
@@ -3605,6 +3638,7 @@ static void run_loading_screen_entry(struct CPUState *cpu, uint32_t address)
 {
     (void)cpu; (void)address;
     if (!run_on()) return;
+    if (run_at_hub && !run_autopilot) run_music_fight = 1;   /* the game's own fight music from here */
     if (run_hx) {
         run_log("hub overlay: released at the game's loading screen");
         run_hx_close();
@@ -3651,6 +3685,71 @@ static void run_disc_frame(void)
     run_log("disc: fast loading off from the hub on (the drive's real speed)");
 }
 
+/* ---- boot black screen (run_boot_black) ------------------------------------ */
+static void run_boot_black_draw(void)
+{
+    static const uint32_t k_black[8 * 8] = {
+        0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u,
+        0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u,
+        0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u,
+        0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u,
+        0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u,
+        0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u,
+        0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u,
+        0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u };
+    if (run_boot_black != 2 && psx_mod_set_overlay_image(k_black, 8, 8)) { run_boot_black = 1; return; }
+    run_boot_black = 2;                         /* this renderer can't overlay: the plain black screen */
+    psx_mod_set_loading_screen(" ", -1);
+}
+
+static void run_boot_black_up(void)
+{
+    if (run_boot_black) return;
+    run_boot_black_frames = run_boot_black_after = 0;
+    run_boot_black_draw();
+    run_log("boot: black screen up until the player has control");
+}
+
+/* Ends it. hand_on: another picture has taken the screen (leave it be). */
+static void run_boot_black_down(const char *why, int hand_on)
+{
+    if (!run_boot_black) return;
+    if (!hand_on) {
+        if (run_boot_black == 1) (void)psx_mod_set_overlay_image(NULL, 0, 0);
+        else if (!run_show_on) psx_mod_set_loading_screen(NULL, 0);
+    }
+    run_boot_black = 0;
+    run_log("boot: black screen down (%s, %u frames)", why, (unsigned)run_boot_black_frames);
+}
+
+static void run_boot_black_frame(void)
+{
+    if (!run_boot_black) return;
+    run_boot_black_frames++;
+    if (run_hx && run_hx_overlay) { run_boot_black_down("the hub overlay is up", 1); return; }
+    if (run_prize_stage || run_end_stage) { run_boot_black_down("a run screen took over", 1); return; }
+    if (run_show_on) { run_boot_black_down("the restock picture took over", 0); return; }
+    if (run_state_ok && run_state.run.over) { run_boot_black_down("the run is over", 0); return; }
+    if (run_at_hub && !run_autopilot && ++run_boot_black_after > RUN_SLOW(600u)) {
+        run_boot_black_down("the hub overlay did not open", 0);
+        return;
+    }
+    if (run_boot_black_frames > 60u * 120u) { run_boot_black_down("timed out", 0); return; }
+    if (run_boot_black == 2 || run_boot_black_frames % 30u == 0u) run_boot_black_draw();
+}
+
+/* What the music plays for (moa_music.h). */
+static int run_music_scene(void)
+{
+    if (!run_on()) return MOA_MUSIC_OFF;
+    if (run_autopilot || run_boot_black) return MOA_MUSIC_BOOT;   /* until the player has control */
+    if (!run_at_hub) return MOA_MUSIC_OFF;
+    if (run_music_fight) return MOA_MUSIC_FIGHT;
+    if (run_state_ok && run_state.run.over) return MOA_MUSIC_LOSS;
+    if (run_cover && run_victory_hold) return MOA_MUSIC_VICTORY;
+    return MOA_MUSIC_HUB;
+}
+
 static void run_frame_hook(void)
 {
     run_check_session();
@@ -3677,7 +3776,12 @@ static void run_frame_hook(void)
     if (run_loss_wait) run_loss_wait--;      /* the return itself is made in a guest hook */
     run_end_frame();
     run_hx_frame();
+    run_boot_black_frame();
     run_cover_frame();
+    {
+        const unsigned wins = run_state.run.wins < MOA_RUN_SLOTS ? run_state.run.wins : MOA_RUN_SLOTS - 1u;
+        moa_music_frame(run_music_scene(), (int)(MOA_RUN_SLOTS - wins));
+    }
     if (run_autopilot && run_stage == STAGE_BACK) {
         if (++run_frames - run_back_start >= (run_direct ? RUN_DIRECT_HOLD : RUN_BACK_FRAMES))
             run_finish_handover();
@@ -3685,7 +3789,7 @@ static void run_frame_hook(void)
         return;
     }
     if (run_autopilot) {
-        if (!psx_mod_fast_forward_requested()) psx_mod_request_fast_forward(1);
+        if (!run_boot_music && !psx_mod_fast_forward_requested()) psx_mod_request_fast_forward(1);
         const uint32_t f = run_frames++;
         int permille = (int)(f * 1000u / (RUN_HUB_TIMEOUT / 3u));
         if (permille > 950) permille = 950;
@@ -3736,5 +3840,6 @@ PSX_MOD_CONSTRUCTOR(moa_arena_run_boot_register)
     (void)psx_game_register_offline_instruction(RUN_A0_FLIP, RUN_A0_FLIP_I, run_a0_flip);
     (void)psx_game_register_offline_function_entry(RUN_LOADING_SCREEN, run_loading_screen_entry);
     (void)psx_game_register_offline_function_filter(RUN_SS_KEYON, run_keyon_filter);
+    (void)psx_game_register_offline_function_filter(RUN_MUSIC_START, moa_music_start_filter);
     mod_register_frame_hook(run_frame_hook);
 }

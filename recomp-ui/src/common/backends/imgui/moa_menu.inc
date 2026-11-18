@@ -1665,6 +1665,16 @@ static void draw(LauncherModel* m, const LauncherTheme& th) {
         case LNG_VIEW_NETPLAY:      draw_net_rooms(m, g, in); break;
         case LNG_VIEW_LOBBY:        draw_lobby_page(m, th, g, in); break;
         default: {
+            /* Back from a Rogue Arena game whose loss screen picked Retry or
+             * New Arena: to the run page, which carries it out. */
+            if (!m->in_session && g_run_next_poll) {
+                g_run_next_poll = false;
+                if (!g_state.run_page && run_next_waiting(m)) {
+                    g_state.ai_page = g_state.garage_page = g_state.extras_page = g_state.updates_page = false;
+                    g_start_page = false;
+                    g_state.run_page = true;
+                }
+            }
             if (g_state.ai_page && !m->in_session) draw_ai_page(m, g, in);
             else if (g_state.garage_page && !m->in_session) draw_garage_page(m, g, in);
             else if (g_state.extras_page && !m->in_session) draw_extras_page(m, g, in);

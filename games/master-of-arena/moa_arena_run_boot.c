@@ -404,7 +404,16 @@ static void run_log(const char *fmt, ...)
     fputc('\n', f);
     fclose(f);
 }
-static uint32_t run_loss_wait;             /* frames until the launcher reopens */
+static uint32_t run_loss_wait;             /* frames until the loss screen opens */
+/* After a loss: a choice over the game (RETRY ARENA, NEW ARENA, QUIT TO
+ * LAUNCHER). The pick goes to the launcher in "<run file>.next" ("retry" or
+ * "new"; none = just the launcher), which carries it out when it is back. */
+static int run_end_stage;                  /* 0 not up, 1 choosing, 2 picked: back to the launcher */
+static int run_end_cur, run_end_armed, run_end_overlay;
+static uint32_t run_end_frames;
+static uint16_t run_end_held;
+static int run_overlay_up(void);
+static void run_pad_lock(void);
 static int run_sent, run_told;
 static int run_fixes;
 
@@ -467,6 +476,9 @@ static void run_check_session(void)
     run_replay_state = 0;
     run_replay_t = 0;
     run_loss_wait = 0;
+    run_end_stage = run_end_cur = run_end_armed = run_end_overlay = 0;
+    run_end_frames = 0;
+    run_end_held = 0xFFFFu;
     run_sent = run_told = 0;
     run_fixes = 0;
     run_arena_at_builds = run_arena_at_ai = 0xFF;
@@ -842,6 +854,11 @@ static void run_direct_hub_frame(struct CPUState *cpu);
 
 static void run_menu_input_entry(struct CPUState *cpu, uint32_t address)
 {
+    if (run_overlay_up() && run_on()) {
+        const uint32_t w = psx_mod_read_word(address);
+        if (w == RUN_SIG_INPUT_A || w == RUN_SIG_INPUT_B) run_pad_lock();
+        return;
+    }
     if (run_to_hub == TOHUB_PRESSING && run_to_hub_o && !run_autopilot && run_on()) {
         const uint32_t w = psx_mod_read_word(address);
         if (w == RUN_SIG_INPUT_A || w == RUN_SIG_INPUT_B) {
@@ -1610,6 +1627,7 @@ static void run_book_loss(const char *where)
 static void run_maybe_return(void)
 {
     if (!run_state.run.over || run_loss_wait) return;
+    if (run_end_stage != 2) return;            /* the loss screen's choice first */
     if (run_sent) return;
     run_sent = 1;
     psx_mod_counter_add("moa.run.over", 1);
@@ -2317,6 +2335,7 @@ static void run_sampler_entry(struct CPUState *cpu, uint32_t address)
         }
     }
     run_replay_skip();
+    if (run_overlay_up()) run_pad_lock();         /* an overlay is up: the fight sees nothing pressed */
     const uint16_t b = psx_mod_read_half(RUN_PAD_BUFFER + 2u);
     if (!(b & RUN_PAD_SELECT)) {                  /* held (active low) */
         psx_mod_write_half(RUN_PAD_BUFFER + 2u, (uint16_t)(b | RUN_PAD_SELECT));
@@ -2555,6 +2574,99 @@ static void run_watch_dump(void)
     run_log("hang watch: RAM%s written beside the run file (.hang-%s)", v ? " and VRAM" : "", tag);
 }
 
+/* Any Rogue Arena screen over the game (restock, prize, loss): the game
+ * sees no buttons. Called from the frame hook and from the game's own
+ * controller sampling (menus and fights), so no press slips through between
+ * the two. */
+static int run_overlay_up(void)
+{
+    return run_show_on || run_prize_stage || run_end_stage;
+}
+
+static void run_pad_lock(void)
+{
+    psx_mod_write_half(RUN_PAD_BUFFER + 2u, 0xFFFFu);            /* raw pad: nothing held */
+    if (!run_autopilot) psx_mod_write_word(RUN_D_PAD + 0x18u, 0u); /* menu: no new presses */
+}
+
+static const char *const k_run_end_label[3] = { "RETRY ARENA", "NEW ARENA", "QUIT TO LAUNCHER" };
+
+static int run_end_draw(void)
+{
+    char title[40], line[64];
+    const unsigned wins = run_state.run.wins;
+    snprintf(title, sizeof title, "RUN OVER  RANK %u", (unsigned)(MOA_RUN_SLOTS - (wins < MOA_RUN_SLOTS ? wins : 0u)));
+    snprintf(line, sizeof line, run_end_cur == 0 ? "SAME 49 OPPONENTS, A NEW AC, 0 P" :
+             run_end_cur == 1 ? "A NEW SEED: NEW OPPONENTS AND A NEW AC" : "BACK TO THE ROGUE ARENA PAGE");
+    int ww = 0, wh = 0, w = 0, h = 0;
+    psx_mod_window_size(&ww, &wh);
+    for (int pass = 0; pass < 2; pass++) {
+        const int see = pass == 0;
+        const uint32_t *px = moa_screen_render_choice(ww, wh, title, line, k_run_end_label, 3, run_end_cur,
+                                                      "UP / DOWN  CHOOSE     X  OK", see, &w, &h);
+        if (!px) return 0;
+        if (see && psx_mod_set_overlay_image(px, w, h)) { run_end_overlay = 1; return 1; }
+        if (!see) {
+            run_end_overlay = 0;
+            psx_mod_set_loading_screen("ROGUE ARENA  Run over", -1);
+            psx_mod_set_loading_image(px, w, h);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void run_end_pick(int pick)
+{
+    run_end_stage = 2;
+    char p[1100];
+    snprintf(p, sizeof p, "%s.next", run_file_path() ? run_file_path() : "");
+    if (pick == 2) remove(p);
+    else {
+        FILE *f = fopen(p, "wb");
+        if (f) { fputs(pick == 0 ? "retry\n" : "new\n", f); fclose(f); }
+    }
+    (void)psx_mod_set_overlay_image(NULL, 0, 0);
+    psx_mod_set_loading_screen("ROGUE ARENA  Back to the launcher", -1);
+    psx_mod_counter_add(pick == 0 ? "moa.run.end_retry" : pick == 1 ? "moa.run.end_new" : "moa.run.end_quit", 1);
+    run_log("loss screen: %s", k_run_end_label[pick]);
+}
+
+/* Per frame once the run is lost. */
+static void run_end_frame(void)
+{
+    if (!run_state_ok || !run_state.run.over || run_loss_wait || run_sent) return;
+    if (run_end_stage == 0) {
+        if (!run_show_font() || !run_end_draw()) {    /* no screen: straight back, as before */
+            run_log("loss screen: could not be drawn, back to the launcher");
+            run_end_stage = 2;
+            return;
+        }
+        run_end_stage = 1;
+        run_end_cur = 0;
+        run_end_armed = 0;
+        run_end_frames = 0;
+        run_end_held = 0xFFFFu;
+        run_log("loss screen: up%s", run_end_overlay ? "" : " (loading picture)");
+        return;
+    }
+    if (run_end_stage != 1) return;
+    run_pad_lock();
+    if (!run_end_overlay) psx_mod_set_loading_screen("ROGUE ARENA  Run over", -1);
+    const uint16_t b = psx_mod_host_pad_buttons(0);          /* active low */
+    const uint16_t down = (uint16_t)(run_end_held & ~b);
+    run_end_held = b;
+    run_end_frames++;
+    if (b == 0xFFFFu) run_end_armed = 1;
+    if (!run_end_armed || run_end_frames < 20u || !down) return;
+    if (down & (RUN_PAD_UP | RUN_PAD_DOWN)) {
+        run_end_cur = (run_end_cur + ((down & RUN_PAD_UP) ? 2 : 1)) % 3;
+        (void)run_end_draw();
+    } else if (down & (RUN_PAD_X | RUN_PAD_START)) {
+        run_end_pick(run_end_cur);
+    }
+}
+
 static void run_frame_hook(void)
 {
     run_check_session();
@@ -2571,6 +2683,7 @@ static void run_frame_hook(void)
         run_ghost_save(run_ghost_beaten[--run_ghost_beaten_n]);
     run_prize_frame();
     if (run_loss_wait) run_loss_wait--;      /* the return itself is made in a guest hook */
+    run_end_frame();
     if (run_autopilot && run_stage == STAGE_BACK) {
         if (++run_frames - run_back_start >= (run_direct ? RUN_DIRECT_HOLD : RUN_BACK_FRAMES))
             run_finish_handover();

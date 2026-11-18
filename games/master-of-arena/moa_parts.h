@@ -57,6 +57,9 @@ int moa_record_cat(int byte);
 /* The builder's rules on a 13-byte card record: weapon arms empty the hands,
  * caterpillar legs drop the booster, options limited to the 12 parts. */
 void moa_build_normalise(uint8_t rec[13]);
+/* moa_build_normalise plus the garage's fitting rules (two-slot back units,
+ * arms that carry no back weapons, the heavy hand weapon, caterpillar radars). */
+void moa_build_fit(uint8_t rec[13]);
 
 struct moa_build_check {
     int weight, ap, def_shell, def_energy;

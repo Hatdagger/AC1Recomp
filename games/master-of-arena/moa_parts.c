@@ -138,6 +138,32 @@ void moa_build_normalise(uint8_t rec[13])
     rec[11] &= 0x0F;                                                  /* 12 option bits */
 }
 
+/* The garage's fitting rules (menu equip handler 0x800865B4 and DATA LOAD
+ * fix-ups 0x80089514 / 0x80089750; Armored-CoreR acr_gen1_fit.c and
+ * docs/research/gen1-fitting-rules.md), on a whole record. Ids are the
+ * record's part ids: back 52 and up use both back slots, arms 5 (ANKS-1A46J)
+ * carry no back weapons (back < 40 or 53), hand 15 (WG-1-KARASAWA) needs
+ * legs that can hold it, caterpillars lose the booster and five radars. */
+void moa_build_fit(uint8_t rec[13])
+{
+    moa_build_normalise(rec);
+    uint8_t *bl = &rec[6], *br = &rec[7];
+    if (*bl != 255 && *bl >= 52) *br = 255;          /* a two-slot unit: the other side stays empty */
+    else if (*br != 255 && *br >= 52) *bl = 255;
+    if (rec[2] == 5) {                                /* ANKS-1A46J */
+        if (*bl != 255 && (*bl < 40 || *bl == 53)) *bl = 255;
+        if (*br != 255 && (*br < 40 || *br == 53)) *br = 255;
+    }
+    const uint8_t legs = rec[3];
+    const int no_heavy = legs == 5 || (legs >= 21 && legs <= 24) || legs == 26 || legs == 27 ||
+                         legs == 28 || (legs >= 30 && legs <= 32);
+    if (rec[4] == 15 && no_heavy) rec[4] = 255;
+    if (legs != 255 && legs >= 27) {
+        for (int s = 6; s <= 7; s++)
+            if (rec[s] == 40 || rec[s] == 41 || rec[s] == 42 || rec[s] == 44 || rec[s] == 46) rec[s] = 255;
+    }
+}
+
 void moa_build_check(const struct moa_parts *p, const uint8_t rec[13], int plus,
                      struct moa_build_check *t)
 {

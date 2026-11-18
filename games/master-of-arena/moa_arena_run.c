@@ -318,7 +318,7 @@ int moa_run_start_ac(const struct moa_parts *p, uint64_t seed, uint8_t rec[13])
                 continue;
             rec[b] = p->part[cat][moa_run_below(&rng, (uint32_t)n)].id;
         }
-        moa_build_normalise(rec);
+        moa_build_fit(rec);                           /* the garage's rules: no two-slot unit beside another */
         moa_run_game_hand(rec);                       /* never the NO WEAPON row */
         const int armed = rec[4] != 255 || rec[5] != 255 || rec[6] != 255 ||
                           rec[7] != 255 || (rec[2] >= 12 && rec[2] != 255);

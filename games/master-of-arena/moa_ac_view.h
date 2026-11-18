@@ -41,6 +41,12 @@ typedef struct moa_acv moa_acv;
 moa_acv *moa_acv_load(const char *dir, const uint8_t rec[13], const uint8_t paint[48]);
 void moa_acv_free(moa_acv *v);
 
+/* The AC's emblem on its emblem plate (left shoulder; both sides of the
+ * two-slot back units), as the game shows it: 16 colours (15-bit BGR, 0x0000
+ * see-through) and a 64x64 colour index per pixel, as struct moa_card holds
+ * it. Without an emblem (or with NULL) the plate is not drawn. */
+void moa_acv_set_emblem(moa_acv *v, const uint16_t palette[16], const uint8_t index[64 * 64]);
+
 /* Draw into `rgba` (w x h, 4 bytes a pixel, rows top first). `yaw` turns the
  * AC (radians, 0 = facing the viewer), `pitch` tilts the view, `time` (s)
  * plays the standing animation. The background is left transparent. */

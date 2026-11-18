@@ -372,6 +372,18 @@ static uint32_t run_pay;                   /* what the next payout pays: 1 on a 
 static int run_prize_paid;                 /* a new win was just paid: its prize may open now */
 static int run_save_pending;               /* a win waits for the autosave */
 static unsigned run_win_screen;            /* booked wins waiting for the arena screen (P, restock) */
+static uint8_t run_win_told = 0xFF;        /* last entry run_book_win logged (booked or skipped) */
+/* After a win that restocks the shop, back to the hub (where the restock is
+ * shown and the Shop is one press away) instead of staying on the arena
+ * screen: once the result is applied and saved, O is pressed for the player
+ * (the arena screen's own way out) until the hub is back. */
+enum { TOHUB_NONE = 0, TOHUB_ARMED, TOHUB_PRESSING };
+static int run_to_hub;
+static uint32_t run_to_hub_frames;         /* arena-screen frames spent pressing */
+static int run_to_hub_o;                   /* O down this frame */
+static int run_to_hub_sampled;             /* the menu's controller hook took the press */
+#define RUN_TOHUB_PAD_FROM   120u          /* no hub yet: press through the menu's pad block too */
+#define RUN_TOHUB_GIVE_UP    600u
 
 /* A plain log beside the run file (<run file>.log), for test reports: the
  * mod counters are only visible through the debug server. */
@@ -403,6 +415,8 @@ static int run_fixes;
 static int run_watch_phase;               /* 0 off, 1 loading a fight, 2 after a fight */
 static uint32_t run_watch_count;
 static unsigned run_watch_dumps;
+static char run_watch_stamp[24];          /* this session's start time, for dump names */
+static uint32_t run_irq_again;            /* frames until the second interrupt snapshot; 0 = none */
 
 static void run_watch(int phase)
 {
@@ -415,6 +429,10 @@ static uint8_t run_arena_at_builds = 0xFF, run_arena_at_ai = 0xFF;
 
 static void run_prize_reset(void);
 static void run_reconcile(void);
+static int run_prize_where;               /* defined with the prize picks below */
+static int run_replay_state;              /* replay skip: 0 none, 1 START sent, 2 ran on after it */
+static uint32_t run_replay_t;
+static void run_replay_over(const char *where);
 /* Ghosts beaten in a fight, saved as cards once the arena screen is back. */
 static uint8_t run_ghost_beaten[8];
 static unsigned run_ghost_beaten_n;
@@ -442,6 +460,12 @@ static void run_check_session(void)
     run_pay = 0;
     run_save_pending = 0;
     run_win_screen = 0;
+    run_win_told = 0xFF;
+    run_to_hub = TOHUB_NONE;
+    run_to_hub_frames = 0;
+    run_to_hub_o = run_to_hub_sampled = 0;
+    run_replay_state = 0;
+    run_replay_t = 0;
     run_loss_wait = 0;
     run_sent = run_told = 0;
     run_fixes = 0;
@@ -449,6 +473,9 @@ static void run_check_session(void)
     run_direct = run_direct_press = 0;
     run_watch_phase = 0;
     run_watch_count = 0;
+    run_watch_dumps = 0;
+    run_watch_stamp[0] = 0;
+    run_irq_again = 0;
     run_direct_failed = 0;
     run_direct_hub_due = 0;
     run_direct_hub_wait = 0;
@@ -476,6 +503,46 @@ static void run_set_ff(int on)
 
 /* The run's AC into the garage: the card record's 13 bytes in the versus
  * player's order (as moa_card_parts in moa_ai_battle.c). */
+/* Arena 0's progress in RAM, as LOAD unpacks the save (+3276 -> 0x8004B568):
+ * beaten flags at save +3386 + the arena's start (0 for arena 0), the
+ * player's rank byte at +3553 + arena (docs/mapping/missions.md: 0x8004B67D,
+ * main-arena rank). */
+#define RUN_A0_BEATEN        0x8004B5D6u
+#define RUN_A0_RANK          0x8004B67Du
+
+/* A win booked in the fight but never shown on the arena screen (a hang, or
+ * the window closed) is in the run file but not on the run card: the game
+ * would offer that opponent again and the win would be skipped. So on load
+ * the game's flags and rank are set to match the run file. */
+static void run_sync_arena(void)
+{
+    if (!run_state_ok || run_state.run.over) return;
+    unsigned fixed = 0;
+    char ids[MOA_RUN_SLOTS * 4 + 1];
+    ids[0] = 0;
+    for (unsigned who = 0; who + 1u < MOA_RUN_SLOTS; who++) {
+        if (!(run_state.run.beaten[who >> 5] & (1u << (who & 31u)))) continue;
+        if (psx_mod_read_byte(RUN_A0_BEATEN + who) == 1u) continue;
+        psx_mod_write_byte(RUN_A0_BEATEN + who, 1u);
+        snprintf(ids + strlen(ids), sizeof ids - strlen(ids), " %u", who);
+        fixed++;
+    }
+    const unsigned wins = run_state.run.wins < MOA_RUN_SLOTS ? run_state.run.wins : MOA_RUN_SLOTS - 1u;
+    const uint8_t want = (uint8_t)(MOA_RUN_SLOTS - wins);
+    const uint8_t rank = psx_mod_read_byte(RUN_A0_RANK);
+    if (rank > want && rank <= MOA_RUN_SLOTS) {
+        psx_mod_write_byte(RUN_A0_RANK, want);
+        fixed++;
+    }
+    if (fixed) {
+        run_save_pending = 1;                    /* the card catches up at the next arena screen */
+        psx_mod_counter_add("moa.run.arena_synced", 1);
+    }
+    run_log("load: arena %s (card rank %u, run file rank %u%s%s)",
+            fixed ? "synced to the run file" : "matches the run file", (unsigned)rank, (unsigned)want,
+            ids[0] ? "; beaten flags set:" : "", ids);
+}
+
 static void run_apply_state(void)
 {
     /* The save carries the run; the run file is read for what comes next
@@ -483,13 +550,14 @@ static void run_apply_state(void)
     const char *path = run_file_path();
     run_state_ok = path && path[0] && moa_run_load(path, &run_state) == 1;
     if (!run_state_ok) psx_mod_counter_add("moa.run.file_missing", 1);
-    else run_reconcile();
+    else { run_reconcile(); run_sync_arena(); }
 }
 
 static void run_finish_handover(void)
 {
     run_autopilot = 0;
     run_at_hub = 1;
+    run_prize_where = 1;                       /* at the hub: a prize due may open (test 2 waited for the Shop) */
     run_apply_state();
     if (run_quiet()) {
         run_fade = 0;
@@ -774,6 +842,17 @@ static void run_direct_hub_frame(struct CPUState *cpu);
 
 static void run_menu_input_entry(struct CPUState *cpu, uint32_t address)
 {
+    if (run_to_hub == TOHUB_PRESSING && run_to_hub_o && !run_autopilot && run_on()) {
+        const uint32_t w = psx_mod_read_word(address);
+        if (w == RUN_SIG_INPUT_A || w == RUN_SIG_INPUT_B) {
+            psx_mod_write_half(RUN_PAD_BUFFER + 2u, (uint16_t)~RUN_PAD_CIRCLE);
+            if (!run_to_hub_sampled) {
+                run_to_hub_sampled = 1;
+                run_log("restock: O pressed through the menu's controller sampling");
+            }
+        }
+        return;
+    }
     if (!run_autopilot || !run_on()) return;
     const uint32_t w = psx_mod_read_word(address);
     if (w != RUN_SIG_INPUT_A && w != RUN_SIG_INPUT_B) return;
@@ -1446,9 +1525,17 @@ static void run_hub_entry(struct CPUState *cpu, uint32_t address)
     (void)cpu;
     if (!run_on() || psx_mod_read_word(address) != RUN_SIG_HUB_RESUME) return;
     if (run_watch_phase == 2) run_watch(0);       /* back at the hub */
+    run_replay_over("hub");
     if (run_state_ok && run_state.run.over) { run_loss_wait = 0; run_maybe_return(); return; }
     run_reach_hub("moa.run.hub_reached");
     run_prize_where = 1;
+    if (run_to_hub) {
+        run_log("restock: back at the hub (%s, %u frames)", run_to_hub == TOHUB_PRESSING ? "O pressed" :
+                "the player left first", (unsigned)run_to_hub_frames);
+        psx_mod_counter_add("moa.run.restock_to_hub", 1);
+        run_to_hub = TOHUB_NONE;
+        run_to_hub_o = 0;
+    }
     if (run_state_ok) {
         run_apply_prices();
         run_restock_catch_up("hub");
@@ -1540,9 +1627,18 @@ static int run_book_win(uint8_t who, const char *where)
     if (!run_state_ok || run_state.run.over || who >= MOA_RUN_SLOTS - 1u) return 0;
     uint32_t *word = &run_state.run.beaten[who >> 5];
     const uint32_t bit = 1u << (who & 31u);
-    if (*word & bit) return 0;                           /* already booked */
+    if (*word & bit) {                                   /* already booked */
+        if (run_win_told != who) {
+            run_win_told = who;
+            psx_mod_counter_add("moa.run.win_already_booked", 1);
+            run_log("win: entry %u already booked (%s), not counted again; wins %u", who, where,
+                    (unsigned)run_state.run.wins);
+        }
+        return 0;
+    }
     if (!moa_run_win(&run_state)) return 0;
     *word |= bit;
+    run_win_told = who;                                  /* the fight calls again every frame */
     run_win_screen++;
     {   /* a ghost: its card is saved at the arena screen (run_ghost_save) */
         const struct moa_run_pick p = run_state.lineup.slot[MOA_RUN_SLOTS - 1u - who];
@@ -1558,12 +1654,50 @@ static int run_book_win(uint8_t who, const char *where)
     return 1;
 }
 
+/* Is `wins` one of the restock milestones (5, 10 ... 45, 49)? */
+static int run_restock_win(unsigned wins)
+{
+    for (unsigned k = 0; k < RUN_RESTOCKS; k++) if (run_restock_wins(k) == wins) return 1;
+    return 0;
+}
+
+/* Each arena-screen frame once the result is applied: when a restock win's
+ * save is done and no prize is up or due, press O (3 frames in every 24)
+ * until the hub resume hook sees the hub. The press goes into the raw pad
+ * buffer from the menu's controller hook; if the hub isn't back after 2 s,
+ * also into the menu's own new-press word (as the direct boot's X). */
+static void run_to_hub_frame(void)
+{
+    run_to_hub_o = 0;
+    if (run_to_hub == TOHUB_ARMED) {
+        if (run_save_pending || run_prize_stage || run_prize_due() >= 0 || run_show_on) return;
+        run_to_hub = TOHUB_PRESSING;
+        run_to_hub_frames = 0;
+        run_log("restock: result saved, leaving the arena screen for the hub");
+    }
+    if (run_to_hub != TOHUB_PRESSING) return;
+    const uint32_t t = run_to_hub_frames++;
+    if (t >= RUN_TOHUB_GIVE_UP) {
+        run_to_hub = TOHUB_NONE;
+        psx_mod_counter_add("moa.run.restock_to_hub_failed", 1);
+        run_log("restock: the hub did not come back after %u frames of O; left to the player%s",
+                (unsigned)t, run_to_hub_sampled ? "" : " (the menu's controller hook never ran)");
+        return;
+    }
+    run_to_hub_o = (t % 24u) < 3u;
+    if (run_to_hub_o && t >= RUN_TOHUB_PAD_FROM) {
+        psx_mod_write_word(RUN_D_PAD + 0x18u, psx_mod_read_word(RUN_D_PAD + 0x18u) | RUN_PAD_CIRCLE);
+        psx_mod_write_word(RUN_D_PAD + 0x1Cu, psx_mod_read_word(RUN_D_PAD + 0x1Cu) & ~(uint32_t)RUN_PAD_CIRCLE);
+    }
+}
+
 /* A fight's result in the run's arena: a new win pays 1 P, a loss ends the
  * run (the file keeps it for Retry) and hands back to the launcher. */
 static void run_result_entry(struct CPUState *cpu, uint32_t address)
 {
     if (!run_on() || psx_mod_read_word(address) != RUN_SIG_RESULT) return;
     if (run_watch_phase == 2) run_watch(0);       /* back at the arena screen */
+    run_replay_over("arena screen");
     run_maybe_return();
     if (!run_at_hub || !run_state_ok) {
         if (psx_mod_read_byte(RUN_FIGHT_DONE) && !run_told) {
@@ -1576,6 +1710,7 @@ static void run_result_entry(struct CPUState *cpu, uint32_t address)
         run_result_seen = 0;
         run_prize_where = 1;                   /* the arena screen: prizes may open */
         run_autosave(cpu);                     /* the result is applied now */
+        run_to_hub_frame();
         return;
     }
     if (run_result_seen) return;
@@ -1622,6 +1757,12 @@ static void run_result_entry(struct CPUState *cpu, uint32_t address)
     run_log("win: credits %u + %u (P earned %u)", (unsigned)credits, (unsigned)owed,
             (unsigned)r->points);
     run_save_pending = 1;                                 /* restocks: at the hub (run_restock_catch_up) */
+    if (run_restock_win(r->wins)) {
+        run_to_hub = TOHUB_ARMED;
+        run_to_hub_frames = 0;
+        run_to_hub_o = run_to_hub_sampled = 0;
+        run_log("restock: win %u restocks the shop, back to the hub once the result is saved", (unsigned)r->wins);
+    }
 }
 
 /* The payout after a run fight: the game's prize screen shows and pays
@@ -2102,6 +2243,44 @@ static void run_log_fighters(void)
     }
 }
 
+/* Replay skip. The arena engine replays the fight after the result (replay
+ * flag 0x8003EA92 non-zero; the sampler runs then too, gen1-engine-map.md).
+ * The engine's replay code isn't mapped yet (FDAT 210), so this presses
+ * START once, a few samples in, the usual "skip" button, and the log says
+ * whether the replay ended right after (arena screen or hub reached) or ran
+ * on (then the player has it; no second press, in case START pauses). */
+#define RUN_REPLAY_FLAG      0x8003EA92u
+#define RUN_REPLAY_PRESS_AT  6u
+#define RUN_REPLAY_WATCH     150u
+static void run_replay_skip(void)
+{
+    if (!psx_mod_read_byte(RUN_REPLAY_FLAG)) return;
+    if (run_replay_state == 0) {
+        run_replay_state = 1;
+        run_replay_t = 0;
+        run_log("replay: started, START pressed to skip it");
+    }
+    const uint32_t t = run_replay_t++;
+    if (run_replay_state == 1 && t >= RUN_REPLAY_PRESS_AT && t < RUN_REPLAY_PRESS_AT + 3u)
+        psx_mod_write_half(RUN_PAD_BUFFER + 2u,
+                           (uint16_t)(psx_mod_read_half(RUN_PAD_BUFFER + 2u) & ~RUN_PAD_START));
+    if (run_replay_state == 1 && t == RUN_REPLAY_WATCH) {
+        run_replay_state = 2;
+        psx_mod_counter_add("moa.run.replay_not_skipped", 1);
+        run_log("replay: still running %u samples after START; left to the player", (unsigned)t);
+    }
+}
+
+/* Back on a menu screen: how the replay (if any) ended. */
+static void run_replay_over(const char *where)
+{
+    if (!run_replay_state) return;
+    if (run_replay_state == 1) psx_mod_counter_add("moa.run.replay_skipped", 1);
+    run_log("replay: over at the %s, %u samples after it started%s", where, (unsigned)run_replay_t,
+            run_replay_state == 1 ? " (skipped)" : "");
+    run_replay_state = 0;
+}
+
 static void run_sampler_entry(struct CPUState *cpu, uint32_t address)
 {
     (void)cpu;
@@ -2137,6 +2316,7 @@ static void run_sampler_entry(struct CPUState *cpu, uint32_t address)
             if (sum) run_log("record: %s", sum);
         }
     }
+    run_replay_skip();
     const uint16_t b = psx_mod_read_half(RUN_PAD_BUFFER + 2u);
     if (!(b & RUN_PAD_SELECT)) {                  /* held (active low) */
         psx_mod_write_half(RUN_PAD_BUFFER + 2u, (uint16_t)(b | RUN_PAD_SELECT));
@@ -2269,6 +2449,58 @@ static void run_ghost_save(uint8_t who)
  * and writes RAM + VRAM beside the run file (<run>.hang-<phase>.ram/.vram). */
 extern const uint16_t *gpu_get_vram(void);
 
+/* The runtime's interrupt counters (read only; psxrecomp interrupts.c and
+ * memory.c). Test 2's first hang: the game waited in the exe's VSync loop
+ * with VBlank pending (I_STAT 1) for 45 s while guest time ran on, so the
+ * interrupt was never taken. Two snapshots ~2 s apart show which delivery
+ * check keeps saying no (the counter that grows) without changing the
+ * runtime (psxrecomp/CLAUDE.md: runtime fixes need the oracle). */
+extern void psx_interrupt_delivery_diag(uint64_t *need_defer, uint64_t *need_irq, uint64_t *skip_none,
+                                        uint64_t *skip_sr, uint64_t *skip_cooldown, uint64_t *skip_nested);
+extern void psx_interrupt_check_path_diag(uint64_t *entry, uint64_t *fast_sr, uint64_t *fast_none,
+                                          uint64_t *mid, uint64_t *eval, uint64_t *irq_deliv);
+extern void psx_get_freeze_diag(uint64_t *out_total_checks, uint32_t *out_dispatch_count,
+                                int *out_in_exception, int *out_post_exc_cooldown,
+                                uint64_t *out_exc_entries, uint64_t *out_exc_reentry_blocks);
+extern uint64_t g_nestgate_depth, g_nestgate_rfepend, g_nestgate_escreason, g_nestgate_iec;
+extern uint64_t g_vblank_raise_count, g_vblank_deliver_count, g_vblank_ack_count;
+extern uint32_t i_stat, i_mask;
+
+#define RUN_IRQ_N 19
+static const char *const k_run_irq_name[RUN_IRQ_N] = {
+    "need_defer", "need_irq", "skip_none", "skip_sr", "skip_cooldown", "skip_nested",
+    "check_entry", "fast_sr", "fast_none", "checks", "eval", "irq_delivered",
+    "exc_entries", "exc_reentry_blocks", "vblank_raised", "vblank_delivered", "vblank_acked",
+    "nestgate_depth", "nestgate_iec" };
+static uint64_t run_irq_first[RUN_IRQ_N];
+
+static void run_irq_snap(uint64_t v[RUN_IRQ_N], int *in_exc, int *cooldown)
+{
+    uint32_t dispatch;
+    psx_interrupt_delivery_diag(&v[0], &v[1], &v[2], &v[3], &v[4], &v[5]);
+    psx_interrupt_check_path_diag(&v[6], &v[7], &v[8], &v[9], &v[10], &v[11]);
+    psx_get_freeze_diag(NULL, &dispatch, in_exc, cooldown, &v[12], &v[13]);
+    v[14] = g_vblank_raise_count; v[15] = g_vblank_deliver_count; v[16] = g_vblank_ack_count;
+    v[17] = g_nestgate_depth; v[18] = g_nestgate_iec;
+}
+
+/* first = 1: the values; else what changed since the first snapshot. */
+static void run_irq_log(int first)
+{
+    uint64_t v[RUN_IRQ_N];
+    int in_exc = 0, cooldown = 0;
+    run_irq_snap(v, &in_exc, &cooldown);
+    char line[1200];
+    int n = snprintf(line, sizeof line, "hang watch: interrupts %s: I_STAT %03x I_MASK %03x, in exception %d, "
+                     "cooldown %d cycles;", first ? "now" : "2 s later (change)",
+                     (unsigned)(i_stat & 0x7FFu), (unsigned)(i_mask & 0x7FFu), in_exc, cooldown);
+    for (int i = 0; i < RUN_IRQ_N && n > 0 && (size_t)n < sizeof line; i++)
+        n += snprintf(line + n, sizeof line - (size_t)n, " %s %llu", k_run_irq_name[i],
+                      (unsigned long long)(first ? v[i] : v[i] - run_irq_first[i]));
+    if (first) memcpy(run_irq_first, v, sizeof v);
+    run_log("%s", line);
+}
+
 static uint32_t run_watch_limit(void) { return run_watch_phase == 1 ? RUN_WATCH_LOAD : RUN_WATCH_FRAMES; }
 
 static void run_watch_dump(void)
@@ -2285,9 +2517,25 @@ static void run_watch_dump(void)
             (unsigned)psx_mod_read_byte(RUN_D_TITLE_FLAG), (unsigned)psx_mod_read_byte(RUN_D_TITLE_FLAG + 5u),
             run_prize_where, run_fixes);
     run_log("hang watch: last menu calls (frame:routine): %s", calls[0] ? calls : "none");
+    run_irq_log(1);
+    run_irq_again = 120u;
     psx_mod_counter_add("moa.run.hang_watch", 1);
     if (run_watch_dumps >= 3u || !run_file_path()) return;   /* 2 MB + 1 MB each: a few at most */
     run_watch_dumps++;
+    /* One name per hang: the session's start time and the frame, so a second
+     * hang (or the next session's) never writes over the first. */
+    char tag[64];
+    {
+        if (!run_watch_stamp[0]) {               /* cleared per session (run_check_session) */
+            const time_t now = time(NULL);
+            const struct tm *lt = localtime(&now);
+            if (!lt || !strftime(run_watch_stamp, sizeof run_watch_stamp, "%Y%m%d-%H%M%S", lt))
+                snprintf(run_watch_stamp, sizeof run_watch_stamp, "s%llu", (unsigned long long)now);
+        }
+        extern uint64_t s_frame_count;
+        snprintf(tag, sizeof tag, "%s-f%llu-%d", run_watch_stamp, (unsigned long long)s_frame_count,
+                 run_watch_phase);
+    }
     char p[1100];
     static uint8_t ram[2u * 1024u * 1024u];
     for (uint32_t i = 0; i < sizeof ram; i += 4u) {
@@ -2295,16 +2543,16 @@ static void run_watch_dump(void)
         ram[i] = (uint8_t)w; ram[i + 1] = (uint8_t)(w >> 8);
         ram[i + 2] = (uint8_t)(w >> 16); ram[i + 3] = (uint8_t)(w >> 24);
     }
-    snprintf(p, sizeof p, "%s.hang-%d.ram", run_file_path(), run_watch_phase);
+    snprintf(p, sizeof p, "%s.hang-%s.ram", run_file_path(), tag);
     FILE *f = fopen(p, "wb");
     if (f) { fwrite(ram, 1, sizeof ram, f); fclose(f); }
     const uint16_t *v = gpu_get_vram();
     if (v) {
-        snprintf(p, sizeof p, "%s.hang-%d.vram", run_file_path(), run_watch_phase);
+        snprintf(p, sizeof p, "%s.hang-%s.vram", run_file_path(), tag);
         f = fopen(p, "wb");
         if (f) { fwrite(v, 2, 1024u * 512u, f); fclose(f); }
     }
-    run_log("hang watch: RAM%s written beside the run file (.hang-%d)", v ? " and VRAM" : "", run_watch_phase);
+    run_log("hang watch: RAM%s written beside the run file (.hang-%s)", v ? " and VRAM" : "", tag);
 }
 
 static void run_frame_hook(void)
@@ -2313,6 +2561,7 @@ static void run_frame_hook(void)
     if (!run_on()) return;
     run_apply_fixes();
     if (run_watch_phase && run_at_hub && ++run_watch_count == run_watch_limit()) run_watch_dump();
+    if (run_irq_again && --run_irq_again == 0) run_irq_log(0);
     if (run_at_hub && psx_mod_read_byte(RUN_ARENA_LOCK)) {
         psx_mod_write_byte(RUN_ARENA_LOCK, 0);
         psx_mod_counter_add("moa.run.arena_unlocked", 1);

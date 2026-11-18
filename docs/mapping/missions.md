@@ -729,6 +729,34 @@ So chapter-timed (kind 0) mails depend on mission wins **and** arena ranks.
   mail a kind the game never delivers (4 … 0x7F) and deliver it itself (set bit 0 | (+0x60 << 2),
   then +0x60 += 1), with its text and pictures from the Phantasma MIS.T copy (entry 410+k).
 
+## In-game tests of the Phantasma missions (2026-11-17, user reports)
+
+Full crash evidence (registers, call sites) is kept in the claude.ai project doc
+`claude/phantasma-missions-crashes.md`. Mission names are the user's; their PP numbers aren't confirmed yet.
+
+**Report 1, master build 20caf2a (before the fix branch), after Rescue the Allies:** crashed later in
+the menu module. BIOS `rand()` (A0:2Fh, stub `0x8002C0F4`, from `0x80015138`) jumped to `0xFFFFAA92`:
+the A0 table entry at kernel RAM `0x000002BC` had been overwritten earlier by a stray write.
+
+**Report 2, fix branch `phantasma-mission-fixes` build 6613497 (Actions run 44149288382):**
+- Mission picker works after LOAD GAME; overlay autocompile worked.
+- **Infiltrate Amber Base:** enemy shots never come out; destroying the generators doesn't drop the
+  shield door; exiting gives no mission report.
+- **Raid the Laboratory:** the elevator works; the door right after it never opens.
+- **Crash** (mission not confirmed): address error on load at `0x8007D5AC` (`lh v0,212(s1)`) in engine
+  routine `0x8007D50C` (a0 = object: copies an 8-byte vector from a stack argument into object
+  +212..+219, normalises it, then calls `0x8007C104`, `0x80054AC8`, `0x80054E40`). **The object
+  pointer was `0xF9`**, so the native part had already written to kernel RAM `0x1CD..0x1D4`. Callers:
+  `0x80083FE4` (object in s0) and `0x800867D4` (object in s1). At the crash s0 = `0x9398` = exactly the
+  PP→MoA code relocation delta, and s2 = `0x800AA7D0` (inside the mission module).
+- Reading: both crashes are a small number used as an object pointer, so the engine writes into the
+  bottom of RAM (BIOS tables). Together with the dead doors, shield and enemy shots, this points to
+  more wrongly converted calls, data addresses or object-field offsets in the PP code (like items 1-4
+  above). `0xF9` is also the area-box point class `?`.
+- Next: match the mission names to PP numbers; for those missions, find what feeds `0x8007D50C`'s
+  object argument, the door/shield triggers and the "mission over -> report" path, comparing PP's
+  original code with the fixed pack.
+
 ## Open
 - What `0x8003EA29` (from T+1160) does in the engine; what T+8 counts.
 - Mission 0's three type handlers (`0x800A1680`, `0x800A1EA8`, `0x800A1F50`): what they set up.

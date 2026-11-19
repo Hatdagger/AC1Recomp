@@ -8,8 +8,9 @@ natively (the custom-engine road).
 Disc: USA disc 1 (SLUS-01030 v1.0). Written 2026-11-18 from the repo (master) and the
 framework docs in `psxrecomp/docs`. Nothing below is measured yet unless it says where it came
 from. Status: lane claimed 2026-11-18; **steps 1 and 2 done for VS (FDAT 209), 2026-11-18** (§1 "Frame
-anatomy (VS)", "Camera (VS)"). First milestone (camera-only render pass) reviewed, fixed and
-built 2026-11-18, waiting for the user's test run. Step 3 (draw list): static first cut for VS
+anatomy (VS)", "Camera (VS)"). **First milestone (camera-only render pass) passed 2026-11-18**:
+user-tested (the camera moves more smoothly, no visual defects) and merged into master
+(`99ae2cf`). Step 3 (draw list): static first cut for VS
 2026-11-18 (§1 "Draw list (VS)"), not yet confirmed on screen.
 
 ## 1. What we already have
@@ -197,13 +198,16 @@ Read from FDAT 209 on 2026-11-18 (step 2). Anything not yet proven by a run is m
   them inside the render; smoothing, cockpit view and the camera record are logic-side (the camera
   routine, data lane), so a pass only needs the render's two arguments.
 
-### First milestone: camera-only render pass (VS) — built, not run yet
+### First milestone: camera-only render pass (VS) — passed, merged
 
 Package `acrecomp.moa.frame-rate` (`mods/preloaded`, off by default, option "Frame rate": display /
 60 / 120), plugin `psxrecomp/runtime/src/mod_builtin_moa_frame_rate.c`, on branch
 **`renderer-vs-camera-pass`** (pushed 2026-11-18, commits `540e22c` and fix `34a6e64`). Built
-2026-11-18 (CI run 44433465501, started by hand: CI builds only master on its own); not run yet;
-merge into master after a test.
+2026-11-18 (CI run 44433465501, started by hand: CI builds only master on its own). **User test
+2026-11-18** (Windows, plain VS, package on, frame rate "display"): the camera moves more smoothly
+than with the package off, no visual defects. Merged into master 2026-11-18 (`99ae2cf`). Not
+measured yet (needs a debug-tools build): the counters, `render_pass_stats` and
+`PSX_RENDER_PASS_VERIFY`; the camera cut limit (2,048) is still a guess, not set from real motion.
 
 Checked before the test (2026-11-18): compiles with `-Wall -Wextra -Wpedantic`; the engine entry
 word and all five code signatures match FDAT 209; engine hooks need no regenerated game C (the VS
@@ -318,7 +322,8 @@ Then the other engines look for the same routines (§4).
 2. **Camera.** What the GTE is fed per view: rotation matrix, translation, projection distance
    (H), screen offset; which bytes of the camera record and smoothing state produce them.
    *Test:* a camera-only render pass in VS (in-between camera, everything else still).
-   **Mapping done for VS; plugin written** (§1 "Camera (VS)", "First milestone").
+   **Mapping done for VS; first milestone passed 2026-11-18** (user test, merged; §1 "Camera
+   (VS)", "First milestone").
    **First milestone:** proves the 60 fps road on this game.
 3. **Draw list.** Every routine the scene render calls, named by what it draws: stage, ACs,
    object pool, effects, shadows, HUD, radar, text. *Method:* `tools/gpu_frame_layers.py`

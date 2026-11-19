@@ -13,8 +13,9 @@ user-tested (the camera moves more smoothly, no visual defects) and merged into 
 (`99ae2cf`). Step 3 (draw list): static first cut for VS
 2026-11-18 (§1 "Draw list (VS)"), not yet confirmed on screen. **Step 4 (ACs) read for VS
 2026-11-18** (§1 "ACs (VS)"): pose records, joint records, the joint hierarchy, the model and
-shadow draws; test 2 (ACs glide) written on branch `renderer-vs-ac-pass` (local; not pushed, built or tested
-yet).
+shadow draws; test 2 (ACs glide) on branch `renderer-vs-ac-pass`, built 2026-11-18 (CI run
+44443029592), waiting for the user's test. **Step 5 (object pool draws) static first cut for VS
+2026-11-18** (§1 "Object pool draws (VS)").
 
 ## 1. What we already have
 
@@ -393,7 +394,7 @@ with (read at the pass point) and the one the pass's render has just made. Model
 matrices blend on their own (slerp + lerp); the AC's rotation and position come from the blended
 AC fields.
 
-### Test 2: ACs glide (VS) — branch `renderer-vs-ac-pass` (local), not pushed, built or tested yet
+### Test 2: ACs glide (VS) — branch `renderer-vs-ac-pass`, built, waiting for the user's test
 
 Same package and plugin as the first milestone (`acrecomp.moa.frame-rate`,
 `mod_builtin_moa_frame_rate.c`).
@@ -407,6 +408,44 @@ Same package and plugin as the first milestone (`acrecomp.moa.frame-rate`,
 | Counters | `ac_glide`, `ac_placed`, `joints_blended`, `joints_placed`, `pose_unmatched` (debug-tools build) |
 | Host tests | new AC test (mock render, sandboxed passes): 6,652 checks, 0 failed, and it catches a missing pose write, a missing position blend and a double blend in view 2; the step-cap test (1,999 of 1,999) and the frame-clock test (99.96 %) still pass |
 | Still stepping | shots, missiles and effects (object pool, step 5); the HUD lock box, which reads the lock slots' target positions (refreshed each step; step 8) |
+
+### Object pool draws (VS, FDAT 209) — step 5, static first cut
+
+Read from FDAT 209 on 2026-11-18. Nothing measured in a run yet; `?` marks guesses.
+
+**The loop** (in the objects draw `0x80065C44`, after the stage objects): for each of the 256
+records (228 bytes from `0x801D6F6C`) in use (+0x06 = 0) whose area (+0x0E) was drawn in this view:
+`SetRotMatrix` / `SetTransMatrix` (view), then by the **draw kind, +0x10** (0–6, jump table
+`0x80051068`; 7 and up are not drawn), after the view-cone test `0x8006647C(…, position +0x00,
+sizes)`:
+
+| Kind | Draw | What it draws | Fields it reads besides position +0x00 | Made by |
+|---|---|---|---|---|
+| 0 | `0x80061F64` | a model posed by the AC pose routine, pose holder +0xE0 | model +0xC4, angles +0xBC / +0xBE / +0xC0, +0xC6, +0xC8, +0xCA, +0xCC | `0x8008A5B0`: **missiles** (spawn around `0x8008B0D0`, update `0x8008907C`). In VS both pose records belong to the ACs, so these find none and take the routine's other path `?` |
+| 1 | `0x800645D8` | a **streak** from +0x00 to +0xBC, semi-transparent textured quads (GPU 0x2E), style `0x80091A28` + 12 × (+0xC8) | tail +0xBC / +0xBE / +0xC0 (the position one step earlier), +0xC4…, +0xCA | **bullets and shells**: `0x8008AC30` (update `0x80088674`; from the gun fire `0x80081484`, the cannon `0x8008200C` and `0x8007C14C`); also `0x8008B4BC` (update `0x80089F6C`), `0x8008D8CC`, `0x8008A7C0`, `0x80053C04` |
+| 2 | `0x80064C68` | billboard, semi-transparent textured quads (0x2E), style from +0xBC | size +0xBE, +0xC0 | 7 spawners (updates `0x8008A000`, `0x8008A0F0`, `0x8008A15C`, `0x8008DB18`, …): smoke, sparks `?` |
+| 3 | `0x800651E4` | textured triangles (0x24), turned by `RotMatrixYXZ`(+0xCA) | +0xBC…, +0xD2 | `0x8008BDF8` (update `0x8008A2CC`): debris `?` |
+| 4 | `0x8006288C` | rigid model: `RotMatrixYXZ`(+0xC0, 0x800 − +0xC2, +0xC4), then `0x800149FC` with +0xC8 (scale `?`) | model +0xBC, mesh +0xBE, +0xD0 | `0x8008A5F0` (from `0x8008C50C`, `0x8008D38C` with update `0x8008D0A4`) |
+| 5 | `0x80064EE4` | a ring or fan of quads around the position (`RotTrans`, 13 GTE commands) `?` | style +0xBC, sizes +0xBE / +0xC0, +0xC2 | `0x8008BA40` (update `0x8008A198`): blast ring `?` |
+| 6 | `0x80064C68` | billboard, other layout: style from +0xC0, a second point at +0xBC `?` | size +0xC2, +0xC4 | 7 spawners (updates `0x8008A210`, `0x8008C7B8`, `0x8008C948`, `0x8008EDB0`, `0x8008F1A4`) |
+
+The allocator **`0x8008A52C(record, owner, &position, area)`** sets +0x00 (8 bytes from the
+position), +0x06 = 0 (in use), +0x08 owner, +0x0C = −1, +0x0E area, **+0x10 = 0**, +0x12 = 0xFF,
++0x16 = −1 (life), +0x18 = 0 (update); the spawner then sets the kind, the life and the update
+routine.
+
+Also drawn per step but outside the pool: the AC hit flash `0x80061EB8` (from the AC draw while AC
++0x150 ≠ 0; table `0x80099EC0`), the per-area list `0x801ADC70`, and the stage objects (128 × 52
+bytes at `0x801D2EF8`; whether any of them move in VS stages is not known yet).
+
+**For render passes (the step 5 code, not written yet):** every in-use record's position (+0x00)
+moves each step, and per kind: kind 1's tail (+0xBC, normally last step's position, so the streak
+slides along its path), kind 0's angles (+0xBC), kind 4's angles (+0xC0) and scale (+0xC8) `?`,
+kind 3's angles (+0xCA) `?`, the billboard sizes (kinds 2, 5, 6) `?`. Records are reused as soon
+as they are freed, so a record may pair with the last step only when it is the same object: same
+update routine (+0x18), owner (+0x08) and kind, and life (+0x16) down by exactly one (life + step
+count unchanged). New objects are drawn where they appear. Bullets move 701 a step (rifle), so the
+move limit has to be far above the ACs' 512.
 
 ## 2. What the mapping switches on (the payoff)
 
@@ -451,11 +490,13 @@ Then the other engines look for the same routines (§4).
 4. **ACs in battle.** How AC +0x68 (model data) and the animation player (+0x6C) become joint
    matrices each frame, and where those land; tie them to the decoded skeletons (`acr_model.h`).
    Paint and the pre-painted texture sets (`0x800C0D14`, byte 14).
-   **Read for VS 2026-11-18** (§1 "ACs (VS)"); test 2 (ACs glide) written, waiting for a build
-   and a test by eye. Still to do: paint / pre-painted sets, and the mesh format behind
+   **Read for VS 2026-11-18** (§1 "ACs (VS)"); test 2 (ACs glide) built 2026-11-18 (CI run
+   44443029592, started by hand), waiting for a test by eye. Still to do: paint / pre-painted sets, and the mesh format behind
    `0x801A27F8` (with step 6's stage format).
 5. **Objects and effects.** Per pool kind: how it is drawn, its blend mode, any particle lists
    outside the pool. Moving values and their identity, for the render-pass blending.
+   **Static first cut for VS 2026-11-18** (§1 "Object pool draws (VS)": the 7 draw kinds, their
+   routines and fields, the allocator); the blending code waits for test 2's result.
 6. **Stage.** The geometry format in FDAT 5s+1 / 5s+4, how it is split up, what decides which
    pieces are drawn. (Collision stays with the battle lane: AC +0x2C / +0x30.)
 7. **Culling and sorting.** OT depth formula and range guards, screen-edge tests, distance

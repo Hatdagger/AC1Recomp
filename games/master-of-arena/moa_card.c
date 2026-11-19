@@ -740,11 +740,14 @@ void moa_card_to_save(const struct moa_card *c, uint8_t b[MOA_SAVE_BLOCK])
     }
     {   /* The game's options travel with the save: zero here means no
            buttons and no sound once it is loaded. Defaults as the game
-           writes them on a new save. */
+           writes them on a new save (menu 0x800B69F8; docs/mapping/
+           menus-screens.md §2o): 12 button masks, then TEXT MESSAGE on,
+           MASTER 63, BGM 31, VS STAGE select, VS TIME LIMIT 0 (120 s),
+           VIBRATION on. The same bytes as the new-game template above. */
         static const uint8_t cfg[] = {
             0x10,0,0,0, 0x40,0,0,0, 0x80,0,0,0, 0x20,0,0,0, 0,4,0,0, 0,8,0,0,
             0,1,0,0, 0,2,0,0, 0,0x20,0,0, 0,0x40,0,0, 0,0x10,0,0, 0,0x80,0,0,
-            0x01,0x3F,0x1F,0x00, 0x01 };
+            0x01,0x3F,0x1F,0x00, 0x00,0x01 };
         memcpy(b + SAVE_CONFIG, cfg, sizeof cfg);
     }
     b[SAVE_PLUS] = c->plus;

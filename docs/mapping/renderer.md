@@ -7,8 +7,8 @@ natively (the custom-engine road).
 
 Disc: USA disc 1 (SLUS-01030 v1.0). Written 2026-11-18 from the repo (master) and the
 framework docs in `psxrecomp/docs`. Nothing below is measured yet unless it says where it came
-from. Status: lane claimed 2026-11-18; step 1 started (main program routines named, frame
-cadence from Armored-CoreR). Next: read FDAT 209 (needs the `ma-work` disc pack).
+from. Status: lane claimed 2026-11-18; **step 1 done for VS (FDAT 209), 2026-11-18** (§1 "Frame
+anatomy (VS)"). Next: step 2 (camera) and the camera-only render pass in VS.
 
 ## 1. What we already have
 
@@ -53,13 +53,105 @@ lives in the engines.
 | `SetDefDrawEnv` / `SetDefDispEnv` `?` | `0x80011F94` / `0x80011FF0` | called as (env, 0, 240, 320, 240) by the main program's picture screen `0x80012348`, right before PutDispEnv / PutDrawEnv |
 | `InitGeom` | `0x80028DE4` | writes H, OFX/OFY, DQA/DQB, ZSF3/ZSF4 |
 | `SetRotMatrix` / `SetTransMatrix` | `0x80029B24` / `0x80029BB4` | 12 / 8 instructions writing GTE R (regs 0–4) / TR (5–7) |
-| `SetGeomOffset(x, y)` / **`SetGeomScreen(h)`** | `0x80029D24` / `0x80029D48` | GTE OFX/OFY / H. Split screen must change these per view |
+| `SetGeomOffset(x, y)` / **`SetGeomScreen(h)`** | `0x80029D24` / **`0x80029D44`** | GTE OFX/OFY / H (`0x80029D48` is only SetGeomScreen's `jr ra`; corrected 2026-11-18). VS sets them once for both views (see Frame anatomy) |
+| `SetFarColor(r, g, b)` | `0x80029D04` | GTE FC (regs 21–23); VS sets black fog |
+| `SetDrawEnv(DR_ENV*, DRAWENV*)` `?` | `0x8002D3D8` | builds the 64-byte `DR_ENV` packets VS puts at the head of each view's OT |
 | `SetDQA` / `SetDQB` | `0x80029CCC` / `0x80029CD8` | depth cueing (fog) |
 | Matrix multiplies (load GTE R, then MVMVA) | `0x80029448`, `0x80029648`, `0x800297A4`, `0x80029904`, `0x80029954`, `0x800290C4`, `0x80029E98`, `0x80029EF0` | not told apart yet |
 | VBlank callback | `0x800166A0` | counts VBlanks at `0x80043C74`, then `0x80017340`, then the hook at `0x80043C78` if set |
 | VBlanks since a0 / VBlank count | `0x800166FC` / `0x80016710` | read `0x80043C74` |
 | Scanlines since a0 (the frame-time wait) | `0x80016724` | `GetRCnt(RCntCNT1)` (`0x8002B600`), 16-bit wrap |
 | `DrawSync(0)` then `VSync(0)` | `0x80016678` | |
+
+### Frame anatomy (VS, FDAT 209)
+
+Read from FDAT 209 (disc 1, SLUS-01030) on 2026-11-18. Anything not yet proven by a run is marked `?`.
+
+#### Call order, one frame
+
+The VS main loop (`0x80052124`) runs one logic step, then at its end:
+
+1. `0x80087B90` once per player: camera → 16 bytes each on the stack (P1 `sp+0x10`, P2 `sp+0x20`).
+   The current player struct is written to `0x8003EAA0` before each call (P1 `0x80045198`, P2 `0x80045538`).
+2. **`0x80067404(camP1, camP2)` = the scene render ("draw both views").** It also runs during the countdown, called with (0, 0) = "keep last camera".
+3. `0x8005301C(camP1, camP2)`: copies the eyes to `0x800441D8` / `0x800441EC` (the "eye copies"; sound listener `?`).
+4. Logic tick: match struct `0x80097EA0` +0x12 += 1 (capped at 0x4000), then back to the top.
+
+Inside the scene render `0x80067404`:
+
+| Order | Address | What |
+|---|---|---|
+| a | `0x80067434`–`0x800674C4` | copy the two cameras to `0x801A9A88` (P1) / `0x801A9A9C` (P2), 16 bytes each, stride 0x14 |
+| b | `0x80072E70` ×2 | per-player value into `0x801A9A84` / `0x801A9A98` (`?`) |
+| c | `0x80066E34`, `0x8005BB40` | `?` (before the swap) |
+| d | **`0x8005BFB8` buffer swap** | flips the index, sets the current record, `ClearOTagR` on both OTs, resets the primitive pointer |
+| e | `0x8005A72C`, `0x80059624` ×2 (per AC), `0x8005AC68` / `0x8005ACC8` | per-AC work before drawing (`?`) |
+| f | 4 × `DR_ENV` (64 bytes each) taken from the primitive buffer | |
+| g | **View 1:** current OT = OT A; camera P1 → `0x801A9AB0`; **`0x800670C8`** (per-view draw); `DR_ENV`(view 1 DRAWENV) put at the head of OT A | |
+| h | **View 2:** current OT = OT B; camera P2 → `0x801A9AB0`; `0x800670C8`; `DR_ENV`(view 2 DRAWENV) at the head of OT B | |
+| i | fade box `0x800632E8` (320×240, when `0x801A8CBB` ≠ 0), timer / text / HUD `0x80065494`, `0x800659DC`, `0x800572B4` into OT B | |
+| j | `DR_ENV`(full-screen DRAWENV) at OT B entry 5 (the last few entries draw over the whole screen) and at the head of OT A | |
+| k | **chain:** OT A's tail (entry 0) is linked to OT B's head (entry 8191); OT B's tail keeps the end marker | |
+| l | **`0x8005C050` frame end** (below) | |
+| m | `0x8005A81C`, frame counter `0x801A8C34` += 1 | after the submit |
+
+`0x800670C8` (per-view draw) uses the scratchpad (`0x1F800200`), builds the view matrix (`0x800139F8` ×6, matrix multiply `0x80029904`, `0x80067004`, `SetTransMatrix`), then draws through `0x80066B10`, `0x80061C3C`, `0x80065C44` (step 2 / step 3).
+
+#### Frame end `0x8005C050`
+
+`DrawSync(0)` → `0x800535F4` (sound-slot upkeep `?`, walks 23 × 16-byte records at `0x80044428`) → **wait until 715 scanlines** since the last frame start (`0x8005C074`–`0x8005C084`, `slti 0x2CB` at `0x8005C080`) → `PutDispEnv(R+0x11C)` → `PutDrawEnv(R+0x08)` → **`DrawOTag(OT A + 0x7FFC)`** (one call draws both views, because the OTs are chained) → frame start time = `GetRCnt(RCntCNT1)` into `0x801A8C28` → `0x8005C0F8` (resets a list at `0x801AAF70` `?`) → clears 8 bytes at `0x80045178`.
+
+No `VSync` in the fight loop (one `DrawSync(0)` + `VSync(0)` only at match end, `0x800527A8`).
+
+#### Buffer records
+
+Base `0x801A2568`:
+
+| Offset | What |
+|---|---|
+| +0x000 | buffer index (0 / 1; −1 before the first frame) |
+| +0x004 | record 0 (0x13C bytes) |
+| +0x140 | record 1 |
+| +0x27C | **current record pointer R** |
+| +0x280 | primitive buffer start (`0x8013C560`) |
+| +0x284 | pointer to R+0x130 (primitive allocator: +0 start, +4 end, +8 next free) |
+| +0x288 | current OT base (switched per view) |
+
+Record layout (R):
+
+| R+ | What | Record 0 | Record 1 |
+|---|---|---|---|
+| +0x000 | OT A (view 1, P1), 8192 entries | `0x80182560` | `0x8018A560` |
+| +0x004 | OT B (view 2, P2), 8192 entries | `0x80192560` | `0x8019A560` |
+| +0x008 | DRAWENV view 1 (clears its area, black) | 2, 5, 158×230 | 2, 245, 158×230 |
+| +0x064 | DRAWENV view 2 (clears its area, black) | 160, 5, 158×230 | 160, 245, 158×230 |
+| +0x0C0 | DRAWENV full screen (no clear, no dither) | 0, 0, 320×240 | 0, 240, 320×240 |
+| +0x11C | DISPENV | **0, 240**, 320×240 | **0, 0**, 320×240 |
+| +0x130 / +0x134 | primitive buffer start / end (0x21000 = 135,168 bytes) | `0x8013C560`–`0x8015D560` | `0x8015F560`–`0x80180560` |
+
+Unlike the link engine (`0x8019D4F0`: +0 index, +4 two 128-byte records, DRAWENV at +4), VS has a 0x13C-byte record with **two OTs and three DRAWENVs**. Setup: `0x8005C1E8` (envs) and `0x8005C11C` (OT and primitive pointers).
+
+#### Flip mode
+
+Each record draws into one half of VRAM and its DISPENV shows the **other** half. At the frame end, `PutDispEnv` shows the picture the previous frame drew (its `DrawOTag` has just finished with `DrawSync`), then the new OT is submitted into the hidden half. **A submitted frame is first shown at the next frame end's `PutDispEnv`, one flip later** → render-pass flip mode **PENDING**: this is the PsyQ "DISPENV[i] shows the buffer DRAWENV[1−i] draws" loop that `RENDER_PASSES.md` "Flip modes" lists under `PENDING` (a scanline wait in place of `VSync(0)`).
+
+#### The two views
+
+- **One `SetGeomOffset` / `SetGeomScreen` for both views, set once** at setup (`0x8005C1E8`): offset (79, 115), H = 160, `SetFarColor(0, 0, 0)` (fog to black).
+- The views are separated by **two OTs**, each starting with a `DR_ENV` that sets that view's DRAWENV (clip rectangle + draw offset (2, 5) or (160, 5)). So the GTE projects both views the same way and the GPU draw offset moves view 2 to the right half. View centre on screen: (81, 120) and (239, 120).
+- The views are 158×230 with a 2-pixel gutter at the left and middle and 5 pixels top and bottom (`?` whether anything is drawn in the borders).
+
+#### Render-pass facts
+
+| Item | Value |
+|---|---|
+| Draw section start | scene render entry `0x80067404` (first words `0x27BDFFA0, 0xAFBF005C, 0xAFBE0058, 0xAFB70054`); the swap is `0x8005BFB8` (`0x27BDFFE8, 0xAFB00010`) |
+| **Pass point** | **frame-end entry `0x8005C050`** (`0x27BDFFE8, 0x00002021, 0xAFBF0014, 0x0C00B12C`), called at `0x80067C20` after both OTs are built and chained, before `DrawOTag` |
+| Flip mode | PENDING (above) |
+| Logic tick | match struct `0x80097EA0` +0x12 (one step per frame) |
+| Redraw re-runs | both views (`0x800670C8` ×2) and the HUD, into the record that `0x8005BFB8` picks |
+| Camera inputs | `0x801A9A88` / `0x801A9A9C` (copied from the main loop's stack each frame); per view `0x801A9AB0` |
+| Device reads | `0x800535F4` in the frame end (sound upkeep `?`): filter it like the link engine's `moa_link_sound_filter` |
 
 ## 2. What the mapping switches on (the payoff)
 
@@ -89,7 +181,7 @@ Then the other engines look for the same routines (§4).
    engine's is `0x80067FE4`; find VS's), the buffer record (link `0x8019D4F0`), DRAWENV / DISPENV,
    where `DrawOTag` and `PutDispEnv` run, the VSync wait, how many VBlanks one step takes, the OT
    address and size, the primitive buffer. How split-screen draws two views (two OTs or one?).
-   *Deliverable:* a table of these + the render-pass point and flip mode.
+   *Deliverable:* a table of these + the render-pass point and flip mode. **Done for VS** (§1 "Frame anatomy (VS)").
 2. **Camera.** What the GTE is fed per view: rotation matrix, translation, projection distance
    (H), screen offset; which bytes of the camera record and smoothing state produce them.
    *Test:* a camera-only render pass in VS (in-between camera, everything else still).
@@ -119,7 +211,7 @@ own addresses. Find each routine by its first instructions (as `moa_link_netplay
 
 | FDAT | Engine | Status |
 |---|---|---|
-| 209 | split-screen VS | first (§3) |
+| 209 | split-screen VS | first (§3); frame anatomy done (scene render `0x80067404`, swap `0x8005BFB8`, pass point `0x8005C050`) |
 | 210 | arena (also AI Battle) | second: the mode most players see |
 | 208 | link versus (netplay) | scene render, camera and buffer record known (§1) |
 | 207 | missions | after arena; per-mission code (FDAT 0–99) may add its own draws |

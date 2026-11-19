@@ -942,6 +942,13 @@ int moa_owned_index(int byte, int id)
     return id < n ? base + id : -1;
 }
 
+int moa_save_owned(const uint8_t *b, size_t size, uint8_t out[256])
+{
+    if (!b || !out || size < SAVE_OWNED + 256u || b[0] != 'S' || b[1] != 'C') return 0;
+    memcpy(out, b + SAVE_OWNED, 256);
+    return 1;
+}
+
 static int read_card_image(const char *path, uint8_t *mc)
 {
     FILE *f = fopen(path, "rb");

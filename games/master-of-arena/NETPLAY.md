@@ -11,9 +11,11 @@ Both players need the same build and the same disc.
 1. Open MULTIPLAYER in the launcher. One player hosts a room, the other
    joins. The host is player 1, the guest player 2.
 2. In the VERSUS ROOM each pilot sets an AC in GARAGE: loaded from a Master
-   of Arena save on one of their memory cards, or from an AI card. When the
-   host turns FULL GARAGE on, every part is unlocked and ASSEMBLY, OPTIONAL
-   PARTS, PAINT and EMBLEM work on it, and the EXTRA GARAGE AC can be loaded.
+   of Arena save on one of their memory cards, or from an AI card, then
+   changed with ASSEMBLY, OPTIONAL PARTS, PAINT and EMBLEM. With the host's
+   FULL GARAGE off (the default) only the pilot's own parts fit: those the
+   loaded save owns, and those the AC came with; HUMAN PLUS stays as the save
+   has it. FULL GARAGE on unlocks every part and the EXTRA GARAGE AC.
    Neither pilot sees the other's AC before the match.
 3. The host sets MATCH SETTINGS: stage (Green Silo by default, or RANDOM),
    time limit (the game's 2:00 / 5:00 / none), rounds (single, best of 3,

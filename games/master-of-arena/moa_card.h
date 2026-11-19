@@ -166,6 +166,11 @@ int moa_memcard_read_story(const char *path, int slot, uint8_t out[8192]);
  * `byte` 10 / 11 is given as option number 0..11 in `id`. */
 int moa_owned_index(int byte, int id);
 
+/* The owned-part counts of a Master of Arena save block (8 KB, as on the
+ * card): 256 bytes in moa_owned_index's numbering, the parts the game's
+ * garage lists. 1 = ok. */
+int moa_save_owned(const uint8_t *save, size_t size, uint8_t out[256]);
+
 /* Fit the garage AC into the story save in directory slot `slot`: its parts,
  * optional parts, paint, emblem and AC name; any part the save does not own
  * is added to its owned parts (no money taken). The pilot name, money,

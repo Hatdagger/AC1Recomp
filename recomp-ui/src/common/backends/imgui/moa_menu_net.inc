@@ -848,10 +848,13 @@ static void draw_net_rooms(LauncherModel* m, const Gfx& g, const Input& in) {
  * match starts by itself once both pilots are ready.
  *
  *  - Your AC: loaded from a Master of Arena save on one of your memory cards,
- *    or from an AI card. When the host turns FULL GARAGE on, the garage's
- *    ASSEMBLY, OPTIONAL PARTS, PAINT and EMBLEM screens work on it too (every
- *    part), and the EXTRA GARAGE AC can be brought in. It is kept between
- *    runs (RecompData/garage/versus-ac.png, where it came from beside it).
+ *    or from an AI card, then changed in the garage's ASSEMBLY, OPTIONAL
+ *    PARTS, PAINT and EMBLEM screens. With the host's FULL GARAGE off (the
+ *    default) only your own parts can be fitted: the parts the save you
+ *    loaded owns (as the game's garage lists them) and those the AC came
+ *    with; HUMAN PLUS stays as loaded. FULL GARAGE on unlocks every part and
+ *    the EXTRA GARAGE AC. Kept between runs (RecompData/garage/versus-ac.png,
+ *    with where it came from and your parts in versus-ac.txt beside it).
  *  - READY puts your AC alone on a match-only memory card
  *    (PSX_MEMCARD1_NETPLAY; your own cards are never touched): the host's is
  *    the match's slot 1, the guest's is uploaded as slot 2. The room keeps
@@ -955,7 +958,18 @@ static moa_card    g_room_ac;
 static bool        g_room_ac_read = false;
 static bool        g_room_has_ac = false;
 static std::string g_room_ac_from;       /* "SAVE ...", "AI CARD", "EXTRA GARAGE" */
-static bool        g_room_ac_edited = false;   /* changed in the full garage */
+static bool        g_room_ac_edited = false;   /* changed in the garage */
+
+/* Your own parts (FULL GARAGE off): the owned-part counts of the save you
+ * loaded last (moa_owned_index numbering), and the AC as it was loaded: an
+ * AI card's parts come with it. */
+static uint8_t     g_room_owned[256];
+static bool        g_room_owned_known = false;
+static int         g_room_owned_count = 0;     /* different parts owned */
+static std::string g_room_owned_from;          /* "CARD  BLOCK n" */
+static uint8_t     g_room_owned_plus = 0;      /* that save's HUMAN PLUS */
+static uint8_t     g_room_base[13];
+static uint8_t     g_room_base_plus = 0;
 
 static std::string room_ac_path() { return asset("garage/versus-ac.png"); }
 static std::string room_ac_note_path() { return asset("garage/versus-ac.txt"); }
@@ -978,14 +992,46 @@ static void room_ac_read() {
     }
     g_room_has_ac = !data.empty() && moa_card_decode(data.data(), data.size(), &g_room_ac);
     if (!g_room_has_ac) return;
+    std::memcpy(g_room_base, g_room_ac.rec, sizeof g_room_base);
+    g_room_base_plus = g_room_ac.plus;
     if (FILE* f = std::fopen(room_ac_note_path().c_str(), "rb")) {
-        char line[160] = {0};
-        if (std::fgets(line, sizeof line, f)) {
+        char line[640] = {0};
+        auto trimmed = [&]() {
             std::string s(line);
             while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
-            g_room_ac_from = s;
-        }
+            return s;
+        };
+        auto hex = [](const char* p, uint8_t* out, size_t n) {
+            for (size_t i = 0; i < n; ++i) {
+                unsigned v = 0;
+                if (std::sscanf(p + 2 * i, "%2x", &v) != 1) return false;
+                out[i] = (uint8_t)v;
+            }
+            return true;
+        };
+        if (std::fgets(line, sizeof line, f)) g_room_ac_from = trimmed();
         if (std::fgets(line, sizeof line, f)) g_room_ac_edited = std::atoi(line) != 0;
+        while (std::fgets(line, sizeof line, f)) {
+            const std::string l = trimmed();
+            if (l.rfind("base=", 0) == 0 && l.size() >= 5 + 26) {
+                uint8_t b[13];
+                if (hex(l.c_str() + 5, b, 13)) {
+                    std::memcpy(g_room_base, b, 13);
+                    const size_t comma = l.find(',');
+                    g_room_base_plus = comma != std::string::npos ? (uint8_t)std::atoi(l.c_str() + comma + 1) : 0;
+                }
+            } else if (l.rfind("parts=", 0) == 0) {
+                g_room_owned_from = l.substr(6);
+            } else if (l.rfind("plus=", 0) == 0) {
+                g_room_owned_plus = (uint8_t)std::atoi(l.c_str() + 5);
+            } else if (l.rfind("owned=", 0) == 0 && l.size() >= 6 + 512) {
+                if (hex(l.c_str() + 6, g_room_owned, 256)) {
+                    g_room_owned_known = true;
+                    g_room_owned_count = 0;
+                    for (int i = 0; i < 256; ++i) g_room_owned_count += g_room_owned[i] != 0;
+                }
+            }
+        }
         std::fclose(f);
     }
 }
@@ -999,7 +1045,14 @@ static void room_ac_save() {
         return;
     }
     if (FILE* f = std::fopen(room_ac_note_path().c_str(), "wb")) {
-        std::fprintf(f, "%s\n%d\n", g_room_ac_from.c_str(), g_room_ac_edited ? 1 : 0);
+        std::fprintf(f, "%s\n%d\nbase=", g_room_ac_from.c_str(), g_room_ac_edited ? 1 : 0);
+        for (int i = 0; i < 13; ++i) std::fprintf(f, "%02X", g_room_base[i]);
+        std::fprintf(f, ",%u\n", (unsigned)g_room_base_plus);
+        if (g_room_owned_known) {
+            std::fprintf(f, "parts=%s\nplus=%u\nowned=", g_room_owned_from.c_str(), (unsigned)g_room_owned_plus);
+            for (int i = 0; i < 256; ++i) std::fprintf(f, "%02X", g_room_owned[i]);
+            std::fprintf(f, "\n");
+        }
         std::fclose(f);
     }
 }
@@ -1010,7 +1063,69 @@ static void room_ac_set(const moa_card& c, const std::string& from) {
     g_room_has_ac = true;
     g_room_ac_from = from;
     g_room_ac_edited = false;
+    std::memcpy(g_room_base, g_room_ac.rec, sizeof g_room_base);   /* the AC as it came */
+    g_room_base_plus = g_room_ac.plus;
     room_ac_save();
+}
+
+/* ---- your own parts (FULL GARAGE off) ---- */
+
+static bool room_own_parts_only() { return !g_room.garage; }
+
+/* What an AC came with counts as yours, except the EXTRA GARAGE AC's (that
+ * garage has every part): its parts have to be ones your save owns. */
+static bool room_base_counts() { return g_room_ac_from != "EXTRA GARAGE"; }
+
+/* May `rec` hold part `id` in record byte `byte`? With FULL GARAGE off: no
+ * part at all, or a part you have, where you have the most of what your
+ * save owns and what the AC came with. The same back weapon on both sides
+ * takes two (as the game's garage). */
+static bool room_part_ok_in(const uint8_t* rec, int byte, int id) {
+    if (!room_own_parts_only()) return true;
+    if (id == 255 || (byte == 4 && id == 0)) return true;
+    const int k = moa_owned_index(byte, id);
+    if (k < 0 || byte < 0 || byte > 12) return false;
+    const bool back = byte == 6 || byte == 7;
+    int have = !room_base_counts() ? 0
+             : back ? (g_room_base[6] == id) + (g_room_base[7] == id) : (g_room_base[byte] == id ? 1 : 0);
+    if (g_room_owned_known && g_room_owned[k] > have) have = g_room_owned[k];
+    const int need = back && rec[byte == 6 ? 7 : 6] == id ? 2 : 1;
+    return have >= need;
+}
+
+/* The garage screens (moa_menu_build.inc) ask about the AC being edited. */
+static bool room_part_ok(int byte, int id) { return room_part_ok_in(g_edit.rec, byte, id); }
+
+static bool room_option_ok(int number) {
+    if (!room_own_parts_only()) return true;
+    if (number < 0 || number >= MOA_OPTIONS) return false;
+    const unsigned base_mask = g_room_base[10] | (unsigned)(g_room_base[11] & 0x0F) << 8;
+    if (room_base_counts() && (base_mask & (1u << number))) return true;
+    const int k = moa_owned_index(10, number);
+    return k >= 0 && g_room_owned_known && g_room_owned[k] > 0;
+}
+
+/* The first part on `c` that isn't yours (FULL GARAGE off), or nullptr. */
+static const char* room_unowned_part(const moa_card& c) {
+    if (!room_own_parts_only()) return nullptr;
+    static std::string name;
+    const uint8_t* r = c.rec;
+    for (int byte = 0; byte < 13; ++byte) {
+        if (byte == 10 || byte == 11) continue;
+        if ((byte == 4 || byte == 5) && r[2] >= 12 && r[2] != 255) continue;   /* weapon arms */
+        if (byte == 12 && r[3] >= 27 && r[3] != 255) continue;                 /* caterpillar */
+        if (room_part_ok_in(r, byte, r[byte])) continue;
+        const moa_part* p = g_parts_state > 0 ? moa_parts_find(&g_parts, moa_record_cat(byte), r[byte]) : nullptr;
+        name = p ? upper(p->name) : std::string("A PART");
+        return name.c_str();
+    }
+    const unsigned mask = r[10] | (unsigned)(r[11] & 0x0F) << 8;
+    for (int o = 0; o < MOA_OPTIONS; ++o) {
+        if (!(mask & (1u << o)) || room_option_ok(o)) continue;
+        name = g_parts_state > 0 ? upper(g_parts.option[o].name) : std::string("AN OPTIONAL PART");
+        return name.c_str();
+    }
+    return nullptr;
 }
 
 static bool room_ac_differs(const moa_card& a, const moa_card& b) {
@@ -1023,6 +1138,12 @@ static bool room_ac_differs(const moa_card& a, const moa_card& b) {
 
 /* Back from a full-garage screen (moa_menu_build.inc, leave_to_garage). */
 static void room_take_edit() {
+    if (!g_room_has_ac) {          /* built from nothing: it came with no parts */
+        std::memset(g_room_base, 255, sizeof g_room_base);
+        g_room_base[10] = g_room_base[11] = 0;
+        g_room_base_plus = 0;
+        g_room_ac_from = "GARAGE";
+    }
     if (!g_room_has_ac || room_ac_differs(g_room_ac, g_edit)) {
         g_room_ac = g_edit;
         g_room_has_ac = true;
@@ -1034,7 +1155,7 @@ static void room_take_edit() {
 
 /* ---- loading an AC ---- */
 
-struct RoomSave { std::string label, where; moa_card card; };
+struct RoomSave { std::string label, where, parts_from; moa_card card; uint8_t owned[256]; int owned_n; };
 static std::vector<RoomSave> g_room_saves;
 
 /* Every Master of Arena save on the .mcd files in the memory card folder. */
@@ -1071,9 +1192,14 @@ static void room_scan_saves(LauncherModel* m) {
             if (std::strncmp((const char*)fr + 10, "BASLUS-0103", 11) != 0) continue;
             RoomSave s;
             if (!moa_card_from_save(img.data() + i * 8192, 8192, &s.card)) continue;
+            if (!moa_save_owned(img.data() + i * 8192, 8192, s.owned)) std::memset(s.owned, 0, sizeof s.owned);
+            s.owned_n = 0;
+            for (int k = 0; k < 256; ++k) s.owned_n += s.owned[k] != 0;
             s.label = upper(s.card.ac[0] ? s.card.ac : "AC");
             char where[96];
             std::snprintf(where, sizeof where, "%s  BLOCK %d", stem.c_str(), i);
+            s.parts_from = where;
+            std::snprintf(where, sizeof where, "%s  BLOCK %d  ·  %d PARTS OWNED", stem.c_str(), i, s.owned_n);
             s.where = where;
             g_room_saves.push_back(s);
         }
@@ -1092,8 +1218,16 @@ static const char* room_ready_problem(const LauncherModel* m, bool is_host) {
     if (!launcher_model_netplay_disc_ok(m)) return "The game disc is needed for network play.";
     if (!is_host && !g_room_heard) return "Waiting for the host's match settings.";
     if (!g_room_has_ac) return "Load an AC in the GARAGE first.";
-    if (!g_room.garage && (g_room_ac_edited || g_room_ac_from == "EXTRA GARAGE"))
-        return "FULL GARAGE is off: load an AC from a memory card or an AI card.";
+    if (room_own_parts_only()) {
+        if (const char* part = room_unowned_part(g_room_ac)) {
+            static char b[128];
+            std::snprintf(b, sizeof b, "FULL GARAGE is off: %s is not one of your parts.", part);
+            return b;
+        }
+        int plus_have = room_base_counts() ? g_room_base_plus : 0;
+        if (g_room_owned_known && g_room_owned_plus > plus_have) plus_have = g_room_owned_plus;
+        if (g_room_ac.plus > plus_have) return "FULL GARAGE is off: your save has no HUMAN PLUS for this AC.";
+    }
     if (parts_ready(m)) {
         struct moa_build_check chk;
         room_check(g_room_ac, &chk);
@@ -1189,7 +1323,7 @@ static void draw_room_stage(const LauncherModel* m, const Gfx& g, float x, float
 
 /* The AC on the right of the garage and load screens. */
 static void draw_room_ac_box(const Gfx& g, float x, float y, float w, float h,
-                             const moa_card* c, const char* from) {
+                             const moa_card* c, const char* from, bool yours = false) {
     panel(g, x, y, w, h, "YOUR AC");
     if (!c) {
         text(g, x + 14.0f, y + 20.0f, 11.0f, kDim, "NO AC YET. LOAD ONE FROM A MEMORY CARD OR AN AI CARD.", w - 28.0f);
@@ -1212,8 +1346,11 @@ static void draw_room_ac_box(const Gfx& g, float x, float y, float w, float h,
         std::snprintf(b, sizeof b, "AP %d   WEIGHT %d", chk.ap, chk.weight);
         text(g, x + 12.0f, ty, 10.0f, kText, b);
         ty += 16.0f;
-        text(g, x + 12.0f, ty, 10.0f, chk.blocked ? kWarn : kOn,
-             chk.blocked ? "THE GAME WILL NOT FIELD THIS BUILD" : "READY TO FIELD");
+        const char* unowned = yours ? room_unowned_part(*c) : nullptr;
+        char b2[96];
+        if (unowned) std::snprintf(b2, sizeof b2, "NOT YOUR PART: %s", unowned);
+        text(g, x + 12.0f, ty, 10.0f, chk.blocked || unowned ? kWarn : kOn,
+             chk.blocked ? "THE GAME WILL NOT FIELD THIS BUILD" : unowned ? b2 : "READY TO FIELD", w - 24.0f);
         ty += 16.0f;
     }
     if (c->plus) text(g, x + 12.0f, ty, 10.0f, kHi, "HUMAN PLUS");
@@ -1223,6 +1360,11 @@ static void draw_room_ac_box(const Gfx& g, float x, float y, float w, float h,
 
 static void room_open_builder(LauncherModel* m, int sub) {
     if (!parts_ready(m)) { note("THE PART LIST COULD NOT BE READ FROM THE DISC"); return; }
+    if (room_own_parts_only() && !g_room_has_ac) { note("LOAD AN AC FIRST"); return; }
+    if (room_own_parts_only() && !g_room_owned_known && (sub == AI_SUB_ASM || sub == AI_SUB_OPTS)) {
+        note("LOAD YOUR SAVE FROM A MEMORY CARD FIRST: YOUR PARTS COME FROM IT");
+        return;
+    }
     AiCard c;
     c.card = g_room_ac;
     c.path = room_ac_path();
@@ -1261,19 +1403,17 @@ static void draw_room_garage(LauncherModel* m, const Gfx& g, const Input& in) {
     int count = 0;
     rows[count++] = RG_SAVE;
     rows[count++] = RG_CARD;
-    if (full) {
-        rows[count++] = RG_EXTRA;
-        rows[count++] = RG_ASM;
-        rows[count++] = RG_OPTS;
-        rows[count++] = RG_PAINT;
-        rows[count++] = RG_EMBLEM;
-    }
+    if (full) rows[count++] = RG_EXTRA;
+    rows[count++] = RG_ASM;
+    rows[count++] = RG_OPTS;
+    rows[count++] = RG_PAINT;
+    rows[count++] = RG_EMBLEM;
     rows[count++] = RG_BACK;
     move_cursor(PAGE_LOBBY, count, in, count);
     int& cur = g_state.cursor[PAGE_LOBBY];
 
     header(g, "GARAGE", full ? "VERSUS ROOM  ·  FULL GARAGE" : "VERSUS ROOM");
-    panel(g, 24.0f, 76.0f, 270.0f, 340.0f, full ? "FULL GARAGE" : "LOAD AN AC");
+    panel(g, 24.0f, 76.0f, 270.0f, 340.0f, full ? "FULL GARAGE" : "YOUR PARTS ONLY");
     static const char* const labels[] = { "LOAD FROM MEMORY CARD", "LOAD AI CARD", "LOAD EXTRA GARAGE AC",
                                           "ASSEMBLY", "OPTIONAL PARTS", "PAINT", "EMBLEM", "BACK" };
     int clicked = -1;
@@ -1285,7 +1425,7 @@ static void draw_room_garage(LauncherModel* m, const Gfx& g, const Input& in) {
             clicked = i;
         if (hover_moved(hovered)) cur = i;
     }
-    static const char* const info[] = {
+    static const char* const info_full[] = {
         "Bring the AC of a Master of Arena save on one of your memory cards.",
         "Bring the AC of an AI card from your memory card folder.",
         "Bring the AC kept in EXTRA GARAGE.",
@@ -1295,14 +1435,29 @@ static void draw_room_garage(LauncherModel* m, const Gfx& g, const Input& in) {
         "Change the AC's emblem.",
         "Back to the room.",
     };
-    text(g, 38.0f, 300.0f, 10.0f, kText, info[rows[cur]], 244.0f);
-    if (!full)
-        text(g, 38.0f, 350.0f, 10.0f, kDim,
-             "The host's FULL GARAGE is off: the AC comes as it is from a memory card or an AI card.",
-             244.0f);
+    static const char* const info_own[] = {
+        "Bring the AC of a Master of Arena save on one of your memory cards, and that save's parts.",
+        "Bring the AC of an AI card from your memory card folder. Its parts come with it.",
+        "",
+        "Change parts, with the parts you own.",
+        "Fit the optional parts you own.",
+        "Change the AC's colours.",
+        "Change the AC's emblem.",
+        "Back to the room.",
+    };
+    text(g, 38.0f, 300.0f, 10.0f, kText, (full ? info_full : info_own)[rows[cur]], 244.0f);
+    if (!full) {
+        char b[160];
+        if (g_room_owned_known)
+            std::snprintf(b, sizeof b, "FULL GARAGE is off. YOUR PARTS: %d, from %s.", g_room_owned_count,
+                          g_room_owned_from.c_str());
+        else
+            std::snprintf(b, sizeof b, "FULL GARAGE is off. Load your save from a memory card to bring your parts.");
+        text(g, 38.0f, 352.0f, 10.0f, kDim, b, 244.0f);
+    }
 
     draw_room_ac_box(g, 310.0f, 76.0f, 306.0f, 340.0f, g_room_has_ac ? &g_room_ac : nullptr,
-                     g_room_ac_from.c_str());
+                     g_room_ac_from.c_str(), true);
     footer(g, "A / ENTER  SELECT      B / ESC  BACK");
 
     int activate = -1;
@@ -1371,8 +1526,16 @@ static void draw_room_load(LauncherModel* m, const Gfx& g, const Input& in, bool
     if (in.back) { g_room_view = RV_GARAGE; return; }
     if (clicked >= 0) cur = clicked;
     if ((in.confirm || clicked >= 0) && c) {
+        if (saves) {      /* the save's parts are your parts from now on */
+            const RoomSave& sv = g_room_saves[(size_t)cur];
+            std::memcpy(g_room_owned, sv.owned, sizeof g_room_owned);
+            g_room_owned_known = true;
+            g_room_owned_count = sv.owned_n;
+            g_room_owned_from = sv.parts_from;
+            g_room_owned_plus = sv.card.plus;
+        }
         room_ac_set(*c, saves ? "MEMORY CARD" : "AI CARD");
-        note("AC LOADED");
+        note(saves ? "AC AND PARTS LOADED" : "AC LOADED");
         g_room_view = RV_GARAGE;
     }
 }
@@ -1424,8 +1587,8 @@ static void draw_room_settings(LauncherModel* m, const Gfx& g, const Input& in, 
         "Where the match is fought. RANDOM picks one when the match starts.",
         "The game's own VS TIME LIMIT. When time runs out, the AC with more AP wins.",
         "SINGLE: one fight. BEST OF 3 / 5: the first pilot to win 2 / 3 fights takes the set.",
-        "OFF: each pilot brings an AC as it is, from a memory card save or an AI card. "
-        "ON: every part is unlocked and the garage's ASSEMBLY, OPTIONAL PARTS, PAINT and EMBLEM can be used.",
+        "OFF: each pilot builds with the parts their own save owns (or brings an AI card's AC as it is). "
+        "ON: every part is unlocked, and the EXTRA GARAGE AC can be brought.",
         "FAST: both PCs read the disc at the fast speed, from the start of the match to the end of the set. "
         "ORIGINAL: the drive's real speed.",
         "Back to the room.",
@@ -1722,7 +1885,7 @@ static void draw_lobby_page(LauncherModel* m, const LauncherTheme& th,
             text(g, lx, y + 77.0f, 11.0f, kBright, room_rounds_label(g_room.rounds));
             text(g, 340.0f, y + 96.0f, 10.0f, kDim, "GARAGE");
             text(g, 400.0f, y + 96.0f, 10.0f, g_room.garage ? kHi : kText,
-                 g_room.garage ? "FULL (EVERY PART)" : "LOAD ONLY");
+                 g_room.garage ? "FULL (EVERY PART)" : "YOUR OWN PARTS");
         }
         y = 352.0f;
         if (s.seated_players < 2) {

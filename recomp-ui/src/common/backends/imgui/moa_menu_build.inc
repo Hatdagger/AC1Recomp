@@ -73,6 +73,16 @@ static bool paint_uniform();
 
 #include "moa_menu_asm.inc"
 
+/* The versus room (moa_menu_net.inc) lends the room's AC to these screens:
+ * back then hands the AC to the room instead of EXTRA GARAGE. With the
+ * host's FULL GARAGE off they offer only the pilot's own parts (what their
+ * save owns, and what came with the AC), and HUMAN PLUS stays as loaded. */
+static bool g_room_garage = false;
+static void room_take_edit();
+static bool room_own_parts_only();
+static bool room_part_ok(int byte, int id);
+static bool room_option_ok(int number);
+
 static bool parts_ready(const LauncherModel* m) {
     if (g_parts_state == 0) {
         const char* p = launcher_model_effective_rom_path(m);
@@ -101,7 +111,11 @@ static std::vector<int> slot_choices(int byte, bool optional) {
     std::vector<int> v;
     if (optional) v.push_back(255);
     const int cat = moa_record_cat(byte);
-    for (int i = 0; i < g_parts.count[cat]; ++i) v.push_back(g_parts.part[cat][i].id);
+    for (int i = 0; i < g_parts.count[cat]; ++i) {
+        const int id = g_parts.part[cat][i].id;
+        if (g_room_garage && room_own_parts_only() && !room_part_ok(byte, id)) continue;
+        v.push_back(id);
+    }
     return v;
 }
 
@@ -366,12 +380,6 @@ enum { B_AC = 0, B_PILOT, B_SLOT0, B_OPTS = B_SLOT0 + 11, B_PAINT, B_EMBLEM, B_P
 /* Opened from the main menu's ASSEMBLY (not the AI Battle card list): back
  * then returns to the main menu. */
 static bool g_build_standalone = false;
-
-/* The versus room (moa_menu_net.inc) lends the room's AC to these screens
- * when the host allows the full garage: back then hands the AC to the room
- * instead of EXTRA GARAGE. */
-static bool g_room_garage = false;
-static void room_take_edit();
 
 /* Back to EXTRA GARAGE: the AC goes into the garage, kept for next time. */
 static void leave_to_garage() {
@@ -727,6 +735,11 @@ static void draw_ai_asm(LauncherModel* m, const Gfx& g, const Input& in) {
         text_right(g, lx + w - 70.0f, top + 262.0f, 11.0f, kText, "------");
         text_right(g, lx + w - 70.0f, top + 276.0f, 11.0f, kText, "------");
     }
+    if (g_room_garage && room_own_parts_only()) {
+        const bool mine = locked || empty || room_part_ok(byte, id);
+        text(g, lx + 14.0f, top + 304.0f, 10.0f, mine ? kDim : kWarn,
+             mine ? "YOUR OWN PARTS ONLY" : "NOT ONE OF YOUR PARTS", w - 28.0f);
+    }
     g.dl->AddLine(at(g, lx, top + 336.0f), at(g, lx + w, top + 336.0f), kGameBlue, 1.5f * g.s);
     text(g, lx + 14.0f, top + 350.0f, 11.0f, kText, "NAME");
     text(g, lx + 70.0f, top + 350.0f, 11.0f, kText, locked ? "-" : p ? p->name : "NO EQUIPMENT");
@@ -881,6 +894,8 @@ static void draw_ai_opts(const Gfx& g, const Input& in) {
     moa_build_check(&g_parts, g_edit.rec, g_edit.plus, &chk);
     const unsigned mask = g_edit.rec[10] | (g_edit.rec[11] << 8);
     const int free_slots = chk.slots_max - chk.slots_used;
+    /* The versus room with FULL GARAGE off: own parts only, HUMAN PLUS as loaded. */
+    const bool own_only = g_room_garage && room_own_parts_only();
     header(g, "OPTIONAL PARTS", upper(g_edit.ac[0] ? g_edit.ac : "AC").c_str());
 
     /* the list */
@@ -891,7 +906,8 @@ static void draw_ai_opts(const Gfx& g, const Input& in) {
         const float y = top + 6.0f + rh * i;
         const bool plus = i == plus_row;
         const bool on = plus ? g_edit.plus != 0 : ((mask >> i) & 1u) != 0;
-        const bool fits = plus || on || g_parts.option[i].slots <= free_slots;
+        const bool mine = !own_only || (plus ? false : on || room_option_ok(i));
+        const bool fits = (plus || on || g_parts.option[i].slots <= free_slots) && (plus ? !own_only : mine);
         /* the fitted box */
         g.dl->AddRect(at(g, lx + 8.0f, y + 3.0f), at(g, lx + 30.0f, y + rh - 3.0f), kGameBlue, 0.0f, 0, 1.5f * g.s);
         if (on) g.dl->AddRectFilled(at(g, lx + 12.0f, y + 7.0f), at(g, lx + 26.0f, y + rh - 7.0f),
@@ -933,9 +949,17 @@ static void draw_ai_opts(const Gfx& g, const Input& in) {
     }
     /* the description line */
     game_box(g, lx, top + rh * rows + 20.0f, 592.0f, 26.0f);
-    text(g, lx + 10.0f, top + rh * rows + 26.0f, 11.0f, kText,
-         cur == plus_row ? "Lets the AC go over the load and energy limits. OFF or FULL."
-                         : moa_option_effect(cur), 572.0f);
+    const bool cur_mine = !own_only || (cur != plus_row && (((mask >> cur) & 1u) || room_option_ok(cur)));
+    if (own_only && cur == plus_row)
+        text(g, lx + 10.0f, top + rh * rows + 26.0f, 11.0f, kDim,
+             "FULL GARAGE is off: HUMAN PLUS stays as your AC came.", 572.0f);
+    else if (!cur_mine)
+        text(g, lx + 10.0f, top + rh * rows + 26.0f, 11.0f, kWarn,
+             "FULL GARAGE is off: this is not one of your parts.", 572.0f);
+    else
+        text(g, lx + 10.0f, top + rh * rows + 26.0f, 11.0f, kText,
+             cur == plus_row ? "Lets the AC go over the load and energy limits. OFF or FULL."
+                             : moa_option_effect(cur), 572.0f);
 
     footer(g, "UP/DOWN  PART      A / LEFT / RIGHT  FIT / REMOVE      B  BACK");
     if (in.back) {
@@ -946,11 +970,13 @@ static void draw_ai_opts(const Gfx& g, const Input& in) {
     if (activate < 0) return;
     cur = activate;
     if (activate == plus_row) {
+        if (own_only) { note("FULL GARAGE IS OFF: HUMAN PLUS STAYS AS YOUR AC CAME"); return; }
         g_edit.plus = g_edit.plus ? 0 : 9;      /* full = 9 */
         g_edit_dirty = true;
         return;
     }
     const bool on = (mask >> activate) & 1u;
+    if (!on && own_only && !room_option_ok(activate)) { note("NOT ONE OF YOUR PARTS"); return; }
     if (!on && g_parts.option[activate].slots > free_slots) { note("NOT ENOUGH SLOTS ON THIS CORE"); return; }
     const unsigned nm = on ? (mask & ~(1u << activate)) : (mask | (1u << activate));
     g_edit.rec[10] = (uint8_t)(nm & 255);

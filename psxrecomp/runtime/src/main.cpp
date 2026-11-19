@@ -6947,10 +6947,6 @@ static void pad_ext_host_extras(void*, int s, uint32_t* flags, uint32_t* lt,
 extern "C" int debug_server_get_trigger_override(uint32_t* lt, uint32_t* rt);
 #endif
 
-/* Netplay input transform ([[plugin]] netplay = "input"): this player's own
- * title pad transform runs on its local pad before staging, so the
- * transformed pad (buttons, sticks, presented type, NeGcon I/II) is what every
- * peer receives and simulates. Each peer transforms only its own seat. */
 /* psx_game_set_netplay_local_pad_filter (mod_plugins.h): trusted game code's
  * last word on this PC's own pad before it is staged for the match. */
 static PSXGameNetplayPadFilter s_np_local_pad_filter = nullptr;
@@ -6974,6 +6970,10 @@ static void netplay_game_filter_local_pad(PsxNetPad* pad) {
     pad->ry = (uint8_t)(p.ry > 255u ? 255u : p.ry);
 }
 
+/* Netplay input transform ([[plugin]] netplay = "input"): this player's own
+ * title pad transform runs on its local pad before staging, so the
+ * transformed pad (buttons, sticks, presented type, NeGcon I/II) is what every
+ * peer receives and simulates. Each peer transforms only its own seat. */
 static void netplay_transform_local_pad(PsxNetPad* pad, int override_active) {
     if (!PSXRecompV4::mod_runtime_netplay_input_active() ||
         psx_netplay_is_spectator())
@@ -17385,7 +17385,11 @@ static int practice_session(void) {
 }
 static void practice_room_pump(void) {
 #if defined(RECOMP_LAUNCHER)
-    if (!practice_session()) return;
+    if (!practice_session()) {           /* no stale reading for the next practice */
+        s_practice_status = -1;
+        s_practice_other_ready = 0;
+        return;
+    }
     s_practice_status = ae_np_practice_tick(&s_practice_other_ready);
 #endif
 }

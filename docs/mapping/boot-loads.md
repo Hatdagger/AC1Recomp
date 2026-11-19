@@ -293,7 +293,8 @@ save). `moa_card_to_save` starts from it since branch `load-game-fixes`.
 
 ## 10. Open
 
-- Hub background black after the direct LOAD GAME: the hub open restores the two MENU_TIM 0
-  strips the title branch stores (0x800A6EB4 / 0x800A6EC8); the direct start opens the hub
-  before that store. Fix (store them after the SCENARIO pictures) merged in 3a8e581 with the
-  mission picker fix (§9a); both waiting for the user's test of master.
+- ~~Hub background black after the direct LOAD GAME~~ fixed 2026-11-18 (merge of
+  `hub-background-direct`, user-tested): the StoreImage from VRAM left the hub's RAM copies
+  0x8004ACA8 / 0x8004B6F0 black in the recomp, so `moa_quick_start.c` now writes MENU_TIM 0's
+  tile (VRAM (416,0) 16×64, 4-bit) and its 16 colours ((368,225)) from the disc, as Rogue
+  Arena does with its belt tiles. Mission picker fix (§9a) waiting for the user's test.

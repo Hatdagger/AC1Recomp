@@ -33,17 +33,6 @@ Both players need the same build and the same disc.
    declines from their own menu within 10 seconds; the score stays.
    RETURN TO LOBBY (press twice) or Esc takes both PCs back to the room.
 
-Practice while waiting: pressing READY while the other pilot isn't ready
-offers PRACTICE WHILE YOU WAIT? (A: practice, B: wait). Practice is Player vs
-AI against a target dummy (the game's new-game AC, standing still, its AP held
-full) on the room's stage, with no time limit. Meanwhile the other pilot's
-room shows PRACTISING, the runtime keeps the seat alive (PSX_MOA_PRACTICE,
-`main.cpp` practice_room_pump), and when the other pilot presses READY the
-game shows THE OTHER PILOT IS READY for 3 seconds and goes back to the room,
-READY again, so the count starts. Quitting practice from the game's own pause
-goes back to the room not ready. If the room is lost, the game says so and
-returns to the launcher.
-
 Memory cards are match-only copies on both sides: nothing done in a netplay
 session is written back to a player's own save file.
 

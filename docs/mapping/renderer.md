@@ -7,8 +7,9 @@ natively (the custom-engine road).
 
 Disc: USA disc 1 (SLUS-01030 v1.0). Written 2026-11-18 from the repo (master) and the
 framework docs in `psxrecomp/docs`. Nothing below is measured yet unless it says where it came
-from. Status: lane claimed 2026-11-18; **step 1 done for VS (FDAT 209), 2026-11-18** (§1 "Frame
-anatomy (VS)"). Next: step 2 (camera) and the camera-only render pass in VS.
+from. Status: lane claimed 2026-11-18; **steps 1 and 2 done for VS (FDAT 209), 2026-11-18** (§1 "Frame
+anatomy (VS)", "Camera (VS)"). First milestone (camera-only render pass) written, waiting for
+review and a test run.
 
 ## 1. What we already have
 
@@ -153,6 +154,59 @@ Each record draws into one half of VRAM and its DISPENV shows the **other** half
 | Camera inputs | `0x801A9A88` / `0x801A9A9C` (copied from the main loop's stack each frame); per view `0x801A9AB0` |
 | Device reads | `0x800535F4` in the frame end (sound upkeep `?`): filter it like the link engine's `moa_link_sound_filter` |
 
+### Camera (VS, FDAT 209)
+
+Read from FDAT 209 on 2026-11-18 (step 2). Anything not yet proven by a run is marked `?`.
+
+- **Input, once per step:** the main loop calls the camera routine **`0x80087B90(out)`** for each
+  player (`0x8003EAA0` = that player's block; camera record through player block +0x39C; it calls
+  the chase camera `0x800878FC`). It writes 16 bytes on the main loop's stack (P1 `sp+0x10`, P2
+  `sp+0x20`): **eye x, y, z, (not read by the draw), look-at x, y, z, (not read)**, halves, world
+  units. These two are the draw's **only camera input**: the scene render takes them as its
+  arguments, `0x80067404(P1, P2)`; (0, 0) keeps the last ones (only on the match-end path).
+- **Scene render:** copies them to `0x801A9A88` / `0x801A9A9C` (stride 0x14). Word +0x10 of each
+  (`0x801A9A98`, `0x801A9AAC`) = the stage area the eye is in: `0x80072E70(previous area, camera)`
+  checks the stage's area boxes (from `0x801BDFD0`: min x / y / z at +0 / +2 / +4, max at +8 / +0xA /
+  +0xC, flags +0x30) `?`.
+- **Per view, `0x800670C8`** (`0x8003EAA0` = the viewed player; its camera copied to `0x801A9AB0`,
+  its area to `0x801A9AAC`):
+  - **`0x80014344(eye, look-at, Rx, Ry, R)`** (main program): yaw from the x / z offset, pitch from
+    the height difference, **no roll**; Rx → `0x801A9C30`, Ry → scratchpad `0x1F800210`,
+    **R = Rx · Ry → `0x801A9AC0`** (MulMatrix0 `0x80029444`).
+  - The eye goes into R's translation words (`0x801A9AD4` / `D8` / `DC`); **T = R · (−eye) →
+    `0x801A9AE0`** (`0x80029904`, ApplyMatrixLV `?`), for object translations (R · position + T).
+  - Scaled copies: R ≫ 2 at `0x801A9AF0`, R ≫ 3 at `0x801A9B10`, three more steps of
+    `0x800139F8` from each (`0x801A9B30` / `50` / `70`, and from a copy of R with its eye at
+    `0x801A9B90`: `0x801A9BB0` / `D0` / `F0`), Rx ≫ 2 at `0x801A9C10`. Their use is step 3 (model
+    scale levels `?`).
+  - Then `0x80067004` `?`, `SetTransMatrix(0x80036AC4)` (main-program data `?`), and a list at
+    `0x801ADC70` (count `0x801ADF74`) whose positions minus the eye go through the GTE (step 3).
+- **Projection:** `SetGeomScreen(160)` and `SetGeomOffset(79, 115)` only at setup (`0x8005C1E8`,
+  the only callers in FDAT 209). Both views use them; the DRAWENV offsets (2, 5) / (160, 5) place
+  the views. Nothing changes them in a fight: no other calls, and no direct GTE writes to H or
+  OFX / OFY anywhere in FDAT 209 (its direct `ctc2` writes are rotation, translation and light
+  registers only). The cockpit view only moves the eye.
+- **What moves per step (render passes):** the two 16-byte cameras. Everything above is rebuilt from
+  them inside the render; smoothing, cockpit view and the camera record are logic-side (the camera
+  routine, data lane), so a pass only needs the render's two arguments.
+
+### First milestone: camera-only render pass (VS) — written, not run yet
+
+Package `acrecomp.moa.frame-rate` (`mods/preloaded`, off by default, option "Frame rate": display /
+60 / 120), plugin `psxrecomp/runtime/src/mod_builtin_moa_frame_rate.c`. Waiting for review before
+it is pushed.
+
+| Item | Choice |
+|---|---|
+| Pass point | **scene render entry** `0x80067404` from the main loop (`$ra` `0x80052698`), before the real render runs: frame n is complete, step n+1's logic is done, and the render has not stepped anything yet, so nothing the render itself steps (effects, counters) is stepped twice. (The frame-end entry `0x8005C050` was rejected: frame n's `DrawOTag` may still be running there, and passes refuse while a GPU walk is in flight.) |
+| Rect | current record +0xC0 (full-screen DRAWENV of frame n's area = the other record's DISPENV); flip mode PENDING |
+| Pass | cameras blended linearly between the last two steps (a coordinate that jumps more than 2,048 in a step = cut: that camera is not blended), buffer index ^ 1 (so the render's swap draws into frame n's area), frame start = Timer 1 − 800 (so the 715-line wait ends at once), call the render; inside passes `0x800535F4` (queued sounds), `0x80053DD0` (frame-begin sound upkeep) and `0x80053284` (start a sound) are skipped |
+| Frame timing | from Timer 1 (count and part-line) and the VBlank clock: VBlanks before the flip, and how long frame n stays up if the next frame takes the usual 715 lines (2 or 3 VBlanks). Unit-tested against a simulated frame clock: 99.96 % exact; the rest are VBlanks that fall between the timer tick and the game's `PutDispEnv` |
+| Hooks | `game.toml` `mod_function_entry_funcs`: `0x80067404`, `0x800535F4`, `0x80053DD0`, `0x80053284` (each hook checks the engine entry word and six code signatures first) |
+| Counters | `moa.frame-rate.` `enabled`, `frames`, `passes`, `unpaired`, `unavailable`, `period_2`, `period_3_plus`, `camera_move_lt64` / `lt256` / `lt1024` / `le2048`, `camera_cut` |
+| To check in a run | RENDER_PASSES.md "Porting a title" step 7: `render_pass_stats` (passes, no faults), `render_pass_dump` images between their neighbours, `PSX_RENDER_PASS_VERIFY=1` with `verify_mismatch` 0; the camera-move counters to set the cut limit from real motion |
+| Expected look | the camera glides; ACs, shots and effects still step at the game's rate (and sit one step ahead of the camera inside a frame), until steps 4–5 blend them |
+
 ## 2. What the mapping switches on (the payoff)
 
 Each row is a framework feature that already exists and is waiting on facts only we can supply.
@@ -185,6 +239,7 @@ Then the other engines look for the same routines (§4).
 2. **Camera.** What the GTE is fed per view: rotation matrix, translation, projection distance
    (H), screen offset; which bytes of the camera record and smoothing state produce them.
    *Test:* a camera-only render pass in VS (in-between camera, everything else still).
+   **Mapping done for VS; plugin written** (§1 "Camera (VS)", "First milestone").
    **First milestone:** proves the 60 fps road on this game.
 3. **Draw list.** Every routine the scene render calls, named by what it draws: stage, ACs,
    object pool, effects, shadows, HUD, radar, text. *Method:* `tools/gpu_frame_layers.py`

@@ -21,7 +21,7 @@ Several chats map Master of Arena at the same time. To avoid double work:
 | Missions: weapon detail +0x04 | `parts-tables.md` | data chat | Narrow check only: does the missions engine (FDAT 207) read weapon detail +0x04? Not the rest of the missions lane | done 2026-11-17: yes, and so do VS, arena and replay (the earlier "no reader" was wrong); see `parts-tables.md` |
 | Menus: scenario hub | `menus-hub.md` | hub chat | The hub ring (FDAT 206 from `0x800552C0`): its 8 entries, tables, input, models and labels, and how to add / remove / replace entries. Not the screens behind the entries (garage, shop, …) | static read done 2026-11-17, icon and caption pictures found |
 | Missions | `missions.md` | missions chat | Scenario missions apart from the shared fight code: picking and launching a mission (mission screen table `0x8019F7A8`, list builder `0x800942BC`, which routine sets the mission id), the missions engine FDAT 207, **per-mission code and maps = FDAT 0–99** (5 entries per mission, not MIS.T), MIS.T (mission screen data, briefings, mail), objectives, win/lose checks, timer, results and rewards, non-AC enemies and the enemy list, scripted sequences, mail triggers. The AC object, damage and weapons in flight stay with the battle chat | claimed 2026-11-17 |
-| Renderer | `renderer.md` | renderer chat | How a fight is drawn, in every engine: frame anatomy (scene render, draw / display buffers, ordering table, flip), camera → view (GTE matrix, projection), which routine draws what (stage, ACs, object pool, effects, HUD), the ACs' joint matrices, culling and sorting. Goal: the framework's render passes (in-between frames), widescreen and draw-distance features, native drawing later. Not what AC object fields mean in play (battle chat), the camera record's setup fields (data chat), what is loaded into VRAM (boot chat) or mission maps (missions chat) | plan written 2026-11-18 (§3 work order); step 1 (frame anatomy) done for VS 2026-11-18; camera next |
+| Renderer | `renderer.md` | renderer chat | How a fight is drawn, in every engine: frame anatomy (scene render, draw / display buffers, ordering table, flip), camera → view (GTE matrix, projection), which routine draws what (stage, ACs, object pool, effects, HUD), the ACs' joint matrices, culling and sorting. Goal: the framework's render passes (in-between frames), widescreen and draw-distance features, native drawing later. Not what AC object fields mean in play (battle chat), the camera record's setup fields (data chat), what is loaded into VRAM (boot chat) or mission maps (missions chat) | plan written 2026-11-18 (§3 work order); steps 1–2 (frame anatomy, camera) done for VS 2026-11-18; camera-only render pass written, not run yet |
 
 Not claimed yet (claim before starting): the save → RAM unpack (the copy table of the 'N' inline unpack in LOAD,
 see "Hub chat → launch chat"), menus and UI flow (other than mode launch and the hub ring), sound/music, stage data
@@ -218,6 +218,13 @@ Boot chat → Rogue Arena work (2026-11-18):
   the game's arena screen load them; its ghost records set byte 14 = 0, custom paint). The
   routine is `0x800C0D14(records, n)`; byte 14 ≠ 0 picks one of 15 pre-painted texture sets,
   used by 12 disc opponents. Details in `boot-loads.md` §7.
+
+Renderer chat → data chat (2026-11-18):
+- **`0x80087B90` is the VS main loop's per-player camera routine**, not only an alternate one: the
+  main loop calls it for both players every step (`0x80052674` / `0x80052684`, `0x8003EAA0` = the
+  player block), it writes eye + look-at (16 bytes) to its argument and calls the chase camera
+  `0x800878FC`. `stat-block.md` lists it as "alternate `0x80087B90`"; worth a look when you are next
+  in "Camera setup". Details in `renderer.md`, "Camera (VS)".
 
 Launch chat → data chat:
 - Stage (compiled +0x05 = player block +0x255) at VS START = byte `0x800D5800[map − 1]`,

@@ -177,10 +177,10 @@ incomplete.", "AC equipment incomplete.", "No OPTIONAL parts available.", "Begin
 | Page | Opens with | States |
 |---|---|---|
 | ASSEMBLY | windows (16, 40, 144, 184) + (176, 162, 128, 62), `0x800807E4` → `0x800808A0` | `0x80082BEC` page task → `0x80086260` → `0x800862DC` → **`0x800865B4` slot input** (browse, equip, fix-ups) → on ○ `0x800887E0` → `0x80088924` summary of the AC → `0x8008935C` ✕ / ○ → `0x800897E4` garage menu. Fix-up notices `0x80089514` / `0x80089750`. **Read in depth: §2h** |
-| OPTIONAL PARTS | `0x80091204`: windows (16, 64, 144, ?), (16, 202, 288, 24), (168, 158, 128, 40), (168, 34, 128, 120) | `0x80091610` → `0x80091C7C` → **`0x80092020` input** ("Not enough open slots.", tone 10 on fitting; loads the option part's picture: MODEL slot 1 and SPEC_T textures) → back `0x80092794` |
-| PERFORMANCE | `0x80092A34`: windows (8, 40, 160, 180) + (176, 162, 128, 62) | `0x80092BB4` stats page (PRICE, OFFENSIVE / DEFENSIVE POINT, STABILITY, MOBILITY, MOVING / TURNING SPEED, BOOST ABILITY, SUPPORT SYSTEM, RADAR RANGE, FCS PERFORMANCE, OVERALL, GRADE) → ○ `0x800936A8` |
-| CHANGE COLOR | `0x800809C8`: window (32, 40, 136, 48) | `0x8008A254` (CHANGE PATTERN, EDIT COLOR) → `0x8008A32C` input. Patterns: `0x8008A748` → `0x8008DCC8` (CROSS STRIPES … CUSTOM). Colour schemes list `0x8008A910` → `0x8008AC78`. Edit colour: `0x8008B110` (GENERAL, HEAD, CORE, ARMS, LEGS, DEFAULT) → `0x8008B304` → editor `0x8008B900` / `0x8008B9BC` (windows (16, 40, 144, 128) + (20, 177, 134, 24)) → `0x8008BDF0` → close `0x8008CDF4` |
-| EDIT EMBLEM | `0x80074DFC` (from `0x8007ED74`) | emblem editor: canvas window (80, 50, 104, 144), menu `0x800751AC` (ZOOM, UNDO, CLEAR, SAMPLE, APPLY, CANCEL) → input `0x80075354`; samples `0x80076064` (PICTURE MENU_TIM 8) → "Load the sample?" `0x8007646C`; `0x800779A0` puts the canvas into VRAM (LoadImage); done `0x80077204` |
+| OPTIONAL PARTS | `0x80091204`: windows (16, 64, 144, ?), (16, 202, 288, 24), (168, 158, 128, 40), (168, 34, 128, 120) | `0x80091610` → `0x80091C7C` → **`0x80092020` input** ("Not enough open slots.", tone 10 on fitting; loads the option part's picture: MODEL slot 1 and SPEC_T textures) → back `0x80092794`. **Read in depth: §2j** |
+| PERFORMANCE | `0x80092A34`: windows (8, 40, 160, 180) + (176, 162, 128, 62) | `0x80092BB4` stats page (PRICE, OFFENSIVE / DEFENSIVE POINT, STABILITY, MOBILITY, MOVING / TURNING SPEED, BOOST ABILITY, SUPPORT SYSTEM, RADAR RANGE, FCS PERFORMANCE, OVERALL, GRADE) → ○ `0x800936A8`. **Read in depth: §2k** |
+| CHANGE COLOR | `0x800809C8`: window (32, 40, 136, 48) | `0x8008A254` (CHANGE PATTERN, EDIT COLOR) → `0x8008A32C` input. Patterns: `0x8008A748` → `0x8008DCC8` (CROSS STRIPES … CUSTOM). Colour schemes list `0x8008A910` → `0x8008AC78`. Edit colour: `0x8008B110` (GENERAL, HEAD, CORE, ARMS, LEGS, DEFAULT) → `0x8008B304` → editor `0x8008B900` / `0x8008B9BC` (windows (16, 40, 144, 128) + (20, 177, 134, 24)) → `0x8008BDF0` → close `0x8008CDF4`. **Read in depth: §2l** |
+| EDIT EMBLEM | `0x80074DFC` (from `0x8007ED74`) | emblem editor: drawing `0x80074FD4`; ○ opens the menu window (80, 50, 104, 144) (the first read called it the canvas), menu `0x800751AC` (ZOOM, UNDO, CLEAR, SAMPLE, APPLY, CANCEL) → input `0x80075354`; samples `0x80076064` (PICTURE MENU_TIM 8) → "Load the sample?" `0x8007646C`; `0x800779A0` puts the canvas into VRAM (LoadImage); done `0x80077204`. **Read in depth: §2m** |
 | NAME ENTRY | `0x8007EEE8`: window (32, 40, 128, 48) | `0x8007F038` (AC NAME, PILOT NAME) → `0x8007F0CC` → windows (24, 40, 288, 136) + (24, 178, 144, 48) → name entry `0x8008E8D8` |
 | RANKER LOGIC | `0x8007F6C4` | `0x8007F8A8` sliders ("SHORT … LONG") → `0x800800DC` input → close `0x800806B0` |
 | AC TEST | build check `0x8007E164`, "Begin test?" | **`0x8007DB44`**: stage 40, music 255, compile, `0x80067000` starts it, `0x8003EA7B` = 1 so the garage reopens on page 6 afterwards. Stage 40 is one of the two that use loading picture 62 in the missions road (`mode-launch.md` §2), so the test seems to run in the missions engine `?` |
@@ -312,7 +312,7 @@ changes a count, because an equipped part is one of the owned ones. The same bac
 sides needs 2 owned.
 
 **Rows** (row → kind `0x800CD618`; kind table `0x800D4544`, 16 bytes per kind: part count, MENU_TMD
-start, owned-bit mask): 0 head, 1 core, 2 arms, 3 legs, 4 generator, 5 FCS, 6 options, 7 booster,
+start, owned-bit mask, framing table; kind order in §2j): 0 head, 1 core, 2 arms, 3 legs, 4 generator, 5 FCS, 6 options, 7 booster,
 8 back L, 9 back R, 10 blade, 11 hand weapon. The cursor skips a row when no part of its kind is
 owned. It always skips the options row, because the page clears that mask when it opens (options
 have their own page). It also skips the back row that a two-slot unit blocks.
@@ -448,11 +448,15 @@ which copies:
 - the AC's texture pages (704, 256, 128 × 256) to (704, 0)
 - the emblem (544, 384) to (560, 384)
 - the colour rows 486–494 to 495–503
+- (added 2026-11-18) the option-picture area (384, 256) 64 × 64 to (512, 256), and its colour row
+  482 to row 511. That area normally parks a two-slot back unit's texture (`boot-loads.md` §4c),
+  and an option part's SPEC_T texture lands on it (§2j)
 
 The preview (`0x8009CD38`) loads the hovered part into MODEL slot 29 and queues its textures,
-which land on the AC's own pages. On leaving, `0x80063634` copies all three back. The shop kind →
+which land on the AC's own pages. On leaving, `0x80063634` copies all of them back. The shop kind →
 garage kind table and the MENU_TMD starts are at `0x800531D4`; each part's framing numbers come
-from the kind table's third pointer (`0x800D4544` +8, 16 bytes per part) `?`.
+from the kind table's fourth field (`0x800D4544` +8, 16 bytes per part; the option page reads it the
+same way, §2j).
 
 **Controls.** △ in the part list shows or hides both the spec page (`0x8009CF4C`, every spec
 line) and the part's shop text (`0x8009FCA4`, MIS.T 385 at `0x801A0390`). ○ goes back (tone 0).
@@ -463,6 +467,314 @@ The same message routine and the same three checks serve `0x800967C4` in the mis
 (messages "Your equipment is incomplete.", "You exceed the weight limit.", "You don't have
 enough energy."), probably the mission sortie `?`. The shop never picks the big picture messages
 (CAN NOT BUY, CAN NOT SELL, GENERATOR FIRST, ENERGY SHORT) `?`.
+
+### 2j. OPTIONAL PARTS in depth (2026-11-18)
+
+The garage's option page. The VS AC SETUP runs the same page (§2f) behind its own copy of the opener.
+
+**What it edits.** The fitted options are the bits of the u16 at `0x8003EA70` (bit n = option n).
+Owned options are the bits of `0x8004B558`, built from the owned counts by `0x80090FD8` (one
+mask per kind, see below). Options are 13 records of 44 bytes at `0x800D1AA0`:
+
+| Offset | Field |
+|---|---|
+| +0x00 | name ("SP-MAW") |
+| +0x12 | type text ("RADAR OPTION", "MISSILE JAMMER", …), shown in the side panel |
+| +0x24 | price (u32) |
+| +0x28 | slots it takes |
+
+Descriptions are a separate pointer table at `0x800CDE8C` (13 texts: "Adds Missile indicator to
+Radar." … "Decreases energy used.", and "New SP-ABS" for SP-ABS_Re). The page code loops over 19
+ids, but ids 13–18 have no record and no description (`parts-tables.md`, "Room for more optional
+parts").
+
+**The kind table** `0x800D4544` (16 bytes per kind: part count, MENU_TMD start, owned mask, framing
+table, and at +0x0C one more table not read here `?`) is in this order: 0 core, 1 legs, 2 arms, 3 blade, 4 head, 5 booster, 6 back weapon, 7 hand
+weapon, 8 FCS, **9 options** (19, MENU_TMD 218, mask `0x8004B558`, framing `0x800D375C`), 10
+generator. The owned masks are listed per shop kind by `0x80090FD8` (pointers `0x800CDE44`, counts
+`0x800CDE6C`); it builds the arm weapons as one 32-bit list and then splits it into hand weapons
+(`0x8004B528`, 26 bits) and blades (`0x8004B520`, 6 bits).
+
+**Opening** (garage menu row 1, in `0x8007CAC8`):
+1. Copies the owned counts to `0x8003EB20` and rebuilds the masks (`0x80090FD8`).
+2. No option owned: "No OPTIONAL parts available." (box 20, 104, 280, 32), back to the menu.
+3. In the Arena Maker's garage (`0x8003EA7D` = 1 or 2): tone 7 and nothing opens.
+4. Otherwise: page token `0x80068C3C`; **backs up VRAM (384, 256) 64 × 64 to (512, 256) and CLUT
+   row 482 to row 511** (that area parks a two-slot back unit's texture, `boot-loads.md` §4a / §4c,
+   and the option picture is about to land on it); MODEL slot 13 ← MENU_TMD 218 + the first owned
+   option; TIM queue SPEC_T entry = that option; closes the garage menu windows.
+5. `0x80091204` → `0x80091504` open four windows (tone 6 each): list (16, 64, 144, rows × 24) with
+   rows = owned options up to 5, description line (16, 202, 288, 24), slots box (168, 158, 128, 40),
+   picture box (168, 34, 128, 120). Then the page task `0x80091610` (group 0) runs and the garage
+   task idles. `0x80091C7C` waits for the disc, adds the cursor bar (`0x80091558`, group 4, follows
+   row × 24) and the model, then the input `0x80092020`.
+
+The VS AC SETUP's copy of the opener (`0x800B4C18` … `0x800B4F18`) sizes the list window for up to
+6 rows; the page itself always shows 5 `?`.
+
+**What it shows.**
+- **List** (rebuilt every frame by `0x80091B78` → `0x800919F8`): the owned options in id order,
+  5 rows of 24 pixels, scrolling. Each row is the option's name (font 16, x 36). A fitted option
+  gets a marker sprite (`0x800CD970`) and text colour 21 (others 16). Arrow sprites at (14, 48) and
+  (14, 184) show when there are more rows above or below.
+- **Slots box** (`0x80091DB0`, group 8): the type text, then "n SLOT REQUIRED" / "n SLOTS
+  REQUIRED" (the option's +0x28) and "n SLOT AVAILABLE" / "n SLOTS AVAILABLE". Available = the
+  core's slots (core record +0x36, core table `0x800CEAC8`, 56 bytes per core) minus the slots of
+  every fitted option.
+- **Description line** (`0x80091FB8`, group 10): the text from `0x800CDE8C` (font 6, at 4, 9).
+- **Picture box: the option's 3D model**, turning. On each cursor move (`0x80091BF0`) the page stops
+  a read still in flight (`0x80058864`), then loads MENU_TMD 218 + id into MODEL slot 1 and SPEC_T
+  entry id; once the disc is idle the model moves to **MODEL slot 13** (the AC's option slot; the
+  hub loads nothing there) and a model task (`0x800927E8`, group 6) shows it. Framing: kind table
+  +8 → 16 bytes per option (+0x0C scale, +0x04 depth `?`). **SPEC_T textures are 128 × 128 pixels,
+  8-bit, at VRAM (384, 256) with their CLUT at (320, 482)** (entries 0–12; 13 and up are empty).
+
+**Controls** (`0x80092020`):
+
+| Button | Does |
+|---|---|
+| Up / Down | move the cursor, scrolling at the top or bottom (tone 1). This page sets `0x801B1CDC` = 2, which halves the pad auto-repeat times (3 / 6 frames instead of 6 / 12) |
+| ✕ on a fitted option | removes it (tone 11) |
+| ✕ on an option not fitted | fits it if available slots ≥ its slots (tone 10), else "Not enough open slots." (box 20, 104, 280, 32), nothing changes |
+| ○ | leave (tone 0) |
+
+Nothing else is checked: not SP-ABS and SP-ABS_Re together (SP-ABS_Re is never sold), not Human
+Plus, not the owned count (only owned options are listed). The core's slots are only enforced
+here and by ASSEMBLY's core fix-up (§2h); the sortie check doesn't look at options.
+
+**Leaving** (○): kills the token and the arrows, stops any read, **puts VRAM (512, 256) back over
+(384, 256) and row 511 back over row 482**, kills groups 3–10, frees the model buffers of slots
+13, 1 and 2, closes the four windows, sets `0x801B1CDC` = 2, and returns to the garage menu
+(`0x80092794` → `0x8007C8F4`). Only the top 64 × 64 of the picture area is restored; the lower half
+(384, 320) keeps the last option picture `?`.
+
+The shop does the same backup and restore of (384, 256) and row 482 (`0x8006354C` /
+`0x80063634`, besides the three copies listed in §2i).
+
+**For the launcher:** the game's option model is MENU_TMD 218 + option bit and its texture is SPEC_T
+entry = option bit, so the launcher's `models/menu/option/NN` (exported from base 218 in
+`acr/acr_models_moa.c`) is numbered by option bit. The "ASSUMPTION to check" in the Extra Garage
+plan holds.
+
+### 2k. PERFORMANCE and GRADE in depth (2026-11-18)
+
+A display page: it works everything out once, shows it, and closes. Nothing is loaded from the
+disc and nothing in the AC changes. The launcher already copies its maths (`moa_parts.c`
+`moa_performance`); the differences are listed at the end.
+
+**Opening** (garage menu row 2): it needs a head, arms, legs, FCS, generator and, unless the legs
+are caterpillars, a booster. Otherwise "Your equipment is incomplete." (box 20, 104, 280, 32).
+Weapons are optional. Then token `0x80068C8C`, windows (8, 40, 160, 180) and (176, 162, 128, 62)
+(tone 6), the page task `0x80092B44` → **`0x80092BB4`** (all the maths and text) → `0x800936A8`,
+which waits for **✕ or ○** (tone 0), closes both windows and returns to the garage menu
+(`0x8009379C`).
+
+`0x80092BB4` runs the stat totals `0x8007E730` (`0x8004B710`, §2h) and **the compile
+`0x800A7BB4(0)`**, only to read the radar range. That overwrites player 1's compiled block
+(`0x800453E8`), which VS START compiles again anyway.
+
+**Layout.** Big window: the AC name (`0x800371EC`) at the top, then 11 rows 12 pixels apart from
+y 24 (font 6; labels at x 8, sub-items at x 20; values at x 110, 6 digits, so at most 999,999),
+then GRADE at (8, 162) with its word at (98, 162). Small window: AP, WEIGHT, PRICE (font 16; AP 6
+digits, weight and price 8).
+
+| Row | Value |
+|---|---|
+| AP | totals +0x04 (head + core + arms + legs AP) |
+| WEIGHT | totals +0x08 |
+| PRICE | totals +0x0C **plus the price of every fitted option** (the totals leave options out; ids 0–12) |
+| OFFENSIVE POINT | attack of: the weapon arms (weapon-arms detail +0x14) **or** the hand weapon (detail +0x14) + the blade (+0x30); plus back L and back R (detail +0x14) |
+| DEFENSIVE POINT | shell defence of head + core + arms + legs (+0x2E) and energy defence (+0x30) added together; SP-S/SCR makes the shell part ×1.15, SP-E/SCR the energy part ×1.15 |
+| STABILITY | legs +0x40, + 800 with SP-SAP, + 1,600 with SP-ABS_Re or else + 800 with SP-ABS |
+| MOBILITY | moving + turning + boost (below) |
+| · MOVING SPEED | legs +0x36 × 10 |
+| · TURNING SPEED | legs +0x38 × 10 |
+| · BOOST ABILITY | (booster +0x2C ÷ weight) × 1,000, the division done first in whole numbers; caterpillars use 9,800 in place of the booster |
+| SUPPORT SYSTEM | radar + FCS (below) |
+| · RADAR RANGE | **compiled radar range (+0x1E) ÷ 10**: the head's range, or with a back radar (40–51) the best back radar's range (the head's is ignored then), or 5,120 with Human Plus on and no radar at all (`stat-block.md` +0x1E) |
+| · FCS PERFORMANCE | FCS +0x2E ÷ 10 + (the four lock boxes' widths, +0x30 + 12k) ÷ 10 + (their heights, +0x32 + 12k) ÷ 10 + max lock (+0x2C) × 100 − the first lock class's lock value (+0x38) × 10 |
+| OVERALL | the sum of the 9 plain rows: offensive + defensive + stability + moving + turning + boost + radar + FCS |
+| **GRADE** | from OVERALL: **25,000 and up SUPERFINE; 20,000–24,999 GREAT; 15,000–19,999 FINE; 10,000–14,999 OK; below 10,000 POOR** (words at `0x80052EDC` …) |
+
+The launcher's own example (`moa_parts.h`): its check build comes to OVERALL 12,641, so OK.
+
+**Differences in the launcher's `moa_performance`:**
+- RADAR RANGE: it shows 0 when a back radar is fitted; the game shows the back radar's range ÷ 10.
+  With Human Plus on and no radar the game shows 512; the launcher shows the head's figure. Both
+  change SUPPORT SYSTEM, OVERALL and so the GRADE.
+- PRICE: the game also adds SP-ABS_Re's price (option 12, never sold, so only on edited saves).
+- It has no GRADE yet; the thresholds above are all it needs.
+
+### 2l. CHANGE COLOR in depth (2026-11-18)
+
+**What it edits** (all of it goes into the save, `boot-loads.md` §4e):
+- **`0x8003EA72` = pattern** (0–15) and **`0x8003EA73` = colour scheme** (0–3) of a pattern.
+- **`0x80036FBC` = the custom paint, 48 bytes**: 4 parts in the order **head, core, arms, legs**, each
+  4 colours in the order **BASE, OPTIONAL, DETAIL, JOINT**, each R, G, B. The editor allows 0–64
+  per channel.
+
+**How the colours reach the AC.** Only the head, core, arms and legs are painted. Each has a 256-colour
+palette row in VRAM: **core 486, legs 488, arms 489, head 490** (row 487 is not touched).
+- Pattern 0 (CUSTOM): the textures are the plain ones (CORE_T entry = core id, …) and
+  **`0x80082530`** builds the four rows from the paint bytes, then LoadImage (rows from `0x800CD9F8`).
+- Patterns 1–15: the textures are the pattern's own versions: **HEAD_T head + 18v, CORE_T core + 11v,
+  ARMS_T arms + 24v, LEG_T legs + 40v** (v = pattern; `0x8008E70C`), and the colours are a ready-made
+  set, **MENU_TIM 26 + 4v + scheme** (entries 30–89: a TIM whose CLUT is row 486 and whose "picture"
+  is rows 488–490). The paint bytes are kept, so going back to CUSTOM brings them back.
+
+**The ramp `0x80082530` builds** (one row = 4 colours × 64 entries): colour c fills entries 64c …
+64c + 63, as 32 shades from bright to dark, each written twice (entries 64c + 2k and 64c + 2k + 1).
+For each channel value p:
+- p = 0–31: the shades run from p down towards 1.
+- **p = 32–64: they run from 31 (full) down towards p − 30**, so values above 31 make a brighter
+  colour with lighter shadows; 61 and up stay at full brightness all the way.
+- Steps are equal, worked out in 1/256 units ((start − end) ÷ 32), stopping at the end value; the
+  5-bit result is packed as PSX colour R | G << 5 | B << 10.
+
+**Opening** (garage menu row 3): needs head, arms and legs, else "Your equipment is incomplete.".
+Token `0x80068CDC`, window (32, 40, 136, 48), menu CHANGE PATTERN / EDIT COLOR (`0x8008A254`,
+input `0x8008A32C`: Up / Down tone 1, ✕ tone 2, ○ tone 0 back to the garage menu). The menu reacts
+to ✕ only on a new press, not a held one.
+- **CHANGE PATTERN** → `0x8008A748` (window 32, 40, 136, 168) → the pattern list `0x8008DCC8`.
+- **EDIT COLOR** with pattern 0 → `0x8008A82C` (window 32, 40, 136, 144) → the part menu
+  `0x8008B110`; with any other pattern → `0x8008A910` (window 32, 40, 136, 128) → the scheme list
+  `0x8008A9F4`.
+
+The VS AC SETUP has CHANGE PATTERN and EDIT COLOR as two entries of its own and makes the same
+pattern-0 choice for EDIT COLOR (`0x800B49BC`).
+
+**Pattern list** (`0x8008DCC8`, input `0x8008DFA4`): 16 rows, 7 shown at a time (names rendered
+into VRAM x 960 by `0x80064CC0`, names table `0x800CD66C`); the cursor is the pattern number:
+
+| 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
+|---|---|---|---|---|---|---|---|
+| CUSTOM | WOODLAND | HOARFROST | NIGHT SHIFT | DESERT PATTERN | DUCK HUNTER | LEAF PATTERN | REDDISH DUST |
+| **8** | **9** | **10** | **11** | **12** | **13** | **14** | **15** |
+| DECORATOR | GLEAM SASH | TIGER STRIPE | STAINED BRONZE | OUTER BUSH | SERPENT SCALE | TILE PATTERN | CROSS STRIPES |
+
+Up / Down tone 1 (no wrap). ✕ (tone 2) on a different pattern: writes `0x8003EA72`, queues the four
+body textures (and the scheme's colours), shows "Loading the sample." (window 16, 120, 280, 32),
+waits for the disc, builds the custom palette when the new pattern is 0, and stays in the list. **The
+scheme number is not reset**, so the new pattern opens with the same scheme slot. ✕ on the current
+pattern does nothing. ○ (tone 0) goes back to the menu.
+
+**Scheme list** (`0x8008A9F4`, input `0x8008AC78`; names table `0x800CD6AC`, 16 bytes per pattern
+1–15): the pattern's name on top and 4 rows, **STANDARD and three named schemes** (WOODLAND:
+STANDARD, BLOOD VESSEL, GREEN MONSTER, BRIGHT LAZULI … CROSS STRIPES: STANDARD, PURPLE MESH, PALACE
+TAPESTRY, GREEN CHURCH; 45 names in all). Up / Down wrap around (tone 1). ✕ (tone 2) writes
+`0x8003EA73` and queues MENU_TIM 26 + 4v + scheme straight away, staying in the list. ○ back.
+
+**Part menu** (`0x8008B110`, input `0x8008B304`): GENERAL, HEAD, CORE, ARMS, LEGS, DEFAULT (wraps).
+- GENERAL … LEGS → the colour editor for that part.
+- **DEFAULT** copies the default paint (`0x8005295C`) over all 48 bytes at once, **with no question**,
+  and rebuilds the palettes. The default gives every part BASE (32, 36, 28), OPTIONAL (16, 20, 12),
+  DETAIL (18, 24, 12), JOINT (12, 18, 12).
+- In the Arena Maker's garage (`0x8003EA7D` = 1 or 2) ✕ only plays tone 7.
+
+**Colour editor** (`0x8008B900` → `0x8008B9BC`, windows (16, 40, 144, 128) and the help line
+(20, 177, 134, 24); input `0x8008BDF0`). It shows the part (GENERAL, HEAD, …), the colour (BASE COLOR,
+OPTIONAL COLOR, DETAIL COLOR, JOINT COLOR), three bars R, G, B and the values as six digits. It edits
+the paint bytes in place and rebuilds the palettes every frame, so the AC on screen changes as you go.
+On opening it copies the 48 bytes to `0x801D14D0`.
+
+| Button | Does |
+|---|---|
+| Up / Down | pick R, G or B (wraps) |
+| Left / Right | −1 / +1, or −2 / +2 while L1 or R1 is held (Right on G: only R1); stops at 0 and 64 |
+| △ | next colour: BASE → OPTIONAL → DETAIL → JOINT → BASE |
+| ✕ | keep (tone 2) and close |
+| ○ | **cancel** (tone 0): puts back the part's 12 bytes (GENERAL: all 48) from the copy, rebuilds, closes |
+
+**GENERAL** edits the core's colours and copies them over the head, arms and legs after every change
+(and ○ restores all four).
+
+**For the launcher and previews:** the launcher's renders use `acr_colour_ramp` (`acr/acr_model.c`),
+which fades every colour to black and clips values above 31. The game's ramp above keeps lighter
+shadows for values 32–64 (the default BASE colour uses them: its green runs 31 → 6 in the game,
+31 → 1 in the launcher). The paint layout (`moa_ac_view.c` `paint_section`: head 0, core 1, arms 2,
+legs 3) and the palette rows (`acr_models_moa.c`) already match the game.
+
+### 2m. EDIT EMBLEM in depth (2026-11-18)
+
+**The emblem** is 64 × 64 pixels with 16 colours (4-bit); colour 0 is see-through. **It lives only in
+VRAM**: pixels at (544, 384), 16 × 64 VRAM units, and its 16 colours at (256, 510). No RAM copy is
+kept between screens: LOAD writes it there from the save (+1152, 2,048 bytes, and +3200, 32 bytes,
+`boot-loads.md` §4a), the editor's APPLY writes it there, and the shop parks a copy at (560, 384)
+while it is open (§2i).
+
+**Opening** (garage menu row 4, no checks): token `0x80068D2C`, the garage windows close, then
+`0x8007ED74` sets up the screen (`0x80011F94` twice `?`) and opens the editor task `0x80074DFC`
+(group 0, returns to `0x8007EEAC`). The editor:
+- takes a 2,048-byte heap buffer for the picture (task +0x8C);
+- copies the emblem to a **working copy at VRAM (922, 0)** and an **undo copy at (922, 64)**, and its
+  colours to (944, 0);
+- reads the picture into the buffer and the colours into an RGB table (`0x8019EA08`, 4 bytes per
+  colour) (`0x80077EAC`); colour 0 is made see-through, and a black in any other slot gets the PSX
+  "solid" bit so it is drawn;
+- sets `0x801B1CDC` = 2 (fast pad repeat, as on the option page).
+
+Every frame `0x800779A0` uploads the buffer to (922, 0) and the colours to (944, 0); the canvas on
+screen shows that working copy.
+
+**The canvas** covers x 172–299, y 36–163 on screen (128 × 128): the whole emblem at ×2, or part of
+it at ×4 / ×8. The cursor moves one emblem pixel per step on the canvas and 8 screen pixels per
+step outside it.
+
+**Drawing controls** (state `0x80074FD4`, tools `0x80079080`):
+
+| Button | Does |
+|---|---|
+| D-pad | move the cursor |
+| ✕ | use the tool (below). Outside the canvas while zoomed: scroll the view |
+| L1 / R1 | previous / next tool (7, wrapping) |
+| L2 / R2 | previous / next colour (16, wrapping) |
+| △ on the canvas | take the colour under the cursor |
+| SELECT | zoom ×2 → ×4 → ×8 → ×2, centred on the cursor |
+| □ | edit the current colour (below) |
+| ○ | the menu (below) |
+| SELECT + L1 + R1 | copies the working emblem to VRAM (416, 0) and its colours to (368, 225), a menu picture area the hub reloads anyway: a leftover test copy `?` |
+
+**Tools** (task +0x90; there are no names in the code, only icons; the shapes are told apart by
+how they draw):
+
+| # | Tool | Code |
+|---|---|---|
+| 0 | dot: draws while ✕ is held | `0x80079B70` |
+| 1 | line | `0x8007A7BC` |
+| 2 | box | `0x8007AAD0` |
+| 3 | filled box | `0x8007ADD8` |
+| 4 | circle | `0x8007A338` |
+| 5 | fill (flood fill, with a work buffer from the heap) | `0x80079E14` → `0x8007B094` |
+| 6 | shift: the d-pad moves the whole picture one pixel up, right, down or left (wrapping `?`) | `0x80079F4C` |
+
+The shape tools (1–4, `0x80079BE0`) take a first point on ✕ and draw on the second ✕; ○ drops the
+first point. **The undo point** (`0x8007B3C0`: (922, 0) → (922, 64)) is saved on opening, on CLEAR,
+before each line, box, circle or fill, and when the dot tool is picked. So UNDO takes back the last
+shape or fill, or every dot drawn since the dot tool was picked; shifts are not undo points.
+
+**Colour editing** (□, state `0x80077270`): L2 / R2 change which colour, Up / Down pick R, G or B,
+Left / Right step the channel by 8 (32 steps, 0–248). ✕ keeps the colour, ○ puts it back as it was
+when picked, and □, ✕ or ○ return to drawing. Colours are edited in the RGB table and appear on the
+canvas at once.
+
+**Menu** (○, window (80, 50, 104, 144), input `0x80075354`): ○ returns to drawing.
+
+| Entry | Does |
+|---|---|
+| ZOOM | small picker (188, 50, …) for ×2, ×4, ×8 |
+| UNDO | one step back for the picture (not the colours): the undo copy (922, 64) back into the picture (`0x8007B3F4`) |
+| CLEAR | the whole picture to colour 0, no question (undoable) |
+| SAMPLE | the sample picker, window (16, 48, 284, 144). **32 samples**: two sheets, PICTURE MENU_TIM 8 and 9 (each a 256 × 256 4-bit picture at VRAM (960, 0) holding a 4 × 4 grid of emblems; sample n = column + 4 × row has its own 16 colours in CLUT row (336, 240 + n); rectangles `0x800CD3DC` / `0x800CD45C`). D-pad moves (4 across, the rows scroll), L1 / R1 change sheet, ✕ asks "Load the sample?" and copies the sample and its colours into the picture **and the undo copy**, so UNDO can't bring the old picture back. In the Arena Maker's garage only tone 7 plays |
+| APPLY | "Change the emblem?" (cursor starts on NO). Yes: **MoveImage (922, 0) → (544, 384) and (944, 0) → (256, 510)**, then leave |
+| CANCEL | "Delete changes to the emblem?" (starts on NO). Yes: leave without copying |
+
+Leaving (`0x80077204`) frees the picture buffer and returns to the garage menu.
+
+**For the launcher, overlays and direct starts:** an emblem is just those two VRAM blocks. Writing
+a new one means LoadImage of 2,048 bytes to (544, 384) and 32 bytes to (256, 510), as LOAD does;
+the next DATA SAVE stores it. The Extra Garage's EMBLEM import only has to produce 16 colours with
+colour 0 see-through. Any mod that uses VRAM around (922, 0)–(959, 127) or (960, 0) while the editor
+is open would clash with it.
 
 ## 3. What this means for overlays and the launcher
 
@@ -489,6 +801,18 @@ enough energy."), probably the mission sortie `?`. The shop never picks the big 
 - **A shop of your own:** owned and stock counts, price = the part table's +36 both ways, and
   the leaving step that unfits sold parts (§2i). While the game's shop is open, VRAM (704, 0)
   holds the backup of the AC's textures, so nothing else should use that area then.
+- **Options of your own** (§2j): the fitted bits are `0x8003EA70`; the only rule the game applies
+  is "the option's slots ≤ the core's slots left". Its picture is MENU_TMD 218 + bit and SPEC_T
+  entry = bit, landing on VRAM (384, 256), which must be put back afterwards (a two-slot back
+  unit's texture parks there).
+- **PERFORMANCE in the launcher** (§2k): copy the table, use the compiled radar range (back radars,
+  Human Plus), add option prices, and the GRADE is OVERALL against 10,000 / 15,000 / 20,000 / 25,000.
+- **Paint** (§2l): pattern `0x8003EA72`, scheme `0x8003EA73`, 48 paint bytes at `0x80036FBC`; after
+  changing them, either queue the pattern's textures and colours as `0x8008E70C` does, or for
+  pattern 0 run the ramp `0x80082530` (or LoadImage rows 486 / 488 / 489 / 490 built the same way).
+  A preview drawn outside the game should use the game's ramp (§2l) to match.
+- **Emblem** (§2m): two VRAM blocks, (544, 384) and (256, 510). A launcher import that writes them
+  (as LOAD does) gives the game the new emblem; the next save keeps it.
 
 ## 4. Open
 
@@ -503,3 +827,9 @@ enough energy."), probably the mission sortie `?`. The shop never picks the big 
   framing numbers, where new stock comes from (missions lane `?`).
 - ASSEMBLY (§2h): what the preview slide value (±180 / 360 / 540) changes, MENU_TMD entry 2 and
   MODEL slot 17 (NO EQUIP stand-ins).
+- OPTIONAL PARTS (§2j): the VS copy of the opener sizes the list window for 6 rows while the page
+  shows 5 (check in game); the kind table's +0x0C table; the framing record's other fields.
+- EDIT EMBLEM (§2m): the tool names (only icons; the shapes were told apart by their code), whether
+  SHIFT wraps around, what `0x80011F94` changes on entry, and the SELECT + L1 + R1 copy.
+- CHANGE COLOR (§2l): which parts of a texture use each of the four colours (the palette order is
+  BASE, OPTIONAL, DETAIL, JOINT; what is painted with which is up to each texture).

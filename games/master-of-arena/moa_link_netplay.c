@@ -482,6 +482,9 @@ static void moa_link_render_entry(struct CPUState *cpu, uint32_t address)
     if (!moa_link_engine_loaded() ||
         !moa_code_is(MOA_LINK_RENDER, 0x27BDFF98u, 0xAFB20060u))
         return;
+    /* The match's first scene render: the start's black, silent cover goes
+     * now, so it never sits over the game (presentation only). */
+    moa_vs_direct_np_fight_frame();
     if (psx_netplay_local_slot() != 1) return; /* the host's view is the frame */
     if (psx_mod_render_local_view_status() != PSX_MOD_RENDER_PASS_READY) {
         psx_mod_counter_add("moa.link.guest_view_unavailable", 1);

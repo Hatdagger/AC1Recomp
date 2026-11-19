@@ -312,17 +312,18 @@ void moa_vs_direct_reset(void)
  * No menu is ever seen or heard and nothing presses its buttons:
  *   - A black, silent cover goes up at the title (presentation only, each PC
  *     its own: the game's sound is muted, the picture hidden) and comes down
- *     on the first frame of the fight.
+ *     at the link engine's first scene render, so it never covers the game.
  *   - The versus menu's setup still runs behind it: it loads what the match
  *     needs besides the ACs (docs/mapping/boot-loads.md §9, "VS without
  *     menus": the saved VRAM blocks, sound bank, menu pictures, model slots).
  *   - Once the menu reaches its input state (0x800B22D8, every load done),
  *     that state is taken over each frame (a0 = the menu's task):
  *       1. LOADING = FAST ends (moa_np_room_fast_load_end);
- *       2. both cards' units and the room's time limit are written (not at
- *          the title: the menu's first state, 0x800B0FE4, puts the default
- *          AC into both players and resets the settings on a first visit);
- *       3. the units' graphics load (vsd_load_run), one step a frame;
+ *       2. both cards' units are written (not at the title: the menu's
+ *          first state, 0x800B0FE4, puts the default AC into both players
+ *          and resets the settings on a first visit);
+ *       3. the units' graphics load (vsd_load_run), one step a frame, then
+ *          the room's time limit is set (after the ACs);
  *       4. what the VS START row does on X is done (key layouts, vibration,
  *          menus-screens.md §2p) and the menu's state (task +0x78) becomes
  *          VS START (0x800B2D7C): build check, stat blocks, stage, music,
@@ -584,12 +585,10 @@ static int vsd_np_vs_input_filter(struct CPUState *cpu, uint32_t address)
             return 1;
         }
         /* Now, after the menu's first visit filled the staging with the
-         * default AC and reset the settings: both cards' units, and the
-         * room's time limit. */
+         * default AC and reset the settings: both cards' units. */
         static struct moa_vs_unit unit[2];
         for (unsigned p = 0; p < 2; p++)
             if (vsd_np_card_unit(p, &unit[p])) moa_vs_direct_set_unit(p, &unit[p]);
-        moa_np_room_title();
         n.phase = NP_PHASE_LOADING;
         n.step = 0;
         n.t = 0;
@@ -610,6 +609,9 @@ static int vsd_np_vs_input_filter(struct CPUState *cpu, uint32_t address)
         }
         vsd_log(timed_out ? "units' graphics: the disc never went quiet, going on"
                           : "units' graphics loaded");
+        /* The room's time limit after the ACs (a save brings its own
+         * settings), before VS START reads it. */
+        moa_np_room_title();
         break;
     }
     default:

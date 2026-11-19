@@ -563,9 +563,32 @@ static int vsd_np_title_filter(struct CPUState *cpu, uint32_t address)
 /* The menu's controller sampling, once a frame: while the start is ours,
  * both pads read idle (nothing on the menu moves) and the start's clock
  * runs; the start gives up if the menu never gets far enough. */
+/* Test aid: about once a second while the cover is up, what the start sees
+ * (host state, log only): its bytes, and every live task's state routine
+ * that lies in the versus menu's code. */
+static void vsd_np_heartbeat(void)
+{
+    static uint32_t calls;
+    if (!vsd_cover_up || (++calls % 60u) != 1u) return;
+    char line[512];
+    int len = snprintf(line, sizeof line, "sampler #%u: bytes %02X %02X phase %u step %u t %u frames %u; menu %s; tasks:",
+                       (unsigned)calls, psx_mod_read_byte(VSD_NP_STATE), psx_mod_read_byte(VSD_NP_STATE + 1u),
+                       psx_mod_read_byte(VSD_NP_STATE + 2u), psx_mod_read_byte(VSD_NP_STATE + 3u),
+                       psx_mod_read_half(VSD_NP_STATE + 4u), psx_mod_read_half(VSD_NP_STATE + 6u),
+                       vsd_np_menu_in_memory() ? "in memory" : "NOT in memory");
+    for (uint32_t t = VSD_TASKS_FIRST; t + 0xF0u <= VSD_TASKS_END && len < (int)sizeof line - 24; t += 0xF0u) {
+        if (!psx_mod_read_byte(t)) continue;
+        const uint32_t st = psx_mod_read_word(t + VSD_TASK_STATE);
+        if (st >= 0x800B0CB4u && st < 0x800B6A80u)
+            len += snprintf(line + len, sizeof line - (size_t)len, " %08X", (unsigned)st);
+    }
+    vsd_log(line);
+}
+
 static void vsd_np_input_entry(struct CPUState *cpu, uint32_t address)
 {
     vsd_cover_check();
+    vsd_np_heartbeat();
     struct vsd_np n;
     if (!vsd_np_get(&n)) return;
     const uint32_t word = psx_mod_read_word(address);

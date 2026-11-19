@@ -201,6 +201,29 @@ comes through untouched.
   **0x8003EA72**, the player's own byte 14), then `0x80083130` when flag ≠ 0. A full AC loads
   nothing here; its models and textures come from the hub open and `0x800822B0`.
 
+### 4e. LOAD's copy table: save → RAM (2026-11-18)
+
+LOAD's 'N' path (`0x80073610` … `0x80073B90`) copies these blocks of the save into the exe's data,
+unchanged. Offsets are in the 3,712-byte block LOAD reads (checksum at +384 over +432 … +3671). This
+is `k_unpack` in `moa_quick_start.c`, which the launcher's LOAD GAME applies (user-tested 2026-11-18).
+
+| Save | Bytes | RAM | What |
+|---|---|---|---|
+| +440 | 12 | 0x80036FB0 | garage part ids |
+| +452 | 2 | 0x8003EA72 | paint pattern / variant (0x8003EA72 = texture set, §4d) |
+| +454 | 2 | 0x8003EA70 | option parts |
+| +456 | 4 | 0x8003EA74 | credits |
+| +460 | 36 | 0x800371EC | AC name, pilot name |
+| +496 | 96 | 0x8004B508 | owned-part bitmasks (the finish rebuilds them anyway, §4d) |
+| +592 | 560 | 0x80036FBC | paint, owned parts (+640 → 0x80036FEC), shop stock (+896 → 0x800370EC) … |
+| +3232 | 44 | 0x8004AC50 | mission progress (§9a) |
+| +3276 | 288 | 0x8004B568 | settings, then the arena tables from 0x8004B5A0 (+3332): opponent counts +3553, arena lock +3562 |
+| +3564 | 8 | 0x8003EAC8 | Human PLUS and the flags after it |
+| +3572 | 100 | 0x8004B688 | rest of the arena state (+3607 → 0x8004B6AB) |
+
+Besides these, only the emblem (+1152 → VRAM (544,384)) and its colours (+3200 → (256,510)) leave
+the save, by LoadImage (§4a step 2). +384 is the checksum and +388 … +431 the list summary (rule 6).
+
 ## 5. VS setup (`0x800AB500` row 192 → `0x800B0CB4`)
 
 - Row: `0x80074DC0` (display env 0x800CD3B4), `0x800633A4` = **garage = the VS default AC**

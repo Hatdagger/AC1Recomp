@@ -21,19 +21,22 @@ Several chats map Master of Arena at the same time. To avoid double work:
 | Missions: weapon detail +0x04 | `parts-tables.md` | data chat | Narrow check only: does the missions engine (FDAT 207) read weapon detail +0x04? Not the rest of the missions lane | done 2026-11-17: yes, and so do VS, arena and replay (the earlier "no reader" was wrong); see `parts-tables.md` |
 | Menus: scenario hub | `menus-hub.md` | hub chat | The hub ring (FDAT 206 from `0x800552C0`): its 8 entries, tables, input, models and labels, and how to add / remove / replace entries. Not the screens behind the entries (garage, shop, …) | static read done 2026-11-17, icon and caption pictures found |
 | Missions | `missions.md` | missions chat | Scenario missions apart from the shared fight code: picking and launching a mission (mission screen table `0x8019F7A8`, list builder `0x800942BC`, which routine sets the mission id), the missions engine FDAT 207, **per-mission code and maps = FDAT 0–99** (5 entries per mission, not MIS.T), MIS.T (mission screen data, briefings, mail), objectives, win/lose checks, timer, results and rewards, non-AC enemies and the enemy list, scripted sequences, mail triggers. The AC object, damage and weapons in flight stay with the battle chat | claimed 2026-11-17 |
+| Menus and screens | `menus-screens.md` | boot chat | The screens behind the hub entries: Garage (all its pages), Shop, System (the card screen: DATA SAVE / LOAD, reports, EXIT GAME), Arena and Ex Arena lists, Arena Maker; the VS menu's own screens (AC SETUP, SELECT MAP); and the menu building blocks they share (tasks, windows, text and font, cursors and pad input, message boxes, menu sounds). For each screen: how it opens, what it loads, its states and tables, how it closes. Goal: Rogue Arena's overlays and moving menus into the launcher. Not the hub ring (hub chat), the missions or mail screens (missions chat), the title / NEW-LOAD / VS START flow (launch chat, `boot-loads.md`) or the arena fight launch (`boot-loads.md` §7) | claimed 2026-11-18 |
 | Renderer | `renderer.md` | renderer chat | How a fight is drawn, in every engine: frame anatomy (scene render, draw / display buffers, ordering table, flip), camera → view (GTE matrix, projection), which routine draws what (stage, ACs, object pool, effects, HUD), the ACs' joint matrices, culling and sorting. Goal: the framework's render passes (in-between frames), widescreen and draw-distance features, native drawing later. Not what AC object fields mean in play (battle chat), the camera record's setup fields (data chat), what is loaded into VRAM (boot chat) or mission maps (missions chat) | plan written 2026-11-18 (§3 work order); steps 1–2 (frame anatomy, camera) done for VS 2026-11-18; camera-only render pass written, not run yet |
 
-Not claimed yet (claim before starting): the save → RAM unpack (the copy table of the 'N' inline unpack in LOAD,
-see "Hub chat → launch chat"), menus and UI flow (other than mode launch and the hub ring), sound/music, stage data
+Not claimed yet (claim before starting): sound/music (the menu music is already described in the project doc
+`rogue-arena-music.md`: a SEQ on the sound chip started by `0x80064F24`; fight music is CD audio), stage data
 (FDAT 100–199 look like per-stage code + maps for another engine: code based near `0x80099xxx`)
 other than drawing the stage geometry, which the renderer lane has.
+
+Done (2026-11-18): the save → RAM unpack. LOAD's copy table is in `boot-loads.md` §4e.
 
 Already covered in code, not a mapping lane: **save / memory card file format.** The 8,192-byte scenario save block
 (checksum = sum of inverted bytes over +432 for 3,240 bytes, stored at +384, checked in LOAD by `0x80070F1C`), its garage,
 credits, names, owned parts, shop stock, arena flags and ranks, and the .mcd card image are read and written by
 `games/master-of-arena/moa_card.c` (cards ↔ saves, story saves, the launcher's MEMORY CARD manager) and `moa_arena_run.c`
 (`moa_run_make_save`). The field list is in the project doc `arena-run-design.md` ("Scenario save block"). Read those
-before mapping anything save-related. Not covered: how LOAD copies a save into RAM (the open item above).
+before mapping anything save-related. How LOAD copies a save into RAM: `boot-loads.md` §4e.
 
 Already covered in code, not a mapping lane: **arena opponent rosters.** Arena numbers, opponent
 counts (`0x800D5A08`), starts (`0x800D5A14`), names (`0x800D5A20`), the per-arena entries in

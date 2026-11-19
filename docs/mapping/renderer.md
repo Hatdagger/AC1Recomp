@@ -14,9 +14,11 @@ user-tested (the camera moves more smoothly, no visual defects) and merged into 
 2026-11-18 (§1 "Draw list (VS)"), not yet confirmed on screen. **Step 4 (ACs) read for VS
 2026-11-18** (§1 "ACs (VS)"): pose records, joint records, the joint hierarchy, the model and
 shadow draws; test 2 (ACs glide) on branch `renderer-vs-ac-pass`, built 2026-11-18 (CI run
-44443029592), waiting for the user's test. **Step 5 (object pool draws) static first cut for VS
+44443029592), waiting for the user's test; test 3 (object pool glides) on top of it, branch
+`renderer-vs-pool-pass`, built 2026-11-18 (CI run 44459105620), waiting too. **Step 5 (object pool draws) static first cut for VS
 2026-11-18** (§1 "Object pool draws (VS)"). **Step 7 (culling and sorting) static first cut for
-VS 2026-11-18** (§1 "Culling and sorting (VS)").
+VS 2026-11-18** (§1 "Culling and sorting (VS)"); arena edge sites read 2026-11-18 (§1 "Culling and
+sorting (arena)").
 
 ## 1. What we already have
 
@@ -519,8 +521,51 @@ native-wide extends each half's clip outward is not known `?`. **The arena (FDAT
 240 view) has the same tests at full width**: box corners `slti 0x140` / `0xF0` (`0x80063658`,
 `0x80063684`), cone ±160 / ±120 (`0x800685A8`–`0x800685C8`), stage vertex codes `slti 0x141` /
 `0xF1` (`0x8006E5A0`, `0x8006E69C`, `0x8006F3A4`, `0x8006F4A0`), stage-object vertices
-(`0x80061478`, `0x80061538`), and eight more `0x141` compares (`0x80065C3C`–`0x80066874`) not read
-yet.
+(`0x80061478`, `0x80061538`), and eight more `0x141` compares (`0x80065C3C`–`0x80066874`), which
+turn out to be depth tests (below).
+
+### Culling and sorting (arena, FDAT 210) — edge sites for widescreen
+
+Read from FDAT 210 on 2026-11-18, nothing measured in a run. The arena draws one 320 × 240 view:
+`SetGeomOffset(160, 120)` and `SetGeomScreen(320)` at `0x8005E3F8` (VS: 79, 115 and 160), so
+every pixel and projection constant is about twice VS's. The routines are VS's at other addresses.
+
+**The eight `0x141` compares are not screen edges.** All eight test **SZ ÷ 4 < 321** (scratchpad
+`0x1F800070` / `0x74`, stored from `mfc2 SZ3` ≫ 2): a line or quad with an end nearer than that is
+split in half (up to 2 levels, counter `0x1F800004`) and pieces with SZ ÷ 4 below 16 are dropped.
+Pairs at `0x80065C3C`/`C50` (recursive splitter `0x80065B90`) and `0x80065F1C`/`F30` (its caller
+`0x80065EF8`): semi-transparent lines, code 0x42. Pairs at `0x80066270`/`284` (in `0x800661C0`)
+and `0x80066860`/`874` (in `0x80066744`): semi-transparent textured quads, code 0x2E. VS has the same four pairs with
+**161** (`0x80063AD0`–`0x80064708`; the "streak's 161 test" above), so the threshold follows the
+projection distance (H + 1). **They stay out of the widescreen lists.** Likewise `slti 0x1F4` /
+`0xA0` in the stage vertex routines are SZ ÷ 4 tests (500 and 160, same as VS).
+
+**Arena screen-X sites, in the framework's forms** (left edge by `bgez`, right by `slti`; the
+`slti` sits in the `bgez`'s delay slot, as in VS):
+
+| Test | Routine | `bgez_sites` | `slti_sites` | `slti_lower_sites` |
+|---|---|---|---|---|
+| Area box corner (x < 0, x ≥ 320) | `0x800635C8` | `0x80063654` | `0x80063658` (`0x28420140`) | |
+| Object cone, centred (x < −160, x ≥ 160), from `0x800685E8` (x × 320 ÷ z by hand; 10 callers) | `0x800685A8` | | `0x800685B4` (`0x288200A0`) | `0x800685A8` (`0x2882FF60`) |
+| Stage near-level vertex codes (x < 0, x ≥ 321) | `0x8006E4AC`, `0x8006F2B0` | `0x8006E59C`, `0x8006E698`, `0x8006F3A0`, `0x8006F49C` | `0x8006E5A0`, `0x8006E69C`, `0x8006F3A4`, `0x8006F4A0` (`0x28420141`) | |
+| Stage-object vertex codes | `0x800613B8` | `0x80061474`, `0x80061534` | `0x80061478`, `0x80061538` (`0x28420141`) | |
+
+`bgez` words are `0x04410003` / `0x04410004`. The VS sites from the section above, in the same
+forms: `bgez_sites` `0x80061510`, `0x8006C90C`, `0x8006CA08`, `0x8006D710`, `0x8006D80C`,
+`0x8005F330`, `0x8005F3F0`; `slti_sites` `0x80061514`, `0x80066448`, `0x8006C910`, `0x8006CA0C`,
+`0x8006D714`, `0x8006D810`, `0x8005F334`, `0x8005F3F4`; `slti_lower_sites` `0x8006643C`.
+**Checked against all 212 FDAT entries placed at `0x80050DD8`: no other entry holds the same word
+at any of these 32 addresses**, so one list for both engines widens nothing else.
+
+**Also for widescreen, not a cull list:**
+- **Full-width boxes:** `addiu a2, zero, 0x140` (x = 0, width 320) at `0x800658E8`, `0x80065AD8`,
+  `0x80065B3C`, VS's `0x9E` boxes at full width (heights from `slti … 0xF0`, `0x80065914`–
+  `0x80065B0C`). In a wide view they stop at the 4:3 edges: they need x = −margin and width
+  320 + 2 × margin (a code patch or a framework form for immediates `?`).
+- **A world-anchored 2D marker:** `0x800584AC` (2 calls from `0x80068FE8`) projects a point by hand
+  (x × 320 ÷ z + 160) and shows it only while `sltiu 0x141` (`0x80058558`) and −120 ≤ y ≤ 120. It
+  reads the AC's +0x398 (target `?`), so it is a HUD marker `?`: the `sltiu` form fits
+  `screen_x_sites` (step 8).
 
 ## 2. What the mapping switches on (the payoff)
 
@@ -578,8 +623,10 @@ Then the other engines look for the same routines (§4).
    cut-offs, object limits. Feeds widescreen and draw distance.
    **Static first cut for VS 2026-11-18** (§1 "Culling and sorting (VS)": the four screen-edge
    tests and their instructions, the slot formula, the distance cut-offs, the buffer checks; the
-   arena's full-width copies of the edge tests listed). Still to do: confirm in a run, the stage
-   near path for close polygons, fog values.
+   arena's full-width copies of the edge tests listed). **Arena edge sites read 2026-11-18**
+   (§1 "Culling and sorting (arena)": every screen-X site in the framework's list forms, checked
+   against all FDAT entries; the eight `0x141` compares are depth splits, not edges). Still to do:
+   confirm in a run, the stage near path for close polygons, fog values, the full-width boxes.
    **Second milestone:** full render passes in VS (ACs, objects, camera), widescreen with no gaps.
 8. **HUD.** Sight `0x800576E0`, gauges, radar, text: positions and anchors, so widescreen can
    pin them to the screen edges and new HUD pieces can be added.

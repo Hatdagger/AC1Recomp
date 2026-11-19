@@ -15,7 +15,8 @@ user-tested (the camera moves more smoothly, no visual defects) and merged into 
 2026-11-18** (§1 "ACs (VS)"): pose records, joint records, the joint hierarchy, the model and
 shadow draws; test 2 (ACs glide) on branch `renderer-vs-ac-pass`, built 2026-11-18 (CI run
 44443029592), waiting for the user's test. **Step 5 (object pool draws) static first cut for VS
-2026-11-18** (§1 "Object pool draws (VS)").
+2026-11-18** (§1 "Object pool draws (VS)"). **Step 7 (culling and sorting) static first cut for
+VS 2026-11-18** (§1 "Culling and sorting (VS)").
 
 ## 1. What we already have
 
@@ -447,6 +448,80 @@ update routine (+0x18), owner (+0x08) and kind, and life (+0x16) down by exactly
 count unchanged). New objects are drawn where they appear. Bullets move 701 a step (rifle), so the
 move limit has to be far above the ACs' 512.
 
+### Culling and sorting (VS, FDAT 209) — step 7, static first cut
+
+Read from FDAT 209 on 2026-11-18. Nothing measured in a run yet; `?` marks guesses. Both views
+project with the GTE offset (79, 115) and the GPU draw offset places them, so the screen tests
+below are in the view's own pixels: **x 0…158, y 0…230**. There are no `AVSZ` commands and no GTE
+flag reads in FDAT 209: every cull and depth is plain CPU code.
+
+**Screen-edge tests** (what widescreen has to widen):
+
+| Test | Routine | Edges | Used by | X-edge instructions |
+|---|---|---|---|---|
+| **Area box**: 8 corners through `RTPS`, edge codes ANDed; the area is skipped when all corners are off one edge | `0x80061560` → corner `0x80061484` | x < 0, x ≥ 158; y < 0, y ≥ 230; a corner at or behind the eye adds 0x10; **a corner more than 16,384 behind the eye drops the whole area** (`0x800614EC`) `?` | every stage area (`0x80061700`), both levels of detail | `bgez` `0x80061510`; `slti 0x9E` `0x80061514` |
+| **Object cone**: the centre goes through `MVMVA`, is projected by hand (x × 160 ÷ z), and a box ± size wide, up to `height` tall, is tested; codes ANDed | `0x8006647C(far, &position, size, height)` → codes `0x8006643C` | centred: x < −79, x ≥ 79; y < −115, y ≥ 115; **z + size ≤ 0 or > `far` drops it** | ACs, stage-object models, every pool kind, `0x800665BC` | `slti -0x4F` `0x8006643C`; `slti 0x4F` `0x80066448` |
+| **Stage near-level vertices**: each vertex gets an edge code (byte +6 of its 16-byte entry at `0x801A2E60`); a triangle or quad is dropped when its codes AND to non-zero, or any vertex is behind the eye (code 0x1F) | `0x8006C81C` (for `0x8006CAEC`), `0x8006D620` (for the lit `0x8006D8EC`) | x < 0, x ≥ 159; y < 0, y ≥ 231 | stage near level | `bgez` `0x8006C90C`, `0x8006CA08`, `0x8006D710`, `0x8006D80C`; `slti 0x9F` `0x8006C910`, `0x8006CA0C`, `0x8006D714`, `0x8006D810` |
+| **Stage-object vertices** (same buffer and codes) | `0x8005F274` (from `0x8005F474`) | as above | stage objects with flag bit 3 (`0x80063004`) or bit 5 (`0x80062F34`) | `bgez` `0x8005F330`, `0x8005F3F0`; `slti 0x9F` `0x8005F334`, `0x8005F3F4` |
+
+**Not tested against the edges** (only facing, `NCLIP`, and depth; the GPU's DRAWENV clip cuts the
+rest): AC meshes (`0x8005CF1C`, `0x8005E048`, `0x800699B0`, `0x8006ACE8`; their vertices
+`0x8005CE48` get no codes), the stage far level (vertices `0x8005FFF4` without codes; draws
+`0x80060CB4`, `0x800600A0`, `0x80067D00`, `0x8006882C`), and the pool kinds' own draws (the
+streak's 161 test at `0x800646F4` is a depth test). So **an AC or a shot is never cut at a screen
+edge except by the object cone**, and far scenery only by the area box.
+
+**Full-width boxes:** stage objects with flag bit 1 (`0x80063648`) draw boxes **158 wide from x = 0**
+through the fade-box routine `0x800632E8` (`addiu a2, zero, 0x9E` at `0x8006377C`, `0x8006396C`,
+`0x800639D0`), at heights worked out from the camera's pitch (`0x8002A4B4`, table `0x8009109C`): a
+horizon or water band `?`. In widescreen they would stop short of the sides.
+
+**Sorting (ordering table):** each vertex keeps SZ ÷ 4. A triangle's slot is (sum of the three) ×
+5,461 ≫ (15 + s), a quad's (sum of the four) ≫ (3 + s): both ≈ average SZ ÷ 8 ≫ s. The draw adds an
+offset and links the packet at OT + slot × 4. With `ClearOTagR`, a higher slot is drawn earlier
+(farther).
+
+| Draw | s | Offset | Guard |
+|---|---|---|---|
+| AC meshes | `0x801A2564`: 0 near, 2 far (the AC draw's near / far switch, ±4,096) | per draw (from AC +0x42) | slot must be above 0 (`0x1F800028` = 0, e.g. `0x8005D220`): a near cut |
+| Stage near level | `0x801A2560` = 2 (set at `0x80061CB8`) | 120 entries (`0x8006CBA4`) + 4 × a signed byte from the polygon `?` | none; SZ ÷ 4 below 500 or 160 sends the polygon to a near path (`0x8006CEC8`: split or clipped `?`) |
+| Stage far level | `0x801A2564` = −1 (set at `0x80061CB0`): slot ≈ average SZ ÷ 4 | per draw | none; a full-range SZ would pass 8,191, but its view matrices are scaled down (R ≫ 2, R ≫ 3), which keeps SZ small `?` |
+| Streak (pool kind 1) | | 120 or 100 entries (`0x80064640` / `0x8006464C`) | |
+
+SZ is 16-bit, so with s = 0 the slot runs 0…8,191, exactly the OT's size. **There is no upper
+guard anywhere**: only an offset can push a slot past the end (stage near: 120 + bias; with s = 2
+the deepest stage slot is about 2,170) `?`.
+
+**Distance cut-offs** (what draw distance would change):
+
+| What | Where | Value |
+|---|---|---|
+| Area drawn only within a distance (area +0x30 bit 12) | `0x80061DB4`–`0x80061DC0` | ((eye − centre) ÷ 2)² ≫ 18 < area +0x34 & 0xFFF |
+| Near level only while the eye is within 1,300 of the area's box (± 0x514) | `0x80061938`–`0x800619B0` | 1,300 |
+| Far level forced outside the box grown by (+0x34 ≫ 8) & 0xFFF0 (area +0x30 bit 13) | `0x800617F8`–`0x800618A8` | per area |
+| Area box corner far behind the eye | `0x800614EC` | 16,384 |
+| Object cone `far`: stage-object models | `0x80066060` (`addiu a0, zero, 0xFA0`) | **4,000** (size 500) |
+| Object cone `far`: ACs, then the pool (doubled at `0x80066110`) | `0x80065C84` (`ori fp, zero, 0xFFFF`) | 65,535 / 131,070 (no real limit) |
+| Fog | `SetFarColor(0, 0, 0)` at setup; `SetFogNearFar` per area light set (`0x801A8D80` + n × 104) | `?` |
+
+**Limits:** OT 8,192 entries per view; primitive buffer 135,168 bytes per frame (both views). AC
+meshes and stage objects check the worst case first (52 bytes a polygon: `0x8005D078`,
+`0x8005F564`) and skip the whole mesh when it won't fit; the stage draws don't check `?`. Pool 256
+records, stage objects 128, per-area list 16.
+
+**For widescreen (native-wide, `WIDESCREEN.md`):** these are pixel compares, so they fit the
+framework's `[widescreen.cull]` lists: right edges `slti_sites`, left `bgez_sites`, the cone's
+left `slti_lower_sites`. `auto_screen_x` won't find them (it looks for `sltiu` 320 paired with
+224). Listed sites in overlays are widened only where the whole instruction word matches, so one
+list can name sites in several engines. VS is split screen: the shared code widens both edges of
+both views, so the inner edges would draw a little more for the DRAWENV clip to cut; whether
+native-wide extends each half's clip outward is not known `?`. **The arena (FDAT 210, one 320 ×
+240 view) has the same tests at full width**: box corners `slti 0x140` / `0xF0` (`0x80063658`,
+`0x80063684`), cone ±160 / ±120 (`0x800685A8`–`0x800685C8`), stage vertex codes `slti 0x141` /
+`0xF1` (`0x8006E5A0`, `0x8006E69C`, `0x8006F3A4`, `0x8006F4A0`), stage-object vertices
+(`0x80061478`, `0x80061538`), and eight more `0x141` compares (`0x80065C3C`–`0x80066874`) not read
+yet.
+
 ## 2. What the mapping switches on (the payoff)
 
 Each row is a framework feature that already exists and is waiting on facts only we can supply.
@@ -501,6 +576,10 @@ Then the other engines look for the same routines (§4).
    pieces are drawn. (Collision stays with the battle lane: AC +0x2C / +0x30.)
 7. **Culling and sorting.** OT depth formula and range guards, screen-edge tests, distance
    cut-offs, object limits. Feeds widescreen and draw distance.
+   **Static first cut for VS 2026-11-18** (§1 "Culling and sorting (VS)": the four screen-edge
+   tests and their instructions, the slot formula, the distance cut-offs, the buffer checks; the
+   arena's full-width copies of the edge tests listed). Still to do: confirm in a run, the stage
+   near path for close polygons, fog values.
    **Second milestone:** full render passes in VS (ACs, objects, camera), widescreen with no gaps.
 8. **HUD.** Sight `0x800576E0`, gauges, radar, text: positions and anchors, so widescreen can
    pin them to the screen edges and new HUD pieces can be added.
@@ -515,7 +594,7 @@ own addresses. Find each routine by its first instructions (as `moa_link_netplay
 | FDAT | Engine | Status |
 |---|---|---|
 | 209 | split-screen VS | first (§3); frame anatomy done (scene render `0x80067404`, swap `0x8005BFB8`, pass point `0x8005C050`) |
-| 210 | arena (also AI Battle) | second: the mode most players see |
+| 210 | arena (also AI Battle) | second: the mode most players see; its screen-edge tests found at full width (§1 "Culling and sorting (VS)") |
 | 208 | link versus (netplay) | scene render, camera and buffer record known (§1) |
 | 207 | missions | after arena; per-mission code (FDAT 0–99) may add its own draws |
 | 211 | VS replay | last |

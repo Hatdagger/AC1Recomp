@@ -190,6 +190,8 @@ incomplete.", "AC equipment incomplete.", "No OPTIONAL parts available.", "Begin
 
 ### 2b. Shop (`0x800990AC()`, hub entry 1)
 
+States below; what it lists, prices, refusals and loads: **§2i**.
+
 Before it opens, the hub runs `0x8006354C` and **`0x80099048`**: it waits for the disc and reads
 **`MIS.T` entry 385 = the part descriptions** (256 lines of 76 bytes, e.g. "Head unit with
 built-in bio sensor.") into `0x801A0390` (callback `0x80098FF4`, flag `0x801A0000` = 1 while
@@ -402,6 +404,66 @@ is over the core's max, or the carried weight is over the legs' max, **unless `0
 With Human Plus on, it first writes a full-width "Rebel>" there. It checks neither option slots
 nor the fit rules above, which only the garage enforces.
 
+### 2i. Shop in depth (2026-11-18)
+
+**Owned and stock.** Every part has an owned count (`0x80036FEC`) and a stock count
+(`0x800370EC`). Both tables are 256 bytes in the owned-table order (`moa_card.c`
+`moa_owned_index`): head 0, core 18, arms 29, legs 53, generator 93, FCS 108, options 124,
+boosters 143, back weapons 157, arm weapons 217 (hand weapons, then the 6 blades from 243). The
+shop's 10 kinds follow the same order (HEAD … BACK WEAPON, ARM WEAPON; names at `0x800530D8`).
+In a new game the stock is 1 for most parts and 2 for back weapons (one per side). It is 0 for
+parts not on sale yet.
+
+**The lists** (`0x80099734` BUY, `0x80099990` SELL, work area `0x8019FFE0`: kinds +0x13C, ids
++0x23C, count +0x5C, per-kind counts +0xAC, per-kind starts +0xB6):
+- BUY lists every part with stock ≠ 0, in that order, picked through the kinds window first.
+- SELL lists every part with owned ≠ 0 in one list, without a kinds window. Fitted parts are in it.
+
+**Prices.** `0x8009B488(kind, id)` = the part table's u32 at +36, for buying and selling alike: a
+sale pays the full price back. Credits stop at −999,999 when buying and 99,999,999 when selling.
+
+**A deal** (`0x800A01B4`, after the "Buy Part?" / "Sell Part?" box (96, 100, 144, 48)): buying
+adds 1 to owned and takes 1 from stock, selling does the reverse. A count of 127 is never
+changed (unlimited `?`). Credits move by the price.
+
+**Refusals** (`0x800B6550`; the caller puts the message number in `0x801FBEC1` / `0x801FBEC2`):
+
+| When | Message |
+|---|---|
+| BUY, a kind with nothing on sale | "No parts to buy." |
+| BUY, credits below the price (so nothing can be bought in debt) | "Not enough credits." |
+| SELL, nothing owned | "No parts to sell." |
+| SELL with credits below 0, for a head, core, arms, legs, generator, FCS or booster: the part is fitted, or the AC is incomplete (`0x80096288`), over the legs' weight limit (`0x8009632C`) or short of energy (`0x800965B8`) | "Pay back your debt first" |
+
+With credits at 0 or more, SELL checks nothing, and weapons and options can always be sold. So a
+fitted part can be sold.
+
+**Leaving** (`0x8009A26C`). `0x80099EAC` empties every garage slot whose part now has an owned
+count of 0. It also empties back R when both sides hold the same weapon and fewer than 2 are
+owned. Options are not checked `?`. Then `0x80063634` puts the AC's textures back (below), and
+the hub opens.
+
+**The 3D preview and the AC's textures.** Before the shop opens, the hub runs `0x8006354C`,
+which copies:
+- the AC's texture pages (704, 256, 128 × 256) to (704, 0)
+- the emblem (544, 384) to (560, 384)
+- the colour rows 486–494 to 495–503
+
+The preview (`0x8009CD38`) loads the hovered part into MODEL slot 29 and queues its textures,
+which land on the AC's own pages. On leaving, `0x80063634` copies all three back. The shop kind →
+garage kind table and the MENU_TMD starts are at `0x800531D4`; each part's framing numbers come
+from the kind table's third pointer (`0x800D4544` +8, 16 bytes per part) `?`.
+
+**Controls.** △ in the part list shows or hides both the spec page (`0x8009CF4C`, every spec
+line) and the part's shop text (`0x8009FCA4`, MIS.T 385 at `0x801A0390`). ○ goes back (tone 0).
+The list's names and prices are drawn into VRAM (x 896 and x 1004, by `0x80064CC0`) and shown
+as sprites.
+
+The same message routine and the same three checks serve `0x800967C4` in the missions code
+(messages "Your equipment is incomplete.", "You exceed the weight limit.", "You don't have
+enough energy."), probably the mission sortie `?`. The shop never picks the big picture messages
+(CAN NOT BUY, CAN NOT SELL, GENERATOR FIRST, ENERGY SHORT) `?`.
+
 ## 3. What this means for overlays and the launcher
 
 - **Replacing a screen:** hook the hub's pick (`menus-hub.md` §5), run your own screen, and call
@@ -424,6 +486,9 @@ nor the fit rules above, which only the garage enforces.
   (`boot-loads.md` §4a). The game's preview numbers are `0x8007E730` on a temporary copy of the
   garage. Its textures go straight into the AC's VRAM pages, so a mod that previews parts the
   same way must put the fitted part's textures back afterwards.
+- **A shop of your own:** owned and stock counts, price = the part table's +36 both ways, and
+  the leaving step that unfits sold parts (§2i). While the game's shop is open, VRAM (704, 0)
+  holds the backup of the AC's textures, so nothing else should use that area then.
 
 ## 4. Open
 
@@ -433,6 +498,8 @@ nor the fit rules above, which only the garage enforces.
 - Whether contents are really placed relative to their layer's window, and the layer order.
 - Tones 8 and 9 (one or two uses each).
 - The garage exit's `0x8003EA7D` values 1 … 3 (Arena Maker roads).
-- The detail key in the shop's part list (ASSEMBLY's is △, §2h; the shop's may be the same).
+- ~~The detail key in the shop's part list~~: △ (§2i, 2026-11-18).
+- Shop (§2i): what stock and owned 127 mean, whether a sold option stays fitted, the preview's
+  framing numbers, where new stock comes from (missions lane `?`).
 - ASSEMBLY (§2h): what the preview slide value (±180 / 360 / 540) changes, MENU_TMD entry 2 and
   MODEL slot 17 (NO EQUIP stand-ins).

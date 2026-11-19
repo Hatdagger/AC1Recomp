@@ -193,8 +193,9 @@ Read from FDAT 209 on 2026-11-18 (step 2). Anything not yet proven by a run is m
 ### First milestone: camera-only render pass (VS) — written, not run yet
 
 Package `acrecomp.moa.frame-rate` (`mods/preloaded`, off by default, option "Frame rate": display /
-60 / 120), plugin `psxrecomp/runtime/src/mod_builtin_moa_frame_rate.c`. Waiting for review before
-it is pushed.
+60 / 120), plugin `psxrecomp/runtime/src/mod_builtin_moa_frame_rate.c`, on branch
+**`renderer-vs-camera-pass`** (pushed 2026-11-18, commit `540e22c`). Not built or run yet; merge into
+master after a test.
 
 | Item | Choice |
 |---|---|

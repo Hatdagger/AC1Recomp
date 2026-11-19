@@ -402,15 +402,6 @@ static void vsd_np_put(const struct vsd_np *n)
 
 /* ---- host side: log lines, the cover (presentation only) ---- */
 
-static void vsd_log(const char *text)
-{
-    fprintf(stdout, "moa netplay start: %s\n", text);
-    fflush(stdout);
-}
-
-static int vsd_cover_up;
-static uint64_t vsd_cover_ms;
-
 static uint64_t vsd_now_ms(void)
 {
 #ifdef _WIN32
@@ -421,6 +412,33 @@ static uint64_t vsd_now_ms(void)
     return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
 #endif
 }
+
+/* Each step also goes to start-log.txt beside the room's result file
+ * (saves/netplay), new for each session, so a test can be read back. */
+static int vsd_log_new = 1;
+static void vsd_log(const char *text)
+{
+    fprintf(stdout, "moa netplay start: %s\n", text);
+    fflush(stdout);
+    const char *res = getenv("PSX_MOA_ROOM_RESULT");
+    if (!res || !res[0]) return;
+    char path[1024];
+    snprintf(path, sizeof path, "%s", res);
+    char *slash = strrchr(path, '/');
+    char *bslash = strrchr(path, '\\');
+    if (bslash && (!slash || bslash > slash)) slash = bslash;
+    if (slash) slash[1] = '\0'; else path[0] = '\0';
+    strncat(path, "start-log.txt", sizeof path - strlen(path) - 1);
+    FILE *f = fopen(path, vsd_log_new ? "w" : "a");
+    if (!f) return;
+    vsd_log_new = 0;
+    fprintf(f, "%llu ms  %s\n", (unsigned long long)vsd_now_ms(), text);
+    fclose(f);
+}
+
+static int vsd_cover_up;
+static uint64_t vsd_cover_ms;
+
 
 static void vsd_cover(int on, const char *why)
 {
@@ -497,6 +515,10 @@ static int vsd_np_menu_in_memory(void)
            psx_mod_read_word(VSD_MENU_VS_START) == VSD_SIG_VS_START;
 }
 
+static int vsd_np_seen_task;                   /* log only */
+static uint32_t vsd_np_vs_task(void);
+static int vsd_np_step(struct CPUState *cpu, struct vsd_np n);
+
 static int vsd_np_title_filter(struct CPUState *cpu, uint32_t address)
 {
     if (psx_mod_read_word(address) != VSD_SIG_TITLE_OPEN ||
@@ -514,6 +536,8 @@ static int vsd_np_title_filter(struct CPUState *cpu, uint32_t address)
         vsd_log("no save on either match card: the title opens");
         return 0;                                  /* the title, as before */
     }
+    vsd_log_new = 1;
+    vsd_np_seen_task = 0;
     vsd_cover(1, "cover up at the title");
     const uint32_t ra = cpu->gpr[31];
     (void)psx_mod_call_guest(cpu, VSD_SCREEN_RESET, ra, 0, 0, 0, 0);
@@ -539,7 +563,6 @@ static int vsd_np_title_filter(struct CPUState *cpu, uint32_t address)
  * runs; the start gives up if the menu never gets far enough. */
 static void vsd_np_input_entry(struct CPUState *cpu, uint32_t address)
 {
-    (void)cpu;
     vsd_cover_check();
     struct vsd_np n;
     if (!vsd_np_get(&n)) return;
@@ -552,6 +575,11 @@ static void vsd_np_input_entry(struct CPUState *cpu, uint32_t address)
     }
     if (n.t < 0xFFFFu) n.t++;
     vsd_np_put(&n);
+    if (!vsd_np_seen_task && vsd_np_vs_task()) {
+        vsd_np_seen_task = 1;
+        vsd_log("the versus menu reached its input state");
+    }
+    (void)vsd_np_step(cpu, n);
     psx_mod_write_byte(VSD_PAD1, 0);
     psx_mod_write_byte(VSD_PAD1 + 1u, 0x41);
     psx_mod_write_half(VSD_PAD1 + 2u, 0xFFFFu);
@@ -560,19 +588,26 @@ static void vsd_np_input_entry(struct CPUState *cpu, uint32_t address)
     psx_mod_write_half(VSD_PAD2 + 2u, 0xFFFFu);
 }
 
-/* The versus menu's input state (a0 = the menu's task): every load of its
- * opening is done. While the start is ours this state is taken over: the
- * menu reads no buttons, and the start runs one step per frame instead. */
-static int vsd_np_vs_input_filter(struct CPUState *cpu, uint32_t address)
+/* The versus menu's task once it sits in its input state (0x800B22D8: every
+ * load of its opening is done), or 0. The frame loop (0x800A7104) runs the
+ * live tasks of 0x801B1CE8 ... 0x801D0AF8, 0xF0 bytes each (+0 live, +0x78
+ * the state routine it calls with a0 = the task). */
+static uint32_t vsd_np_vs_task(void)
 {
-    (void)address;
-    struct vsd_np n;
-    if (!vsd_np_get(&n) || !vsd_np_menu_in_memory()) return 0;
-    const uint32_t task = cpu->gpr[4];
-    if (task < VSD_TASKS_FIRST || task >= VSD_TASKS_END) {   /* not a menu task: leave it */
-        psx_mod_counter_add("moa.vsd.net_input_not_task", 1);
-        return 0;
-    }
+    for (uint32_t t = VSD_TASKS_FIRST; t + 0xF0u <= VSD_TASKS_END; t += 0xF0u)
+        if (psx_mod_read_byte(t) && psx_mod_read_word(t + VSD_TASK_STATE) == VSD_MENU_VS_INPUT)
+            return t;
+    return 0;
+}
+
+/* One step of the start per frame, from the menu's pad sampler (a hook seen
+ * to run every frame): nothing waits on a hook of its own. While the menu
+ * sits in its input state the pads read idle, so it does nothing itself.
+ * Returns 1 while the start is still ours. */
+static int vsd_np_step(struct CPUState *cpu, struct vsd_np n)
+{
+    const uint32_t task = vsd_np_vs_task();
+    if (!task) return 1;                           /* the menu is still opening */
     switch (n.phase) {
     case NP_PHASE_WAIT: {
         /* LOADING = FAST covers the boot and the menu's setup; the units'
@@ -648,5 +683,4 @@ PSX_MOD_CONSTRUCTOR(moa_vs_direct_register)
     (void)psx_game_register_netplay_function_filter(VSD_TITLE_OPEN, vsd_np_title_filter);
     (void)psx_game_register_netplay_function_entry(VSD_INPUT_A, vsd_np_input_entry);
     (void)psx_game_register_netplay_function_entry(VSD_INPUT_B, vsd_np_input_entry);
-    (void)psx_game_register_netplay_function_filter(VSD_MENU_VS_INPUT, vsd_np_vs_input_filter);
 }

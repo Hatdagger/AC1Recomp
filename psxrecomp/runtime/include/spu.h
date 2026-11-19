@@ -22,6 +22,10 @@ void spu_output_flush(void);
  * speakers. A title whose netplay match mixes each player's sound onto one
  * channel renews this every frame on each peer; it lapses by itself. */
 void spu_output_mono_request(int channel, uint32_t pops);
+/* Host presentation only, never SPU state: while on, the host hears silence
+ * (the SPU and its queue run as always). MoA's netplay start covers the
+ * versus menu behind a black, silent screen. */
+void spu_output_silence(int on);
 uint64_t spu_output_overflow_drops(void);
 /* Host gate: while it returns nonzero (rollback resimulation, FMV-skip mute)
  * rendered samples advance SPU state but are not queued. */

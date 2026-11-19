@@ -1508,6 +1508,9 @@ uint32_t spu_output_available(void) { return s_out_count; }
 
 static int s_out_mono_channel;
 static uint32_t s_out_mono_pops;
+static volatile int s_out_silent;
+
+void spu_output_silence(int on) { s_out_silent = on ? 1 : 0; }
 
 void spu_output_mono_request(int channel, uint32_t pops) {
     s_out_mono_channel = channel ? 1 : 0;
@@ -1522,6 +1525,11 @@ uint32_t spu_output_pop(int16_t *out_stereo, uint32_t max_frames) {
         s_out_head = (s_out_head + 1u) % SPU_OUT_FRAMES;
     }
     s_out_count -= n;
+    if (s_out_silent) {
+        /* Host presentation only: the SPU ran as always, the host hears nothing. */
+        for (uint32_t i = 0; i < n * 2u; i++) out_stereo[i] = 0;
+        return n;
+    }
     if (s_out_mono_pops) {
         /* The queue itself stays stereo; only what the host hears changes. */
         s_out_mono_pops--;

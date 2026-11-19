@@ -130,6 +130,8 @@ int cdrom_data_read_active(void);
 /* The running drive's speed divisor (0 = bounded instant, 1 = real timing,
  * N = N times faster). Part of every snapshot. */
 int cdrom_get_speed(void);
+/* A data read the speed applies to is in progress (not realtime XA). */
+int cdrom_accelerable_read_active(void);
 
 /* boot_state / netplay digest — full controller FSM (sector FIFOs included). */
 uint32_t cdrom_snapshot_bytes(void);

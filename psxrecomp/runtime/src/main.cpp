@@ -2184,7 +2184,8 @@ extern "C" int psx_mod_set_disc_speed_live(
  * also in netplay. A guest hook runs at the same emulated instant on every
  * peer and again when rollback replays the frame, and the drive's speed is in
  * every snapshot (cdrom.c), so all drives keep identical timing. The only
- * refusal reads guest-visible drive state (a data read in progress), never
+ * refusal reads guest-visible drive state (a data read the speed applies to;
+ * realtime XA music never blocks it), never
  * host timing (cdrom_load_in_progress uses the host's frame count). */
 extern "C" int psx_game_set_disc_speed_in_hook(
     uint32_t divisor, uint32_t instant_max_per_frame) {
@@ -2192,7 +2193,7 @@ extern "C" int psx_game_set_disc_speed_in_hook(
         (divisor == 0 &&
          (instant_max_per_frame < 1 || instant_max_per_frame > 256)))
         return 0;
-    if (cdrom_data_read_active()) return 0;
+    if (cdrom_accelerable_read_active()) return 0;
     cdrom_set_game_speed((int)divisor);
     cdrom_set_speed((int)divisor);
     if (divisor == 0) cdrom_set_instant_rate((int)instant_max_per_frame);

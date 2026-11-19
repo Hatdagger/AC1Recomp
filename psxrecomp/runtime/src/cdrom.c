@@ -3268,6 +3268,13 @@ int cdrom_data_read_active(void) {
     return reading && !xa_stream_active;
 }
 
+/* A read the drive's speed applies to (cdrom_read_gate.h): realtime XA
+ * reads (music, voices) keep real timing whatever the speed, so they never
+ * stop a speed change. Guest-visible drive state only (snapshotted). */
+int cdrom_accelerable_read_active(void) {
+    return reading && !cdrom_read_mode_is_realtime(mode_reg, xa_stream_active);
+}
+
 /* Savestate post-load: authentic CD second-response delays (ReadTOC ~30M
  * cycles, Init ~1.1M, far seeks, etc.) leave the restored frame on screen
  * for up to ~1s+ of wall time. Clamp those timers so the next cdrom_advance

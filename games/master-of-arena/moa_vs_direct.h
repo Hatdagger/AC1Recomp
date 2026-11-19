@@ -65,4 +65,8 @@ void moa_vs_direct_reset(void);
 int moa_vs_direct_load_frame(struct CPUState *cpu, uint32_t vs_state, int *timed_out);
 int moa_vs_direct_loading(void);
 
+/* Netplay: every frame of a fight (moa_link_netplay.c). The start's black,
+ * silent cover comes down here. Presentation only. */
+void moa_vs_direct_np_fight_frame(void);
+
 #endif

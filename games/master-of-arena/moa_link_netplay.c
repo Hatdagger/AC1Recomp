@@ -35,6 +35,7 @@
 #include "spu.h"
 #include "moa_netplay_room.h"
 #include "moa_netplay_menu.h"
+#include "moa_vs_direct.h"
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -157,6 +158,7 @@ static void moa_link_wait_entry(struct CPUState *cpu, uint32_t address)
         /* The versus room: the set is followed. */
         moa_np_room_fight_frame();
         moa_np_room_disc_frame();
+        moa_vs_direct_np_fight_frame();
     } else if (ra == MOA_RA_ROLE_WAIT) {
         /* Role negotiation: we offered 'M'aster, the other side 'S'lave. The
          * local player is then the player-1 block, the remote the player-2

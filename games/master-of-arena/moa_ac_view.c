@@ -17,6 +17,7 @@
 #include <windows.h>
 #else
 #include <dirent.h>
+#include <pthread.h>
 #include <sys/stat.h>
 #endif
 
@@ -157,7 +158,38 @@ struct moa_acv {
     acr_mtl solo_mtl;
     acr_mesh solo_mesh[ACV_SOLO_MAX];
     acv_tex solo_tex[ACR_MTL_MAX];
+    /* The emblem plate's picture (moa_acv_set_emblem); none = plate not drawn. */
+    acv_tex emblem;
 };
+
+/* The emblem plate: faces with the "fx" material (left shoulder on most arms,
+ * both sides of the two-slot back units 52 and 54). Their UVs cover the
+ * 64x64 square at (128, 128) of a 256 page, where the game puts the AC's
+ * emblem; the export has no picture for it, so without this they came out
+ * as plain white boxes. */
+static int is_emblem_plate(const acr_material *m) {
+    return m->name[0] == 'f' && m->name[1] == 'x' && (m->name[2] == 0 || m->name[2] == '-');
+}
+
+void moa_acv_set_emblem(moa_acv *v, const uint16_t palette[16], const uint8_t index[64 * 64]) {
+    if (!v) return;
+    free(v->emblem.rgba);
+    v->emblem.rgba = NULL;
+    v->emblem.w = v->emblem.h = 0;
+    if (!palette || !index) return;
+    uint8_t *px = (uint8_t *)malloc(64 * 64 * 4);
+    if (!px) return;
+    for (int i = 0; i < 64 * 64; ++i) {
+        const uint16_t c = palette[index[i] & 15];
+        const int r = (c & 31) << 3, g = ((c >> 5) & 31) << 3, b = ((c >> 10) & 31) << 3;
+        px[4 * i + 0] = (uint8_t)(r | r >> 5);
+        px[4 * i + 1] = (uint8_t)(g | g >> 5);
+        px[4 * i + 2] = (uint8_t)(b | b >> 5);
+        px[4 * i + 3] = c == 0 ? 0 : 255;          /* 0x0000 is see-through, as on the PlayStation */
+    }
+    v->emblem.w = v->emblem.h = 64;
+    v->emblem.rgba = px;
+}
 
 static int patterned(int kind) {
     return kind == ACR_PART_CORE || kind == ACR_PART_HEAD || kind == ACR_PART_ARMS || kind == ACR_PART_LEGS;
@@ -249,6 +281,7 @@ void moa_acv_free(moa_acv *v) {
     if (!v) return;
     for (int i = 0; i < v->solo_count; ++i) acr_mesh_free(&v->solo_mesh[i]);
     for (int i = 0; i < ACR_MTL_MAX; ++i) free(v->solo_tex[i].rgba);
+    free(v->emblem.rgba);
     for (int k = 0; k < ACR_PART_KINDS; ++k) {
         for (int i = 0; i < v->part[k].pieces; ++i) acr_mesh_free(&v->part[k].piece[i]);
         free(v->part[k].tex.rgba);
@@ -316,7 +349,7 @@ static int fixed_frame(const char *dir) {
     return 1;
 }
 
-moa_acv *moa_acv_load(const char *dir, const uint8_t rec[13], const uint8_t paint[48]) {
+static moa_acv *acv_load_unlocked(const char *dir, const uint8_t rec[13], const uint8_t paint[48]) {
     moa_acv *v = load_ac(dir, rec, paint);
     if (!v) return NULL;
     if (fixed_frame(dir)) {
@@ -344,7 +377,7 @@ static int kind_of_folder(const char *kind) {
     return ACR_PART_NONE;
 }
 
-moa_acv *moa_acv_load_part(const char *dir, const char *kind, int index, const uint8_t paint[48]) {
+static moa_acv *acv_load_part_unlocked(const char *dir, const char *kind, int index, const uint8_t paint[48]) {
     char base[1100], path[1300];
     snprintf(base, sizeof base, "%s/models/menu/%s/%02d", dir, kind, index);
     snprintf(path, sizeof path, "%s/part.toml", base);
@@ -399,6 +432,34 @@ moa_acv *moa_acv_load_part(const char *dir, const char *kind, int index, const u
             v->solo_mesh[k].v[t].p[2] -= 0.5f * (lo[2] + hi[2]);
         }
     frame_model(v);
+    return v;
+}
+
+/* Loading may run on two threads at once (the VS screen's renders run on
+ * moa_render_queue's worker while the game's thread draws part pictures):
+ * the shared framing above and the PNG decoder's tables are built on first
+ * use, so loads take turns. Renders need no lock. */
+#if defined(_WIN32)
+static SRWLOCK s_load_lock = SRWLOCK_INIT;
+static void load_lock(void) { AcquireSRWLockExclusive(&s_load_lock); }
+static void load_unlock(void) { ReleaseSRWLockExclusive(&s_load_lock); }
+#else
+static pthread_mutex_t s_load_lock = PTHREAD_MUTEX_INITIALIZER;
+static void load_lock(void) { pthread_mutex_lock(&s_load_lock); }
+static void load_unlock(void) { pthread_mutex_unlock(&s_load_lock); }
+#endif
+
+moa_acv *moa_acv_load(const char *dir, const uint8_t rec[13], const uint8_t paint[48]) {
+    load_lock();
+    moa_acv *v = acv_load_unlocked(dir, rec, paint);
+    load_unlock();
+    return v;
+}
+
+moa_acv *moa_acv_load_part(const char *dir, const char *kind, int index, const uint8_t paint[48]) {
+    load_lock();
+    moa_acv *v = acv_load_part_unlocked(dir, kind, index, paint);
+    load_unlock();
     return v;
 }
 
@@ -460,7 +521,11 @@ static void for_each_tri(const moa_acv *v, float time, tri_fn fn, void *ctx) {
         for (int t = 0; t < mesh->tri_count; ++t) {
             const acr_material *mt = &p->mtl.m[mesh->material[t]];
             const acv_tex *tex = NULL;
-            if (mt->textured) {
+            const int plate = is_emblem_plate(mt);
+            if (plate) {
+                if (!v->emblem.rgba) continue;         /* no emblem: nothing there */
+                tex = &v->emblem;
+            } else if (mt->textured) {
                 const int kind = mt->kind < ACR_PART_KINDS ? mt->kind : node->draw_kind;
                 tex = v->part[kind].tex.rgba ? &v->part[kind].tex
                     : (p->tex.rgba ? &p->tex : NULL);
@@ -484,6 +549,10 @@ static void for_each_tri(const moa_acv *v, float time, tri_fn fn, void *ctx) {
                 o[j].nz = M[8] * s->n[0] + M[9] * s->n[1] + M[10] * s->n[2];
                 o[j].u = s->uv[0];
                 o[j].v = 1.0f - s->uv[1];
+                if (plate) {                           /* the page's emblem square -> the whole emblem */
+                    o[j].u = (o[j].u - 0.5f) * 4.0f;
+                    o[j].v = (o[j].v - 0.5f) * 4.0f;
+                }
             }
             fn(ctx, o, tex, rgb, node->draw_kind);
         }

@@ -61,8 +61,19 @@ int moa_parts_load(const char *disc, struct moa_parts *out)
     const uint32_t from = need & ~2047u;
     uint8_t *m = moa_disc_read_range(disc, "GG/COM/FDAT.T", start + from, last - from, NULL);
     if (!m) return 0;
+    const int ok2 = moa_parts_from_menu(m, MENU_BASE + from, last - from, out);
+    free(m);
+    return ok2;
+}
+
+int moa_parts_from_menu(const uint8_t *mem, uint32_t mem_addr, uint32_t bytes, struct moa_parts *out)
+{
+    memset(out, 0, sizeof *out);
+    if (mem_addr > k_tables[0].addr || mem_addr + bytes < DETAIL_END) return 0;
+    const uint8_t *m = mem;
+    const uint32_t from = mem_addr - MENU_BASE;
 #define AT(addr) (m + ((addr) - MENU_BASE - from))
-    if (memcmp(AT(k_tables[0].addr), "HD-01-SRVT", 10) != 0) { free(m); return 0; }
+    if (memcmp(AT(k_tables[0].addr), "HD-01-SRVT", 10) != 0) return 0;
     for (int c = 0; c < MOA_CAT__COUNT; c++) {
         const uint32_t n = (k_tables[c].end - k_tables[c].addr) / k_tables[c].stride;
         for (uint32_t i = 0; i < n && out->count[c] < MOA_PARTS_MAX; i++) {
@@ -97,7 +108,6 @@ int moa_parts_load(const char *disc, struct moa_parts *out)
         out->option[i].price = (uint32_t)rd16(r + 36) | ((uint32_t)rd16(r + 38) << 16);
     }
 #undef AT
-    free(m);
     return out->count[MOA_CAT_HEAD] > 0 && out->count[MOA_CAT_GEN] > 0;
 }
 
@@ -136,6 +146,32 @@ void moa_build_normalise(uint8_t rec[13])
     if (rec[2] >= 12 && rec[2] != 255) { rec[4] = 255; rec[5] = 255; }   /* weapon arms: empty hands, as the game */
     if (rec[3] >= 27 && rec[3] != 255) rec[12] = 255;                 /* caterpillar */
     rec[11] &= 0x0F;                                                  /* 12 option bits */
+}
+
+/* The garage's fitting rules (menu equip handler 0x800865B4 and DATA LOAD
+ * fix-ups 0x80089514 / 0x80089750; Armored-CoreR acr_gen1_fit.c and
+ * docs/research/gen1-fitting-rules.md), on a whole record. Ids are the
+ * record's part ids: back 52 and up use both back slots, arms 5 (ANKS-1A46J)
+ * carry no back weapons (back < 40 or 53), hand 15 (WG-1-KARASAWA) needs
+ * legs that can hold it, caterpillars lose the booster and five radars. */
+void moa_build_fit(uint8_t rec[13])
+{
+    moa_build_normalise(rec);
+    uint8_t *bl = &rec[6], *br = &rec[7];
+    if (*bl != 255 && *bl >= 52) *br = 255;          /* a two-slot unit: the other side stays empty */
+    else if (*br != 255 && *br >= 52) *bl = 255;
+    if (rec[2] == 5) {                                /* ANKS-1A46J */
+        if (*bl != 255 && (*bl < 40 || *bl == 53)) *bl = 255;
+        if (*br != 255 && (*br < 40 || *br == 53)) *br = 255;
+    }
+    const uint8_t legs = rec[3];
+    const int no_heavy = legs == 5 || (legs >= 21 && legs <= 24) || legs == 26 || legs == 27 ||
+                         legs == 28 || (legs >= 30 && legs <= 32);
+    if (rec[4] == 15 && no_heavy) rec[4] = 255;
+    if (legs != 255 && legs >= 27) {
+        for (int s = 6; s <= 7; s++)
+            if (rec[s] == 40 || rec[s] == 41 || rec[s] == 42 || rec[s] == 44 || rec[s] == 46) rec[s] = 255;
+    }
 }
 
 void moa_build_check(const struct moa_parts *p, const uint8_t rec[13], int plus,

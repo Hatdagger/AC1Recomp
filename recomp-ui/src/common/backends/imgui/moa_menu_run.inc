@@ -68,15 +68,16 @@ static std::string run_card(const LauncherModel* m) {
  * the run file first (a loss there means RETRY). The launcher isn't drawn
  * during a game, so this can't wait to see the session end. */
 static bool g_run_reread = false;
+static bool g_run_next_poll = false;       /* look for a loss-screen pick once, back from the game */
 
 static void set_arena_run(bool on, const std::string& path, const std::string& card = std::string()) {
     set_env("PSX_MOA_ARENA_RUN", on ? "1" : "0");
     set_env("PSX_MOA_RUN_FILE", on ? path.c_str() : "");
     set_env("PSX_MOA_RUN_DIRECT", on && g_run_fast ? "1" : "0");
     set_env("PSX_MEMCARD1_SESSION", on ? card.c_str() : "");
-    /* The garage's part models: the run draws its restock pictures from them. */
+    /* The garage's part models: the run draws its prize screen pictures from them. */
     set_env("PSX_MOA_MODELS_DIR", on ? asset("acmodels").c_str() : "");
-    if (on) g_run_reread = true;
+    if (on) g_run_reread = g_run_next_poll = true;
 }
 
 static void open_run_page(LauncherModel* m) {
@@ -179,11 +180,34 @@ static void continue_run(LauncherModel* m) {
     start_game(m);
 }
 
+/* The game's loss screen leaves its pick in "<run file>.next": "retry" (the
+ * RETRY row) or "new" (NEW RUN with a fresh seed, same names). Read once and
+ * removed, so it never repeats. */
+static std::string run_next_take(const LauncherModel* m) {
+    const std::string p = run_file(m) + ".next";
+    std::string what;
+    FILE* f = std::fopen(p.c_str(), "rb");
+    if (!f) return what;
+    char buf[16] = "";
+    if (std::fgets(buf, sizeof buf, f)) what = buf;
+    std::fclose(f);
+    std::remove(p.c_str());
+    while (!what.empty() && (what.back() == '\n' || what.back() == '\r' || what.back() == ' ')) what.pop_back();
+    return what;
+}
+
+static bool run_next_waiting(const LauncherModel* m) {
+    return std::filesystem::exists(std::filesystem::u8path(run_file(m) + ".next"));
+}
+
 static void draw_run_page(LauncherModel* m, const Gfx& g, const Input& in) {
     if (g_run_reread) {
         g_run_reread = false;
         open_run_page(m);
         g_state.cursor[PAGE_RUN] = R_CONTINUE;
+        const std::string next = run_next_take(m);
+        if (next == "retry" && g_run_over) { retry_run(m); return; }
+        if (next == "new") { g_state.cursor[PAGE_RUN] = R_NEW; new_run(m); return; }
     }
     if (!g_name_edit) move_cursor(PAGE_RUN, R_ROWS, in, R_ROWS);
     int& cur = g_state.cursor[PAGE_RUN];

@@ -45,6 +45,11 @@ struct moa_parts {
 /* Read the tables from a Master of Arena (USA) disc 1 image. 1 = ok. */
 int moa_parts_load(const char *disc_path, struct moa_parts *out);
 
+/* The same from the menu module's bytes already in memory (the game side
+ * reads them from guest RAM): `mem` holds `bytes` bytes from guest address
+ * `mem_addr`, which must cover 0x800CE690..0x800D2774. 1 = ok. */
+int moa_parts_from_menu(const uint8_t *mem, uint32_t mem_addr, uint32_t bytes, struct moa_parts *out);
+
 const struct moa_part *moa_parts_find(const struct moa_parts *p, int cat, uint8_t id);
 
 /* Sub-group shown in the builder's lists ("Weapon arms", "Missiles", ...;
@@ -57,6 +62,9 @@ int moa_record_cat(int byte);
 /* The builder's rules on a 13-byte card record: weapon arms empty the hands,
  * caterpillar legs drop the booster, options limited to the 12 parts. */
 void moa_build_normalise(uint8_t rec[13]);
+/* moa_build_normalise plus the garage's fitting rules (two-slot back units,
+ * arms that carry no back weapons, the heavy hand weapon, caterpillar radars). */
+void moa_build_fit(uint8_t rec[13]);
 
 struct moa_build_check {
     int weight, ap, def_shell, def_energy;

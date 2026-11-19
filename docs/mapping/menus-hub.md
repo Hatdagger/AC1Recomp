@@ -101,6 +101,15 @@ palette `0x3817` (VRAM 368, 224) = **`MS\MENU_TIM.T` entry 0, TIM #1** (256 × 2
 
 All three files (MENU_TIM 0, 1 and 4) are put into VRAM by the title's SCENARIO row
 (`0x80057CB0(4, 0 / 1 / 4)`, `0x800AB5F4`) and again by the hub backdrop (`0x80056DBC`, 1 and 4).
+**Background tile.** The hub's backdrop is one 64 × 64, 4-bit tile, **`MS\MENU_TIM.T` entry 0,
+TIM at 0x9260** → VRAM (416, 0, 16, 64), palette (368, 225, 16, 1): dark greys, black = 0x0000
+(see-through), every other colour with bit 15 set. Both hub opens put it into VRAM from RAM copies:
+tile **`0x8004ACA8`** (2048 B), palette **`0x8004B6F0`** (32 B); LoadImage at `0x800553AC/BC`
+(`0x800552C0`) and `0x800572D8/E8` (`0x800571D0`, rects from `0x80050E50/58`). The title branch
+(`0x800A6EB4/C8`) and four screens opened from the hub (`0x8005A6C0`, `0x800637A8`, `0x80067000`,
+`0x8007DE4C`) StoreImage VRAM back into the copies. Writing the copies before a hub open shows any
+tile: Rogue Arena does this per rank (karate belt tiles, `moa_hub_rank_bg.c`).
+
 So a new icon look = replace a 96 × 48 TIM in entry 1 (same size, same palette, or give it its
 own palette row); a new name = redraw a 128 × 24 box on the caption sheet. Both can be done by
 writing VRAM after those loads instead of editing the disc file.

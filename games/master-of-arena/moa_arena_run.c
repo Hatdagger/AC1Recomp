@@ -76,6 +76,13 @@ int moa_run_sources_mark(const char *disc, const struct moa_parts *p,
         if (src[i].arena != 10) start += cnt;
         const unsigned k = first + 4u * cnt;      /* the builds entry, 64 B each */
         src[i].karasawa = 0;
+        if (src[i].arena == 10) {
+            /* Phantasma's builds are in its package, not on the player's
+             * Master of Arena disc. Its KARASAWA users, from the US disc:
+             * Shadow (rank 6) and Dill (rank 16). */
+            src[i].karasawa = (1ull << 5) | (1ull << 15);
+            continue;
+        }
         if (k + 1 >= nent || 2u + 2u * (k + 1) + 1u >= 2048u) { ok = 0; continue; }
         const uint32_t a = (uint32_t)(head[2 + 2 * k] | head[3 + 2 * k] << 8);
         const uint32_t b = (uint32_t)(head[4 + 2 * k] | head[5 + 2 * k] << 8);
@@ -160,6 +167,8 @@ static int cand_karasawa(const struct moa_run_source *src, int nsrc, const struc
 }
 
 #define SUB_LOWEST 16          /* sub arena picks only in ranks 50-35 */
+#define LINEUP_TIGHT 21        /* ranks 21-1: strictly by score */
+#define LINEUP_NOISE 25        /* score points of random lift at rank 49 */
 
 int moa_run_lineup(const struct moa_run_source *src, int nsrc, int phantasma,
                    uint64_t seed, struct moa_run_pick out[MOA_RUN_SLOTS])
@@ -174,6 +183,9 @@ int moa_run_lineup(const struct moa_run_source *src, int nsrc, int phantasma,
     for (int i = 0; i < nsrc; ++i) {
         if (src[i].band == MOA_BAND_PHANTASMA && !phantasma) continue;
         for (int r = 0; r + 1 < src[i].entries; ++r) {   /* the last is the player's */
+            /* Main arena rank 1, Hustler One / Nine-Ball, is fought in the
+             * story, never in the arena: not in the run. */
+            if (src[i].arena == 0 && r == 0) continue;
             struct cand c = { { src[i].arena, (uint8_t)r }, moa_run_score(&src[i], r),
                               (uint32_t)moa_run_next(&rng) };
             if (src[i].band == MOA_BAND_SUB) subs[nsub++] = c; else rest[nrest++] = c;
@@ -189,15 +201,16 @@ int moa_run_lineup(const struct moa_run_source *src, int nsrc, int phantasma,
     int need = MOA_RUN_SLOTS - 1 - take_sub;
     if (need > nrest) need = nrest;
     /* The rest: sorted by score and cut into `need` buckets. Each slot draws
-     * from a window around its bucket: 4 buckets wide at the bottom, down to
+     * from a window around its bucket: 6 buckets wide at the bottom, down to
      * 1 at the top, so low ranks vary between runs while the top stays tight.
-     * No candidate is drawn twice; the picks are then re-sorted by score. */
+     * No candidate is drawn twice; the picks are then ordered by score, loosely
+     * below the top LINEUP_TIGHT (see below). */
     qsort(rest, (size_t)nrest, sizeof *rest, cand_cmp);
     struct cand chosen[MOA_RUN_SLOTS];
     uint8_t *taken = calloc((size_t)nrest + 1, 1);
     if (!taken) goto done;
     for (int b = 0; b < need; ++b) {
-        const double w = need > 1 ? 4.0 - 3.0 * b / (need - 1) : 1.0;  /* buckets */
+        const double w = need > 1 ? 6.0 - 5.0 * b / (need - 1) : 1.0;  /* buckets */
         int lo = (int)((double)nrest * (b + 0.5 - w / 2) / need);
         int hi = (int)((double)nrest * (b + 0.5 + w / 2) / need + 0.999);
         if (lo < 0) lo = 0;
@@ -214,21 +227,52 @@ int moa_run_lineup(const struct moa_run_source *src, int nsrc, int phantasma,
         taken[pick] = 1;
         chosen[b] = rest[pick];
     }
-    free(taken);
     qsort(chosen, (size_t)need, sizeof *chosen, cand_cmp);
-    /* KARASAWA users stay in the top 25: each one below swaps with the
-     * lowest non-KARASAWA pick inside the top 25 (a near neighbour). */
+    /* Loose order below the top: a strict sort put the lowest-scored pick at
+     * rank 49 every time, so the first opponent was nearly always one of
+     * the same few (Phantasma's or the main arena's bottom ranks). Each pick
+     * below the top LINEUP_TIGHT gets a random lift of up to LINEUP_NOISE
+     * score points (the most at rank 49, none at the tight part) before the
+     * final order. Measured over 10,000 seeds: about 35 different first
+     * opponents instead of 11, the most common one 8% of runs instead of
+     * 17%, and rank 49 still averages the easiest score. */
+    {
+        const int loose = need > LINEUP_TIGHT ? need - LINEUP_TIGHT : 0;
+        for (int b = 0; b < need; ++b) {
+            const int j = b < loose ? LINEUP_NOISE * (loose - b) / loose : 0;
+            chosen[b].jitter = (uint32_t)chosen[b].score * 1000u +
+                               (j ? moa_run_below(&rng, (uint32_t)j * 1000u) : 0u);
+        }
+        for (int i = 1; i < need; ++i) {             /* insertion sort on the lifted score */
+            const struct cand x = chosen[i];
+            int k = i - 1;
+            while (k >= 0 && chosen[k].jitter > x.jitter) { chosen[k + 1] = chosen[k]; --k; }
+            chosen[k + 1] = x;
+        }
+    }
+    /* KARASAWA users stay in the top 25. One drawn lower is replaced, in its
+     * place, by the unused non-KARASAWA candidate closest in score (the
+     * easier one on a tie); the KARASAWA user sits this run out. (It used to
+     * swap with the weakest top-25 pick, which put a rank-25-strength
+     * opponent at the bottom: ACE / Teifwald, Champion rank 12, at rank 49
+     * after Libra was drawn there; about 1 run in 10 had such a rank 49.) */
     {
         const int top = need > KARASAWA_TOP ? need - KARASAWA_TOP : 0;   /* chosen[top..] = ranks 25-1 */
         for (int b = 0; b < top && b < need; ++b) {
             if (!cand_karasawa(src, nsrc, &chosen[b])) continue;
-            for (int t = top; t < need; ++t)
-                if (!cand_karasawa(src, nsrc, &chosen[t])) {
-                    struct cand x = chosen[b]; chosen[b] = chosen[t]; chosen[t] = x;
-                    break;
-                }
+            int best = -1, gap = 0;
+            for (int i = 0; i < nrest; ++i) {
+                if (taken[i] || cand_karasawa(src, nsrc, &rest[i])) continue;
+                const int d = rest[i].score - chosen[b].score;
+                const int g = d < 0 ? -2 * d + 1 : 2 * d;            /* ties: the easier one */
+                if (best < 0 || g < gap) { best = i; gap = g; }
+            }
+            if (best < 0) continue;
+            taken[best] = 1;
+            chosen[b] = rest[best];
         }
     }
+    free(taken);
     /* Sub picks go to random slots among the lowest 16. */
     uint8_t is_sub[MOA_RUN_SLOTS] = {0};
     const int low = SUB_LOWEST < need + take_sub ? SUB_LOWEST : need + take_sub;
@@ -277,10 +321,15 @@ int moa_run_start_ac(const struct moa_parts *p, uint64_t seed, uint8_t rec[13])
                 continue;
             rec[b] = p->part[cat][moa_run_below(&rng, (uint32_t)n)].id;
         }
-        moa_build_normalise(rec);
+        moa_build_fit(rec);                           /* the garage's rules: no two-slot unit beside another */
         moa_run_game_hand(rec);                       /* never the NO WEAPON row */
-        const int armed = rec[4] != 255 || rec[5] != 255 || rec[6] != 255 ||
-                          rec[7] != 255 || (rec[2] >= 12 && rec[2] != 255);
+        /* A real main gun: a hand weapon or weapon arms with attack power.
+         * Any weapon used to do (user, 2026-11-18: runs began with only a
+         * blade, only radars or only a rocket); back units and blades stay
+         * optional extras. */
+        const struct moa_part *gun = rec[2] >= 12 && rec[2] != 255 ? moa_parts_find(p, MOA_CAT_ARMS, rec[2])
+                                   : rec[4] != 255 ? moa_parts_find(p, MOA_CAT_HAND, rec[4]) : NULL;
+        const int armed = gun && gun->attack > 0;
         struct moa_build_check t;
         moa_build_check(p, rec, 0, &t);
         if (armed && !t.blocked && !t.leg_over && !t.arm_over && !t.energy_over &&
@@ -305,6 +354,7 @@ int moa_run_new(const struct moa_parts *p, const struct moa_run_source *src, int
     s->version = MOA_RUN_VERSION;
     s->lineup.seed = seed;
     s->lineup.phantasma = (uint8_t)(phantasma != 0);
+    for (int g = 0; g < MOA_RUN_SLOTS; g++) s->ghost_emblem[g].arena = MOA_RUN_PLAYER;
     if (!moa_run_start_ac(p, seed, s->run.start_ac)) return 0;
     return moa_run_lineup(src, nsrc, phantasma, seed, s->lineup.slot) == MOA_RUN_SLOTS;
 }
@@ -338,6 +388,8 @@ static void run_add_ghost(struct moa_run_state *s, int held)
     gh->attempt = s->run.attempt;
     gh->rank_held = (uint8_t)held;
     gh->ai_from = ai;
+    /* Its emblem: the AC that just left the ladder (a ghost leaving passes its own on). */
+    s->ghost_emblem[g] = out.arena == MOA_RUN_GHOST && out.rank < MOA_RUN_SLOTS ? s->ghost_emblem[out.rank] : out;
     memcpy(gh->pilot, s->run.pilot, sizeof gh->pilot);
     memcpy(gh->ac, s->run.ac, sizeof gh->ac);
     l->slot[at].arena = MOA_RUN_GHOST;
@@ -366,7 +418,7 @@ int moa_run_win(struct moa_run_state *s)
 {
     if (s->run.over || s->run.wins >= MOA_RUN_SLOTS - 1) return 0;
     s->run.wins++;
-    s->run.points++;
+    s->run.points = (uint8_t)(s->run.points + 1u + s->run.income);
     if (s->run.wins > s->run.best) s->run.best = s->run.wins;
     return 1;
 }
@@ -376,8 +428,31 @@ void moa_run_lose(struct moa_run_state *s)
     s->run.over = 1;
 }
 
-/* Version 5 ended after the AC name (the progress block padded to 64). */
+/* Version 5 ended after the AC name (the progress block padded to 64);
+ * version 6 after the milestone prizes (prize_ix), padded as the compiler
+ * laid it out then (progress to 4 bytes, the whole state to 8). */
 #define RUN_V5_BYTES (offsetof(struct moa_run_state, run) + 64u)
+#define RUN_V6_PROGRESS ((offsetof(struct moa_run_progress, prize_wins) + 3u) & ~(size_t)3u)
+#define RUN_V6_BYTES ((offsetof(struct moa_run_state, run) + RUN_V6_PROGRESS + 7u) & ~(size_t)7u)
+/* Version 7 ended after the progress block (the state padded to 8). */
+#define RUN_V7_BYTES ((offsetof(struct moa_run_state, ghost_emblem) + 7u) & ~(size_t)7u)
+
+static void run_v8_defaults(struct moa_run_state *s)
+{
+    for (int g = 0; g < MOA_RUN_SLOTS; g++) { s->ghost_emblem[g].arena = MOA_RUN_PLAYER; s->ghost_emblem[g].rank = 0; }
+}
+
+/* Version 7's fields for an older run: every win so far has had its prize
+ * (none owed), nothing spent or saved, and the card holds the garage. */
+static void run_v7_defaults(struct moa_run_state *s)
+{
+    struct moa_run_progress *r = &s->run;
+    r->prize_wins = r->wins;
+    r->income = r->plus = r->saved_n = 0;
+    memset(r->saved, 0, sizeof r->saved);
+    r->p_spent = r->p_spent_card = 0;
+    r->snap_pending = 0;
+}
 
 int moa_run_load(const char *path, struct moa_run_state *s)
 {
@@ -393,6 +468,18 @@ int moa_run_load(const char *path, struct moa_run_state *s)
         s->run.p_paid = s->run.p_card = s->run.points;
         s->run.prizes = s->run.prize_saved = 0;
         memset(s->run.prize_ix, 0, sizeof s->run.prize_ix);
+        run_v7_defaults(s);
+        run_v8_defaults(s);
+    } else if (s->version == 6u && got == RUN_V6_BYTES) {
+        /* Milestone prizes: any not yet on the card are added on load (the
+         * game side's reconcile); from here on, a prize after every win. */
+        s->version = MOA_RUN_VERSION;
+        run_v7_defaults(s);
+        run_v8_defaults(s);
+    } else if (s->version == 7u && got == RUN_V7_BYTES) {
+        /* Ghosts so far have no emblem. */
+        s->version = MOA_RUN_VERSION;
+        run_v8_defaults(s);
     } else if (got != sizeof *s || s->version != MOA_RUN_VERSION) {
         return 0;
     }
@@ -520,7 +607,7 @@ void moa_run_make_save(const struct moa_run_state *s, uint8_t b[8192])
         if (moa_record_cat(r) != MOA_CAT_BACK)       /* back weapons stay on sale */
             b[RS_SHOP + base + ac[r]] = 0;
     }
-    /* The shop opens empty: restocks at ranks 45, 40 ... 5 and 1 fill it. */
+    /* The shop opens empty and stays so (parts come from the prize screen). */
     memset(b + RS_SHOP, 0, 256);
     const uint32_t p = s->run.points;
     for (int i = 0; i < 4; i++) {

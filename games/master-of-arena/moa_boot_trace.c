@@ -172,9 +172,49 @@ static void bt_snapshot(const char *tag)
     bt_note(what);
 }
 
+/* The last menu routines called, kept all session (not only during the
+ * boot trace) for the run's hang watch (moa_btrace_recent). */
+#define BT_RECENT 24u
+static struct { uint32_t frame, ra; const char *name; } bt_recent[BT_RECENT];
+static unsigned bt_recent_at, bt_recent_n;
+
+static void bt_remember(uint32_t a, uint32_t ra)
+{
+    for (unsigned k = 0; k < BT_N; k++) {
+        if (k_bt[k].a != a) continue;
+        if (psx_mod_read_word(a) != k_bt[k].sig) return;
+        const unsigned last = (bt_recent_at + BT_RECENT - 1u) % BT_RECENT;
+        if (bt_recent_n && bt_recent[last].name == k_bt[k].name && bt_recent[last].ra == ra) {
+            bt_recent[last].frame = (uint32_t)s_frame_count;   /* repeated: keep the latest */
+            return;
+        }
+        bt_recent[bt_recent_at].frame = (uint32_t)s_frame_count;
+        bt_recent[bt_recent_at].ra = ra;
+        bt_recent[bt_recent_at].name = k_bt[k].name;
+        bt_recent_at = (bt_recent_at + 1u) % BT_RECENT;
+        if (bt_recent_n < BT_RECENT) bt_recent_n++;
+        return;
+    }
+}
+
+void moa_btrace_recent(char *out, unsigned size)
+{
+    unsigned o = 0;
+    if (!out || !size) return;
+    out[0] = 0;
+    for (unsigned i = 0; i < bt_recent_n && o + 1 < size; i++) {
+        const unsigned k = (bt_recent_at + BT_RECENT - bt_recent_n + i) % BT_RECENT;
+        const int w = snprintf(out + o, size - o, "%s%u:%s", i ? " " : "",
+                               (unsigned)bt_recent[k].frame, bt_recent[k].name);
+        if (w < 0) break;
+        o += (unsigned)w;
+    }
+}
+
 static void bt_entry(struct CPUState *cpu, uint32_t address)
 {
     const uint32_t a = (address & 0x1FFFFFFFu) | 0x80000000u;
+    bt_remember(a, cpu->gpr[31]);
     if (a == BT_MENU_ENTRY && psx_mod_read_word(a) == k_bt[0].sig &&
         psx_mod_read_byte(BT_TITLE_FLAG) == 1u)
         bt_begin();                                 /* a fresh boot: a new trace */

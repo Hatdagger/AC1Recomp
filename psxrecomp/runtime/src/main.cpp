@@ -694,6 +694,17 @@ extern "C" void psx_mod_request_return_to_launcher(void) {
     g_offline_launcher_return = 1;
     psx_request_return_to_lobby();   /* the same scheduler escape */
 }
+/* The same return, when the launcher only has to carry out a pick the game
+ * already made (Rogue Arena's RETRY ARENA / NEW ARENA) and start the game
+ * again: the game window stays open, the launcher runs hidden (it shows
+ * itself only if it is still open after a few seconds) and the next session
+ * reuses the window. The player never sees the desktop in between. */
+static int g_offline_launcher_quiet = 0;
+static SDL_Window* s_kept_game_window = nullptr;
+extern "C" void psx_mod_request_return_to_launcher_quiet(void) {
+    g_offline_launcher_quiet = 1;
+    psx_mod_request_return_to_launcher();
+}
 
 /* A plugin's loading screen: while set, the game picture is replaced by a
  * black screen with the message and a progress bar in the OSD box, redrawn
@@ -2120,6 +2131,28 @@ extern "C" int psx_mod_set_disc_speed(
     return 1;
 }
 
+extern "C" int psx_mod_set_disc_speed_live(
+    uint32_t divisor, uint32_t instant_max_per_frame) {
+    /* The same range as psx_mod_set_disc_speed, applied to the running drive
+     * at once (and kept as the game speed, so the game's entry hook does not
+     * undo it). Refused (0, nothing changed) in netplay and while a data load
+     * is in progress, so a read never changes timing halfway; the caller
+     * tries again on a later frame. The next
+     * session starts from the configured speed again (cdrom_init). */
+    if (divisor > PSX_MOD_DISC_SPEED_MAX ||
+        (divisor == 0 &&
+         (instant_max_per_frame < 1 || instant_max_per_frame > 256)))
+        return 0;
+    if (psx_netplay_active() || cdrom_load_in_progress()) return 0;
+    cdrom_set_game_speed((int)divisor);
+    cdrom_set_speed((int)divisor);
+    if (divisor == 0) cdrom_set_instant_rate((int)instant_max_per_frame);
+    std::fprintf(stdout, "psxrecomp: mod set disc speed live: divisor %u%s\n",
+                 (unsigned)divisor, divisor == 0 ? " (instant)" : "");
+    std::fflush(stdout);
+    return 1;
+}
+
 extern "C" int psx_mod_set_controller_mode_override(
     uint32_t player, uint32_t controller_mode) {
     if (player >= PSX_MAX_PLAYERS ||
@@ -2829,6 +2862,10 @@ static void sdl_drc_callback(void* /*user*/, Uint8* stream, int len) {
     if (!s_drc_ready) { std::memset(stream, 0, (size_t)len); return; }
     int frames = len / (int)(2 * sizeof(int16_t)); /* stereo S16 */
     rab_pull(&s_drc, reinterpret_cast<int16_t*>(stream), frames);
+    /* Host music (mods): on the device's clock, so it plays through loads,
+     * fast forward and the turbo mute (mod_host_music.c). */
+    psx_host_music_mix(reinterpret_cast<int16_t*>(stream), frames,
+                       g_audio_host_rate, host_volume_get());
     /* T3 tap in bridge mode: the exact device-rate bytes the host consumes.
      * This callback is the tap's single writer while the bridge is active. */
     audio_trace_pcm(AUDIO_TAP_HOST, reinterpret_cast<const int16_t*>(stream),
@@ -4188,6 +4225,7 @@ static void shutdown_runtime(void) {
         sdl_audio_device = 0;
     }
     if (s_drc_ready) { rab_free(&s_drc); s_drc_ready = false; }
+    psx_mod_music_stop(0);   /* a mod's music never outlives its session */
     close_controller();
     debug_server_shutdown();
     host_sampler_stop();
@@ -4206,6 +4244,7 @@ static void teardown_game_session_keep_lobby(void) {
         sdl_audio_device = 0;
     }
     if (s_drc_ready) { rab_free(&s_drc); s_drc_ready = false; }
+    psx_mod_music_stop(0);   /* a mod's music never outlives its session */
     close_controller();
     if (g_vk_active) {
         vk_renderer_shutdown();
@@ -4218,7 +4257,11 @@ static void teardown_game_session_keep_lobby(void) {
     if (sdl_texture) { SDL_DestroyTexture(sdl_texture); sdl_texture = nullptr; }
     sdl_texture_width = sdl_texture_height = 0;
     if (sdl_renderer) { SDL_DestroyRenderer(sdl_renderer); sdl_renderer = nullptr; }
-    if (sdl_window) { SDL_DestroyWindow(sdl_window); sdl_window = nullptr; }
+    if (sdl_window) {
+        if (g_offline_launcher_quiet && !s_kept_game_window) s_kept_game_window = sdl_window;
+        else SDL_DestroyWindow(sdl_window);
+        sdl_window = nullptr;
+    }
     if (s_headless_gl_window) { SDL_DestroyWindow(s_headless_gl_window); s_headless_gl_window = nullptr; }
     if (sdl_pixel_buf) { std::free(sdl_pixel_buf); sdl_pixel_buf = nullptr; }
     sdl_pixel_buf_capacity = 0;
@@ -4367,6 +4410,9 @@ static void sdl_audio_pump(bool discard_output = false) {
         }
     }
     if (legacy) {
+        /* Host music (mods); the push model only feeds while the game's
+         * audio is pumped, so it pauses with the turbo mute here. */
+        psx_host_music_mix(sdl_audio_buf, frames, 44100, host_volume_get());
         /* T3 tap: the exact post-fade bytes handed to the host audio queue. */
         audio_trace_pcm(AUDIO_TAP_HOST, sdl_audio_buf, frames);
         psx_sdl_audio_queue(sdl_audio_device, sdl_audio_buf, (uint32_t)frames * bytes_per_frame);
@@ -20035,6 +20081,10 @@ session_reboot:
         std::fflush(stdout);
     }
     memory_init(bios_path_str.c_str());
+    /* memory_init cleared the overlay page watches and generations; the
+     * loader's candidates (set up before this, and kept from any earlier
+     * session in this process) must watch their pages again. */
+    overlay_loader_reset_for_boot();
     if (g_headless_opengl) g_video_renderer = 1;
     if (net_cfg.enabled && !psx_mod_netplay_renderer_allowed(g_video_renderer)) {
         std::fprintf(stderr, "psxrecomp: this title's netplay profile requires OpenGL "
@@ -20761,6 +20811,18 @@ session_reboot:
      * the image scales to fill the larger window with no further distortion. */
     int game_w = g_video_win_w, game_h = 0;
     clamp_window_aspect(&game_w, &game_h, g_video_aspect_num, g_video_aspect_den);
+    if (s_kept_game_window) {
+        /* A quiet return (psx_mod_request_return_to_launcher_quiet): the
+         * same window, size, place and fullscreen state as the last session.
+         * Its renderer and GL/Vulkan context were torn down; they are made
+         * again below on this window. */
+        sdl_window = s_kept_game_window;
+        s_kept_game_window = nullptr;
+        SDL_SetWindowTitle(sdl_window, window_title.c_str());
+        SDL_ShowWindow(sdl_window);
+        SDL_RaiseWindow(sdl_window);
+        std::fprintf(stdout, "psxrecomp: new session in the same window\n");
+    } else {
     sdl_window = SDL_CreateWindow(
         window_title.c_str(),
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
@@ -20775,6 +20837,7 @@ session_reboot:
     s_window_fullscreen = {};
     if (psx_window_fullscreen_set(sdl_window, &s_window_fullscreen, g_fullscreen) != 0)
         std::fprintf(stderr, "Fullscreen setup failed: %s\n", SDL_GetError());
+    }
 
     /* No maximise: the default size (window_size.h) leaves a third of the
      * usable height free, so the client plus title bar and borders fits on
@@ -21589,7 +21652,16 @@ soft_return_lobby:
     g_mod_fast_forward = 0;
     psx_mod_set_loading_screen(NULL, 0);
     (void)psx_mod_set_overlay_image(NULL, 0, 0);
+    if (!offline_return) g_offline_launcher_quiet = 0;
     teardown_game_session_keep_lobby();
+    g_offline_launcher_quiet = 0;
+    /* A kept game window: the launcher opens hidden (see
+     * psx_mod_request_return_to_launcher_quiet). */
+#ifdef _WIN32
+    _putenv_s("LNG_START_HIDDEN", s_kept_game_window ? "1" : "0");
+#else
+    setenv("LNG_START_HIDDEN", s_kept_game_window ? "1" : "0", 1);
+#endif
     PSXRecompV4::mod_runtime_end_netplay();
 #if defined(RECOMP_LAUNCHER) && defined(PSX_HAS_LOBBY_CLIENT)
     ae_np_prepare_lobby_rematch();
@@ -21853,6 +21925,19 @@ soft_return_lobby:
         const int rui_rc = recomp_launcher_run_window(
             rui_title.c_str(), &ls, &gi, assets_dir_str.c_str(),
             rui_initial_disc.c_str(), rui_out_disc, sizeof(rui_out_disc));
+#ifdef _WIN32
+        _putenv_s("LNG_START_HIDDEN", "0");
+#else
+        setenv("LNG_START_HIDDEN", "0", 1);
+#endif
+        /* The kept game window is reused only if the launcher stayed hidden
+         * and starts the game again; anything else (the player saw the
+         * launcher and may have changed video settings) gets a new one. */
+        if (s_kept_game_window &&
+            (rui_rc != 0 || recomp_launcher_last_window_shown())) {
+            SDL_DestroyWindow(s_kept_game_window);
+            s_kept_game_window = nullptr;
+        }
 
         if (rui_rc == 1) {
             /* User closed the launcher — leave the lobby and exit. */

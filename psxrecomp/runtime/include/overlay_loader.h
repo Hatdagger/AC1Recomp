@@ -114,6 +114,11 @@ void overlay_loader_clear_lazy_miss(void);
  * cache so native vs interp is re-decided against restored bytes. */
 void overlay_loader_resync_validation_after_restore(void);
 
+/* After memory_init() (every session start, first boot and rematch/return
+ * to launcher alike): re-arm the page watch on every registered candidate
+ * and lazy manifest and force each to re-check its bytes. */
+void overlay_loader_reset_for_boot(void);
+
 /* Step 2.8: re-scan the cache dir for DLLs compiled after init and clear the
  * checked-regions memo so the next dispatch reconsiders the cache. Idempotent
  * (loaded DLLs stay loaded); emu thread only. */

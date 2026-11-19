@@ -76,6 +76,15 @@ void launcher_platform_refresh_metrics(LauncherPlatform* p);
 // Present the current GL framebuffer.
 void launcher_platform_present(LauncherPlatform* p);
 
+// Pass-through start: when the host sets LNG_START_HIDDEN=1 before opening,
+// the window opens hidden and only shows itself if it is still open after
+// LNG_HIDDEN_SHOW_MS (3 s) -- a launcher that only carries out a pending
+// action (Rogue Arena's RETRY) and starts the game again is never seen. When
+// it does show, it hides the host's other windows (the kept game window).
+// launcher_platform_was_shown() says whether the last open window was ever
+// visible.
+bool launcher_platform_was_shown(void);
+
 // Tear down GL context + window and reset GL attributes, so the game runtime's
 // SDL layer starts from a clean slate afterward.
 // By default this also calls SDL_Quit(). Hosts that already initialized SDL and

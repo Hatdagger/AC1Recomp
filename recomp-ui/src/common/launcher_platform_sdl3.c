@@ -9,6 +9,33 @@
 
 static bool s_quit_sdl = true;
 
+/* Pass-through start (see launcher_platform.h). */
+#define LNG_HIDDEN_SHOW_MS 3000u
+static bool s_start_hidden = false;
+static bool s_was_shown = true;
+static Uint64 s_hidden_since = 0;
+
+bool launcher_platform_was_shown(void) { return s_was_shown; }
+
+static bool start_hidden_requested(void) {
+    const char* v = getenv("LNG_START_HIDDEN");
+    return v && v[0] == '1';
+}
+
+static void hidden_show_if_due(LauncherPlatform* p) {
+    if (!s_start_hidden || !p || !p->window) return;
+    if ((Uint64)SDL_GetTicks() - s_hidden_since < LNG_HIDDEN_SHOW_MS) return;
+    s_start_hidden = false;
+    s_was_shown = true;
+    /* The host's kept game window would sit behind: hide it. */
+    for (Uint32 id = 1; id < 256u; id++) {
+        SDL_Window* w = SDL_GetWindowFromID(id);
+        if (w && w != p->window) SDL_HideWindow(w);
+    }
+    SDL_ShowWindow(p->window);
+    SDL_RaiseWindow(p->window);
+}
+
 void launcher_platform_set_quit_sdl(bool quit_sdl) {
     s_quit_sdl = quit_sdl;
 }
@@ -181,6 +208,10 @@ bool launcher_platform_open(LauncherPlatform* p, const char* title,
     /* Automated launcher checks (LNG_SCRIPT + LNG_TEST_HIDDEN, as on SDL2)
      * must not steal the user's desktop/focus. */
     if (getenv("LNG_SCRIPT") && getenv("LNG_TEST_HIDDEN")) flags |= SDL_WINDOW_HIDDEN;
+    s_start_hidden = start_hidden_requested();
+    s_was_shown = !s_start_hidden;
+    s_hidden_since = (Uint64)SDL_GetTicks();
+    if (s_start_hidden) flags |= SDL_WINDOW_HIDDEN;
 
     int win_w = logical_w;
     int win_h = logical_h;
@@ -280,6 +311,7 @@ void launcher_platform_refresh_metrics(LauncherPlatform* p) {
 
 void launcher_platform_present(LauncherPlatform* p) {
     if (p && p->window) SDL_GL_SwapWindow(p->window);
+    hidden_show_if_due(p);
 }
 
 void launcher_platform_close(LauncherPlatform* p) {

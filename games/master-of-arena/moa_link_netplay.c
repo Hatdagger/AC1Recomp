@@ -148,8 +148,9 @@ static void moa_link_wait_entry(struct CPUState *cpu, uint32_t address)
         psx_mod_write_byte(MOA_RECV + 6u, psx_mod_read_byte(MOA_SEND + 6u));
         psx_mod_write_half(MOA_RECV + 2u, psx_mod_read_half(MOA_REMOTE_PAD));
         psx_mod_write_half(MOA_REMOTE_PAD, pad2_now);
-        /* CONTINUE? answers itself in a versus room (between rounds X). */
-        moa_np_menu_continue();
+        /* CONTINUE? answers itself in a versus room (between rounds X). The
+         * packet routine (0x8007E4C8) saved its caller at sp+0x18. */
+        moa_np_menu_continue(psx_mod_read_word(cpu->gpr[29] + 0x18u));
         /* Each peer hears its own player's channel (see "Sound for two
          * listeners"); renewed every frame, lapses after the match. */
         spu_output_mono_request(psx_netplay_local_slot() == 1 ? 1 : 0, 30);

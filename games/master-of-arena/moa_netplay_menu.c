@@ -58,6 +58,7 @@
 #define NM_RECV_PAD    (0x80043C70u + 932u + 2u)  /* the packet's remote pad */
 #define NM_SEND_PAD    (0x80043C70u + 944u + 2u)  /* player 1's pad of the last frame */
 #define NM_CONTINUE    30u
+#define NM_RA_CONTINUE 0x800523F8u            /* the CONTINUE? check's own packet call returns here */
 #define NM_MIN_STEPS   30u                    /* an accept counts once the round has run this long */
 
 #define NM_HOLD_MS     1000u                  /* START held this long opens the menu */
@@ -197,22 +198,20 @@ void moa_np_menu_pads(uint16_t *port1, uint16_t *port2)
     psx_mod_write_half(NM_P2 + 8u, (uint16_t)(psx_mod_read_half(NM_P2 + 8u) | 0x30u));
 }
 
-void moa_np_menu_continue(void)
+void moa_np_menu_continue(uint32_t caller)
 {
     if (!moa_np_room_active() || !moa_link_netplay_engine_loaded()) return;
     if (psx_mod_read_half(NM_END) != NM_CONTINUE || psx_mod_read_byte(NM_LINK_ERROR) ||
         psx_mod_read_byte(NM_REPLAY))
         return;
-    /* This frame's pads at CONTINUE?: player 2 presses nothing; player 1
-     * nothing once the set is decided, else X, after a frame with nothing
-     * (a press counts only after a frame without one). The check reads both
-     * after this wait, so neither pilot can pick replay or end the set. */
+    /* The pads at CONTINUE?: player 2 presses nothing; player 1 nothing once
+     * the set is decided, else X. While CONTINUE? waits the engine trades
+     * pads twice a pass, in the frame update and then in the CONTINUE? check
+     * (`caller`: where that packet call returns). A press counts only after
+     * a release, so the first gives nothing and the check's own gives X. */
     psx_mod_write_half(NM_RECV_PAD, 0);
-    if (moa_np_room_set_over()) {
-        psx_mod_write_half(NM_SEND_PAD, 0);
-        return;
-    }
-    psx_mod_write_half(NM_SEND_PAD, psx_mod_read_half(NM_P1) ? 0 : (uint16_t)B_CROSS);
+    const int press = caller == NM_RA_CONTINUE && !moa_np_room_set_over() && !psx_mod_read_half(NM_P1);
+    psx_mod_write_half(NM_SEND_PAD, press ? (uint16_t)B_CROSS : 0);
 }
 
 /* ---- the menu (this PC's own pad, before it is sent) ------------------------- */

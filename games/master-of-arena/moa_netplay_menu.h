@@ -18,8 +18,9 @@ void moa_np_menu_pads(uint16_t *port1, uint16_t *port2);
 
 /* The same wait, after the remote pad is in place: at CONTINUE? the answer
  * both players give (between rounds X, the next round; once the set is
- * decided nothing, the room takes both PCs back). */
-void moa_np_menu_continue(void);
+ * decided nothing, the room takes both PCs back). `caller`: the return
+ * address the packet routine saved (where it was called from). */
+void moa_np_menu_continue(uint32_t caller);
 
 #ifdef __cplusplus
 }

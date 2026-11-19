@@ -1,17 +1,18 @@
 /*
- * Armored Core: Master of Arena - in-between frames (render passes), test 2:
- * split-screen VS, cameras and ACs.
+ * Armored Core: Master of Arena - in-between frames (render passes), test 3:
+ * split-screen VS, cameras, ACs and the object pool (shots, missiles,
+ * smoke, debris).
  *
  * The game draws at most ~22 frames a second (each frame ends by waiting
  * until 715 scanlines have passed since the last flip). Between two of its
  * frames this plugin redraws the scene with the game's own draw code, with
  * both players' cameras, both ACs (position, facing, the shadow's floor
- * height) and the ACs' joint poses placed part of the way from one logic
- * step to the next. Shots, effects and the HUD's lock box are drawn as the
- * newest step left them (step 5).
+ * height), the ACs' joint poses and the object pool's records placed part
+ * of the way from one logic step to the next. The HUD's lock box is drawn as
+ * the newest step left it (step 8).
  *
- * Mapping: docs/mapping/renderer.md, "Frame anatomy (VS)", "Camera (VS)" and
- * "ACs (VS)".
+ * Mapping: docs/mapping/renderer.md, "Frame anatomy (VS)", "Camera (VS)",
+ * "ACs (VS)" and "Object pool draws (VS)".
  *
  * Where: the entry of the scene render 0x80067404(camera P1, camera P2),
  * called once per step by the VS main loop (from 0x80052690). The logic of
@@ -34,6 +35,11 @@
  * pose frame n was drawn with, and the pass's own render computes the next
  * one. That pose is blended inside the pass, at the entry of the first
  * view's draw (0x800670C8), between the two.
+ *
+ * Object pool: 256 records the logic steps (0x8008C6C4) and the render only
+ * reads, so they are blended before the pass calls the render, like the ACs'
+ * positions. A record is reused as soon as it is freed, so it pairs with the
+ * last step only when it holds the same object (see moa_capture_pool).
  */
 #include "mod_plugins.h"
 #include "cpu_state.h"
@@ -91,6 +97,26 @@
 #define MOA_MAX_JOINTS      64u
 #define MOA_FLOOR_NONE      32767
 
+/* Object pool (renderer.md "Object pool draws (VS)"): 256 records of 228
+ * bytes. +0x00 position (s16 x, y, z), +0x06 0 = in use (-1 free), +0x08
+ * owner, +0x10 draw kind (0-6 are drawn), +0x16 life (counts down by one a
+ * step in 0x8008C6C4; -1 = no limit; the record is freed when it reaches
+ * -1), +0x18 update routine. Per kind, what the draw also reads that moves:
+ * kind 0 (missile model) angles +0xBC, kind 1 (streak: bullets, shells)
+ * tail +0xBC = the position one step earlier, kind 3 (debris) angles +0xCA,
+ * kind 4 (rigid model) angles +0xC0. Kind 4's +0xC8 (scale ?) and the
+ * billboard sizes (kinds 2, 5, 6) are not known well enough: not blended. */
+#define MOA_VS_POOL         0x801D6F6Cu
+#define MOA_VS_POOL_COUNT   256u
+#define MOA_VS_POOL_STRIDE  0xE4u
+#define MOA_VS_POOL_STEP    0x8008C6C4u  /* update + life countdown (checked, not hooked) */
+#define MOA_VS_OBJECTS_DRAW 0x80065C44u  /* the pool's draw loop (checked, not hooked) */
+/* A rifle bullet moves 701 a step; nothing else is measured yet. A record
+ * that moved further than this was placed (a new object the identity test
+ * missed, or a teleport): drawn where the step left it. Not measured yet. */
+#define MOA_POOL_MOVE       4096.0
+#define MOA_POOL_TURN       (MOA_PI / 2.0)
+
 /* How far an AC may move or turn in one step and still glide. From the
  * battle lane's measured speeds: 83 a step at full ground boost (75 after
  * the size cap), 150 at the fall limit, turning at most 38 a step; a round
@@ -128,6 +154,9 @@ static int moa_floor_ok[2];
 static double moa_pass_t;
 static int moa_pose_pending, moa_count_pose;
 
+static PSXMotionSet *moa_pool_motion;    /* object pool records */
+static uint32_t moa_pool_tick;
+
 static int moa_code_is(uint32_t address, uint32_t w0, uint32_t w1)
 {
     return psx_mod_read_word(address) == w0 &&
@@ -145,7 +174,9 @@ static int moa_vs_loaded(void)
            moa_code_is(MOA_VS_VIEW_DRAW, 0x27BDFFD8u, 0xAFB20020u) &&
            moa_code_is(MOA_VS_POSE, 0x27BDFF98u, 0xAFB10044u) &&
            moa_code_is(MOA_VS_POSE_WALK, 0x27BDFFE0u, 0xAFB10014u) &&
-           moa_code_is(MOA_VS_AC_DRAW, 0x27BDFF78u, 0xAFB7007Cu);
+           moa_code_is(MOA_VS_AC_DRAW, 0x27BDFF78u, 0xAFB7007Cu) &&
+           moa_code_is(MOA_VS_POOL_STEP, 0x27BDFFE0u, 0x3C02801Du) &&
+           moa_code_is(MOA_VS_OBJECTS_DRAW, 0x27BDFF88u, 0x3C02801Au);
 }
 
 static uint32_t moa_ac(unsigned i)
@@ -225,6 +256,50 @@ static void moa_capture_acs(int paired)
                           floor_move >= -(int32_t)MOA_AC_MOVE && floor_move <= (int32_t)MOA_AC_MOVE;
         moa_capture_pose(i, &moa_pose[i]);
         if (!glides) moa_pose[i].ok = 0;
+    }
+}
+
+/* Once per game frame, at the pass point: every pool record the draw will
+ * draw (in use, kind 0-6), its position and the moving field of its kind.
+ * Records are reused at once, so a value pairs with the last step's only
+ * when it is the same object: same update routine, owner and kind, and a
+ * life one step lower (life + steps unchanged), or no life limit on both.
+ * A new object, or a reused record, is drawn where it appears. */
+static void moa_capture_pool(int paired)
+{
+    if (!moa_pool_motion)
+        moa_pool_motion = psx_motion_set_create(2u * MOA_VS_POOL_COUNT);
+    if (!moa_pool_motion) return;
+    if (!paired) psx_motion_invalidate(moa_pool_motion);
+    psx_motion_begin(moa_pool_motion, ++moa_pool_tick);
+    for (uint32_t r = 0; r < MOA_VS_POOL_COUNT; r++) {
+        const uint32_t rec = MOA_VS_POOL + r * MOA_VS_POOL_STRIDE;
+        if (psx_mod_read_half(rec + 0x06u) != 0u) continue;
+        const uint32_t kind = psx_mod_read_half(rec + 0x10u);
+        if (kind > 6u) continue;
+        const uint16_t life = psx_mod_read_half(rec + 0x16u);
+        const uint32_t age = life == 0xFFFFu ? 0xFFFFFFFFu
+                                             : (uint32_t)life + moa_pool_tick;
+        const uint32_t identity = psx_motion_identity(
+            psx_mod_read_word(rec + 0x18u), psx_mod_read_word(rec + 0x08u),
+            psx_motion_identity(kind, age, rec));
+        (void)psx_motion_track(moa_pool_motion, PSX_MOTION_SVECTOR, rec, identity);
+        switch (kind) {
+        case 0u: (void)psx_motion_track(moa_pool_motion, PSX_MOTION_ANGLES, rec + 0xBCu, identity); break;
+        case 1u: (void)psx_motion_track(moa_pool_motion, PSX_MOTION_SVECTOR, rec + 0xBCu, identity); break;
+        case 3u: (void)psx_motion_track(moa_pool_motion, PSX_MOTION_ANGLES, rec + 0xCAu, identity); break;
+        case 4u: (void)psx_motion_track(moa_pool_motion, PSX_MOTION_ANGLES, rec + 0xC0u, identity); break;
+        default: break;
+        }
+    }
+    const PSXMotionLimits limits = {MOA_POOL_MOVE, MOA_POOL_TURN};
+    PSXMotionStats stats = {0};
+    (void)psx_motion_prepare(moa_pool_motion, &limits, &stats);
+    if (paired) {
+        psx_mod_counter_add("moa.frame-rate.pool_tracked", stats.tracked);
+        psx_mod_counter_add("moa.frame-rate.pool_blended", stats.blended);
+        psx_mod_counter_add("moa.frame-rate.pool_placed", stats.placed);
+        psx_mod_counter_add("moa.frame-rate.pool_unmatched", stats.unmatched);
     }
 }
 
@@ -327,6 +402,7 @@ static int moa_pass(struct CPUState *cpu, void *user, uint32_t alpha_q16)
      * (moa_view_draw_entry). */
     const double t = (double)alpha_q16 / 65536.0;
     psx_motion_apply(moa_motion, t);
+    psx_motion_apply(moa_pool_motion, t);
     for (unsigned i = 0; i < 2u; i++) {
         if (!moa_floor_ok[i]) continue;
         const int32_t from = moa_floor_prev[i];
@@ -416,6 +492,7 @@ static void moa_render_entry(struct CPUState *cpu, uint32_t address)
                         (tick == MOA_VS_TICK_CAP && moa_prev_tick == MOA_VS_TICK_CAP);
     const int paired = moa_prev_valid && stepped && index <= 1u;
     moa_capture_acs(paired);
+    moa_capture_pool(paired);
     if (paired) {
         for (unsigned p = 0; p < 2u; p++) {
             int32_t moved = 0;
@@ -489,6 +566,7 @@ static void moa_frame_rate_activate(void)
     moa_floor_ok[0] = moa_floor_ok[1] = 0;
     moa_pose_pending = 0;
     if (moa_motion) psx_motion_invalidate(moa_motion);
+    if (moa_pool_motion) psx_motion_invalidate(moa_pool_motion);
     if (psx_netplay_active()) {
         psx_mod_counter_add("moa.frame-rate.netplay_skipped", 1);
         return;

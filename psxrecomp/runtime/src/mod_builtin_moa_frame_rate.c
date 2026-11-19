@@ -1,15 +1,17 @@
 /*
- * Armored Core: Master of Arena - in-between frames (render passes), test 1:
- * split-screen VS, camera only.
+ * Armored Core: Master of Arena - in-between frames (render passes), test 2:
+ * split-screen VS, cameras and ACs.
  *
  * The game draws at most ~22 frames a second (each frame ends by waiting
  * until 715 scanlines have passed since the last flip). Between two of its
  * frames this plugin redraws the scene with the game's own draw code, with
- * both players' cameras placed part of the way from one logic step to the
- * next. Everything else is drawn as the newest step left it: ACs, shots and
- * effects are not blended yet.
+ * both players' cameras, both ACs (position, facing, the shadow's floor
+ * height) and the ACs' joint poses placed part of the way from one logic
+ * step to the next. Shots, effects and the HUD's lock box are drawn as the
+ * newest step left them (step 5).
  *
- * Mapping: docs/mapping/renderer.md, "Frame anatomy (VS)" and "Camera (VS)".
+ * Mapping: docs/mapping/renderer.md, "Frame anatomy (VS)", "Camera (VS)" and
+ * "ACs (VS)".
  *
  * Where: the entry of the scene render 0x80067404(camera P1, camera P2),
  * called once per step by the VS main loop (from 0x80052690). The logic of
@@ -24,12 +26,21 @@
  * frame end inside it waits for the frame time (made to look old enough) and
  * its sound routines are skipped. The framework restores the whole machine
  * after every pass.
+ *
+ * ACs: their position and angles are logic state, so they are blended
+ * before the pass calls the render, from the last step's values to this
+ * step's. Their poses are not: the render poses each AC itself (0x80059624)
+ * before it draws, so at the pass point the joint matrices still hold the
+ * pose frame n was drawn with, and the pass's own render computes the next
+ * one. That pose is blended inside the pass, at the entry of the first
+ * view's draw (0x800670C8), between the two.
  */
 #include "mod_plugins.h"
 #include "cpu_state.h"
 #include "interrupts.h"
 #include "psx_netplay.h"
 #include "psx_video_timing.h"
+#include "render_pass_motion.h"
 #include "timers.h"
 
 #include <stdint.h>
@@ -60,11 +71,62 @@
  * that camera is not blended. */
 #define MOA_VS_CUT 2048
 
+/* ACs (renderer.md "ACs (VS)"): two 376-byte objects, P1 then P2. Word +0
+ * set = in play. +0x08 position (s16 x, y, z), +0x10 angles (x, facing, z;
+ * 4096 a turn), +0x2C the floor height under the AC (the shadow's height;
+ * 32767 = nothing below), +0x68 the AC's pose record. */
+#define MOA_VS_AC           0x801D4BC0u
+#define MOA_VS_AC_STRIDE    0x178u
+#define MOA_VS_VIEW_DRAW    0x800670C8u  /* per-view draw: after both poses, before any drawing */
+#define MOA_VS_POSE         0x80059624u  /* pose routine (checked, not hooked) */
+#define MOA_VS_POSE_WALK    0x800592D4u  /* joint hierarchy (checked, not hooked) */
+#define MOA_VS_AC_DRAW      0x80062C00u  /* AC model draw (checked, not hooked) */
+/* Pose record: +0 state (2 = posed this frame), +0x1C the model, +0x20 the
+ * joint array. Model +5 = joint count. Joint (124 bytes): +0x12 mesh slot
+ * (-1 = no joint at this number), +0x28 its model-space MATRIX (rotation,
+ * then t[3] at +0x3C), which is what the model and shadow draws read. */
+#define MOA_JOINT_SIZE      0x7Cu
+#define MOA_JOINT_SLOT      0x12u
+#define MOA_JOINT_WORLD     0x28u
+#define MOA_MAX_JOINTS      64u
+#define MOA_FLOOR_NONE      32767
+
+/* How far an AC may move or turn in one step and still glide. From the
+ * battle lane's measured speeds: 83 a step at full ground boost (75 after
+ * the size cap), 150 at the fall limit, turning at most 38 a step; a round
+ * restart moves an AC by thousands. An AC that moved further was placed: it
+ * is drawn where the step left it, floor and pose included; angles that
+ * turned further are drawn as the step left them. */
+#define MOA_PI              3.14159265358979323846
+#define MOA_AC_MOVE         512.0          /* world units */
+#define MOA_AC_TURN         (MOA_PI / 2.0) /* a quarter turn */
+/* Joints, in model space (a model unit is 1/4 of a world unit: near ACs are
+ * drawn with the view matrix >> 2). A joint that jumps further than this in
+ * one step belongs to a pose that was cut, not animated. Not measured yet. */
+#define MOA_JOINT_MOVE      1024.0
+#define MOA_JOINT_TURN      (MOA_PI / 2.0)
+
 static int moa_fr_enabled, moa_fr_in_pass;
 static int16_t moa_cam_prev[16], moa_cam_now[16];
 static int moa_prev_valid;
 static uint16_t moa_prev_tick;
 static int moa_cut[2];
+
+/* The pose frame n was drawn with, per AC, and what it belongs to. */
+typedef struct MoaPose {
+    int ok;
+    uint32_t record, joints, model, count;
+    uint8_t used[MOA_MAX_JOINTS];
+    PSXMotionMatrix m[MOA_MAX_JOINTS];
+} MoaPose;
+
+static PSXMotionSet *moa_motion;         /* AC position and angles */
+static uint32_t moa_motion_tick;
+static MoaPose moa_pose[2];
+static int16_t moa_floor_prev[2], moa_floor_now[2];
+static int moa_floor_ok[2];
+static double moa_pass_t;
+static int moa_pose_pending, moa_count_pose;
 
 static int moa_code_is(uint32_t address, uint32_t w0, uint32_t w1)
 {
@@ -79,7 +141,141 @@ static int moa_vs_loaded(void)
            moa_code_is(MOA_VS_FRAME_END, 0x27BDFFE8u, 0x00002021u) &&
            moa_code_is(MOA_VS_SOUND_QUEUE, 0x27BDFFE0u, 0x3C028004u) &&
            moa_code_is(MOA_VS_SOUND_BEGIN, 0x27BDFFD0u, 0xAFBF0028u) &&
-           moa_code_is(MOA_VS_SOUND_PLAY, 0x27BDFFB8u, 0xAFB3002Cu);
+           moa_code_is(MOA_VS_SOUND_PLAY, 0x27BDFFB8u, 0xAFB3002Cu) &&
+           moa_code_is(MOA_VS_VIEW_DRAW, 0x27BDFFD8u, 0xAFB20020u) &&
+           moa_code_is(MOA_VS_POSE, 0x27BDFF98u, 0xAFB10044u) &&
+           moa_code_is(MOA_VS_POSE_WALK, 0x27BDFFE0u, 0xAFB10014u) &&
+           moa_code_is(MOA_VS_AC_DRAW, 0x27BDFF78u, 0xAFB7007Cu);
+}
+
+static uint32_t moa_ac(unsigned i)
+{
+    return MOA_VS_AC + i * MOA_VS_AC_STRIDE;
+}
+
+static int moa_in_ram(uint32_t address)
+{
+    return address >= 0x80000000u && address < 0x80200000u;
+}
+
+/* The pose an AC was last drawn with: the joint matrices the render's pose
+ * routine left (state 2 = posed this frame). Nothing writes them between
+ * frames: the only other caller of the pose routine is match start. */
+static void moa_capture_pose(unsigned i, MoaPose *pose)
+{
+    const uint32_t ac = moa_ac(i);
+    pose->ok = 0;
+    if (!psx_mod_read_word(ac)) return;
+    const uint32_t record = psx_mod_read_word(ac + 0x68u);
+    if (!moa_in_ram(record) || (record & 3u) || psx_mod_read_half(record) != 2u) return;
+    const uint32_t joints = psx_mod_read_word(record + 0x20u);
+    const uint32_t model = psx_mod_read_word(record + 0x1Cu);
+    if (!moa_in_ram(joints) || (joints & 3u) || !moa_in_ram(model)) return;
+    const uint32_t count = psx_mod_read_byte(model + 5u);
+    if (!count || count > MOA_MAX_JOINTS) return;
+    for (uint32_t j = 0; j < count; j++) {
+        const uint32_t joint = joints + j * MOA_JOINT_SIZE;
+        pose->used[j] = psx_mod_read_half(joint + MOA_JOINT_SLOT) != 0xFFFFu;
+        if (pose->used[j]) psx_motion_read_matrix(joint + MOA_JOINT_WORLD, &pose->m[j]);
+    }
+    pose->record = record;
+    pose->joints = joints;
+    pose->model = model;
+    pose->count = count;
+    pose->ok = 1;
+}
+
+/* Once per game frame, at the pass point: this step's AC positions and
+ * angles (paired with the last step's by the motion set), the shadow's
+ * floor height, and the pose frame n was drawn with. */
+static void moa_capture_acs(int paired)
+{
+    if (!moa_motion) moa_motion = psx_motion_set_create(8u);
+    if (!moa_motion) {
+        moa_pose[0].ok = moa_pose[1].ok = 0;
+        moa_floor_ok[0] = moa_floor_ok[1] = 0;
+        return;
+    }
+    if (!paired) psx_motion_invalidate(moa_motion);
+    psx_motion_begin(moa_motion, ++moa_motion_tick);
+    for (unsigned i = 0; i < 2u; i++) {
+        const uint32_t ac = moa_ac(i);
+        moa_floor_prev[i] = moa_floor_now[i];
+        moa_floor_now[i] = (int16_t)psx_mod_read_half(ac + 0x2Cu);
+        if (!psx_mod_read_word(ac)) continue;
+        /* A new pose record means a new AC at this address. */
+        const uint32_t identity = psx_motion_identity(ac, psx_mod_read_word(ac + 0x68u), 0u);
+        (void)psx_motion_track(moa_motion, PSX_MOTION_SVECTOR, ac + 0x08u, identity);
+        (void)psx_motion_track(moa_motion, PSX_MOTION_ANGLES, ac + 0x10u, identity);
+    }
+    const PSXMotionLimits limits = {MOA_AC_MOVE, MOA_AC_TURN};
+    (void)psx_motion_prepare(moa_motion, &limits, 0);
+    for (unsigned i = 0; i < 2u; i++) {
+        const uint32_t ac = moa_ac(i);
+        int32_t at[3];
+        /* An AC that was placed (or has no history) is drawn as the step
+         * left it: position, floor and pose alike. */
+        const int glides = psx_motion_blend_at(moa_motion, PSX_MOTION_SVECTOR,
+                                               ac + 0x08u, 1.0, at) == 1;
+        if (paired && psx_mod_read_word(ac))
+            psx_mod_counter_add(glides ? "moa.frame-rate.ac_glide" : "moa.frame-rate.ac_placed", 1);
+        const int32_t floor_move = (int32_t)moa_floor_now[i] - moa_floor_prev[i];
+        moa_floor_ok[i] = glides && moa_floor_now[i] != MOA_FLOOR_NONE &&
+                          moa_floor_prev[i] != MOA_FLOOR_NONE &&
+                          floor_move >= -(int32_t)MOA_AC_MOVE && floor_move <= (int32_t)MOA_AC_MOVE;
+        moa_capture_pose(i, &moa_pose[i]);
+        if (!glides) moa_pose[i].ok = 0;
+    }
+}
+
+/* Inside a pass, before the first view is drawn: the pass's render has just
+ * posed both ACs for this step; blend each joint from the pose frame n was
+ * drawn with. A joint that turned or moved past the limits keeps this
+ * step's matrix. */
+static void moa_view_draw_entry(struct CPUState *cpu, uint32_t address)
+{
+    (void)cpu;
+    (void)address;
+    if (!moa_fr_in_pass || !moa_pose_pending) return;
+    moa_pose_pending = 0;
+    uint32_t blended = 0, placed = 0, unmatched = 0;
+    for (unsigned i = 0; i < 2u; i++) {
+        const MoaPose *pose = &moa_pose[i];
+        if (!pose->ok) continue;
+        const uint32_t record = psx_mod_read_word(moa_ac(i) + 0x68u);
+        if (record != pose->record || psx_mod_read_half(record) != 2u ||
+            psx_mod_read_word(record + 0x20u) != pose->joints ||
+            psx_mod_read_word(record + 0x1Cu) != pose->model) {
+            unmatched++;
+            continue;
+        }
+        for (uint32_t j = 0; j < pose->count; j++) {
+            if (!pose->used[j]) continue;
+            const uint32_t at = pose->joints + j * MOA_JOINT_SIZE + MOA_JOINT_WORLD;
+            PSXMotionMatrix now, out;
+            psx_motion_read_matrix(at, &now);
+            double moved = 0.0;
+            for (unsigned k = 0; k < 3u; k++) {
+                const double d = (double)now.t[k] - (double)pose->m[j].t[k];
+                moved += d * d;
+            }
+            if (moved > MOA_JOINT_MOVE * MOA_JOINT_MOVE ||
+                !psx_motion_blend_matrix(&pose->m[j], &now, moa_pass_t, MOA_JOINT_TURN, &out)) {
+                placed++;
+                continue;
+            }
+            psx_motion_write_matrix(at, &out, 1);
+            blended++;
+        }
+    }
+    /* Counted for the first pass of each frame only (every pass sees the
+     * same pair). */
+    if (moa_count_pose) {
+        moa_count_pose = 0;
+        psx_mod_counter_add("moa.frame-rate.joints_blended", blended);
+        psx_mod_counter_add("moa.frame-rate.joints_placed", placed);
+        psx_mod_counter_add("moa.frame-rate.pose_unmatched", unmatched);
+    }
 }
 
 typedef struct MoaCall {
@@ -127,6 +323,19 @@ static int moa_pass(struct CPUState *cpu, void *user, uint32_t alpha_q16)
         }
         psx_mod_write_half(cameras + 2u * i, (uint16_t)v);
     }
+    /* ACs: position and angles now, the pose once the render has posed them
+     * (moa_view_draw_entry). */
+    const double t = (double)alpha_q16 / 65536.0;
+    psx_motion_apply(moa_motion, t);
+    for (unsigned i = 0; i < 2u; i++) {
+        if (!moa_floor_ok[i]) continue;
+        const int32_t from = moa_floor_prev[i];
+        const int32_t v = from + (int32_t)(((int64_t)(moa_floor_now[i] - from) *
+                                            (int64_t)alpha_q16) >> 16);
+        psx_mod_write_half(moa_ac(i) + 0x2Cu, (uint16_t)v);
+    }
+    moa_pass_t = t;
+    moa_pose_pending = 1;
     /* The render starts by switching buffers: start from the other index so
      * it draws into the area frame n is in (the one the next flip shows). */
     psx_mod_write_word(MOA_VS_GFX_INDEX, psx_mod_read_word(MOA_VS_GFX_INDEX) ^ 1u);
@@ -134,6 +343,7 @@ static int moa_pass(struct CPUState *cpu, void *user, uint32_t alpha_q16)
      * flip; make that flip look old enough. */
     psx_mod_write_word(MOA_VS_FRAME_START, (uint32_t)(uint16_t)(moa_timer1(0) - 800u));
     moa_call(&call, MOA_VS_RENDER, cameras, cameras + 16u);
+    moa_pose_pending = 0;
     return !call.broken;
 }
 
@@ -204,7 +414,9 @@ static void moa_render_entry(struct CPUState *cpu, uint32_t address)
      * the count stays put while the steps go on. */
     const int stepped = tick == (uint16_t)(moa_prev_tick + 1u) ||
                         (tick == MOA_VS_TICK_CAP && moa_prev_tick == MOA_VS_TICK_CAP);
-    if (moa_prev_valid && stepped && index <= 1u) {
+    const int paired = moa_prev_valid && stepped && index <= 1u;
+    moa_capture_acs(paired);
+    if (paired) {
         for (unsigned p = 0; p < 2u; p++) {
             int32_t moved = 0;
             for (unsigned i = 0; i < 8u; i++) {
@@ -241,8 +453,11 @@ static void moa_render_entry(struct CPUState *cpu, uint32_t address)
         }
         if (frame.w && frame.h && frame.w <= 640u && frame.h <= 512u) {
             moa_fr_in_pass = 1;
+            moa_count_pose = 1;
             const uint32_t kept = psx_mod_render_pass_frame(cpu, &frame, moa_pass, 0);
             moa_fr_in_pass = 0;
+            moa_count_pose = 0;
+            moa_pose_pending = 0;
             psx_mod_counter_add("moa.frame-rate.frames", 1);
             psx_mod_counter_add("moa.frame-rate.passes", kept);
             psx_mod_counter_add(frame.period_vblanks == 2u
@@ -270,6 +485,10 @@ static void moa_frame_rate_activate(void)
 {
     moa_fr_enabled = 0;
     moa_prev_valid = 0;
+    moa_pose[0].ok = moa_pose[1].ok = 0;
+    moa_floor_ok[0] = moa_floor_ok[1] = 0;
+    moa_pose_pending = 0;
+    if (moa_motion) psx_motion_invalidate(moa_motion);
     if (psx_netplay_active()) {
         psx_mod_counter_add("moa.frame-rate.netplay_skipped", 1);
         return;
@@ -288,6 +507,8 @@ PSX_MOD_CONSTRUCTOR(psx_register_moa_frame_rate_plugin)
     (void)psx_mod_register_activation_plugin(MOA_FR_PLUGIN, moa_frame_rate_activate);
     (void)psx_mod_register_function_entry_plugin(
         MOA_FR_PLUGIN, MOA_VS_RENDER, moa_render_entry);
+    (void)psx_mod_register_function_entry_plugin(
+        MOA_FR_PLUGIN, MOA_VS_VIEW_DRAW, moa_view_draw_entry);
     (void)psx_mod_register_function_filter_plugin(
         MOA_FR_PLUGIN, MOA_VS_SOUND_QUEUE, moa_sound_filter);
     (void)psx_mod_register_function_filter_plugin(

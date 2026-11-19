@@ -61,8 +61,9 @@ mod_function_entry_funcs = [
     # split-screen VS engine: controller sampler (VS AI, moa_vs_ai.c)
     "0x8007DA4C",
     # split-screen VS engine: render passes (mod_builtin_moa_frame_rate.c): scene
-    # render (the pass point), queued sounds, frame-begin sound upkeep, start a sound
-    "0x80067404", "0x800535F4", "0x80053DD0", "0x80053284",
+    # render (the pass point), queued sounds, frame-begin sound upkeep, start a sound,
+    # per-view draw (the ACs' poses are blended at its first call in a pass)
+    "0x80067404", "0x800535F4", "0x80053DD0", "0x80053284", "0x800670C8",
     # menu: save checksum (AI Battle keeps the settings on DATA LOAD)
     "0x80070F1C",
     # boot exe: archive sector read (instant loading, mod_builtin_moa_loading.c)

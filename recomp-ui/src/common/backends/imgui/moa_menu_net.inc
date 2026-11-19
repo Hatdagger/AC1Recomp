@@ -939,7 +939,7 @@ static const char* room_rounds_label(int rounds) {
     return rounds == 5 ? "BEST OF 5" : rounds == 3 ? "BEST OF 3" : "SINGLE";
 }
 
-enum RoomView { RV_MAIN = 0, RV_GARAGE, RV_SAVES, RV_CARDS, RV_SETTINGS, RV_BUILDER };
+enum RoomView { RV_MAIN = 0, RV_GARAGE, RV_SAVES, RV_CARDS, RV_SETTINGS, RV_BUILDER, RV_SAVE_MC };
 
 static RoomOpts g_room;                 /* host: its choices; guest: the host's as heard */
 static RoomOpts g_room_ready_opts;      /* the options when this pilot readied */
@@ -1393,13 +1393,17 @@ static void room_open_builder(LauncherModel* m, int sub) {
     }
 }
 
-enum RoomGarageRow { RG_SAVE = 0, RG_CARD, RG_EXTRA, RG_ASM, RG_OPTS, RG_PAINT, RG_EMBLEM, RG_BACK };
+enum RoomGarageRow { RG_SAVE = 0, RG_CARD, RG_EXTRA, RG_ASM, RG_OPTS, RG_PAINT, RG_EMBLEM,
+                     RG_TO_MC, RG_TO_CARD, RG_BACK };
+
+static void room_open_save_mc(LauncherModel* m);
+static void room_save_ai_card(LauncherModel* m);
 
 static void draw_room_garage(LauncherModel* m, const Gfx& g, const Input& in) {
     room_ac_read();
     (void)parts_ready(m);
     const bool full = g_room.garage;
-    RoomGarageRow rows[8];
+    RoomGarageRow rows[10];
     int count = 0;
     rows[count++] = RG_SAVE;
     rows[count++] = RG_CARD;
@@ -1408,19 +1412,24 @@ static void draw_room_garage(LauncherModel* m, const Gfx& g, const Input& in) {
     rows[count++] = RG_OPTS;
     rows[count++] = RG_PAINT;
     rows[count++] = RG_EMBLEM;
+    rows[count++] = RG_TO_MC;
+    rows[count++] = RG_TO_CARD;
     rows[count++] = RG_BACK;
     move_cursor(PAGE_LOBBY, count, in, count);
     int& cur = g_state.cursor[PAGE_LOBBY];
+    if (cur >= count) cur = count - 1;
 
     header(g, "GARAGE", full ? "VERSUS ROOM  ·  FULL GARAGE" : "VERSUS ROOM");
     panel(g, 24.0f, 76.0f, 270.0f, 340.0f, full ? "FULL GARAGE" : "YOUR PARTS ONLY");
     static const char* const labels[] = { "LOAD FROM MEMORY CARD", "LOAD AI CARD", "LOAD EXTRA GARAGE AC",
-                                          "ASSEMBLY", "OPTIONAL PARTS", "PAINT", "EMBLEM", "BACK" };
+                                          "ASSEMBLY", "OPTIONAL PARTS", "PAINT", "EMBLEM",
+                                          "SAVE TO MEMORY CARD", "SAVE AS AI CARD", "BACK" };
     int clicked = -1;
     for (int i = 0; i < count; ++i) {
         bool hovered = false;
-        const bool sub = rows[i] != RG_EXTRA && rows[i] != RG_BACK;
-        if (row(g, 25.0f, 90.0f + kRowH * i, 268.0f, i == cur, true, labels[rows[i]],
+        const bool sub = rows[i] != RG_EXTRA && rows[i] != RG_TO_CARD && rows[i] != RG_BACK;
+        const bool enabled = (rows[i] != RG_TO_MC && rows[i] != RG_TO_CARD) || g_room_has_ac;
+        if (row(g, 25.0f, 86.0f + kRowH * i, 268.0f, i == cur, enabled, labels[rows[i]],
                 sub ? ">" : nullptr, false, false, &hovered))
             clicked = i;
         if (hover_moved(hovered)) cur = i;
@@ -1433,6 +1442,9 @@ static void draw_room_garage(LauncherModel* m, const Gfx& g, const Input& in) {
         "Fit optional parts and set HUMAN PLUS.",
         "Change the AC's colours.",
         "Change the AC's emblem.",
+        "Write your AC to one of your memory cards as a new save. In a FULL GARAGE room "
+        "it can't go into a save you have.",
+        "Write your AC as a new AI card in your memory card folder.",
         "Back to the room.",
     };
     static const char* const info_own[] = {
@@ -1443,9 +1455,12 @@ static void draw_room_garage(LauncherModel* m, const Gfx& g, const Input& in) {
         "Fit the optional parts you own.",
         "Change the AC's colours.",
         "Change the AC's emblem.",
+        "Write your AC to one of your memory cards: a new save, or into a save you have.",
+        "Write your AC as a new AI card in your memory card folder.",
         "Back to the room.",
     };
-    text(g, 38.0f, 300.0f, 10.0f, kText, (full ? info_full : info_own)[rows[cur]], 244.0f);
+    const float info_y = 86.0f + kRowH * count + 6.0f;
+    text(g, 38.0f, info_y, 10.0f, kText, (full ? info_full : info_own)[rows[cur]], 244.0f);
     if (!full) {
         char b[160];
         if (g_room_owned_known)
@@ -1453,7 +1468,7 @@ static void draw_room_garage(LauncherModel* m, const Gfx& g, const Input& in) {
                           g_room_owned_from.c_str());
         else
             std::snprintf(b, sizeof b, "FULL GARAGE is off. Load your save from a memory card to bring your parts.");
-        text(g, 38.0f, 352.0f, 10.0f, kDim, b, 244.0f);
+        text(g, 38.0f, info_y + 42.0f, 10.0f, kDim, b, 244.0f);
     }
 
     draw_room_ac_box(g, 310.0f, 76.0f, 306.0f, 340.0f, g_room_has_ac ? &g_room_ac : nullptr,
@@ -1485,6 +1500,8 @@ static void draw_room_garage(LauncherModel* m, const Gfx& g, const Input& in) {
         case RG_OPTS:   room_open_builder(m, AI_SUB_OPTS); break;
         case RG_PAINT:  room_open_builder(m, AI_SUB_PAINT); break;
         case RG_EMBLEM: room_open_builder(m, AI_SUB_EMBLEM); break;
+        case RG_TO_MC:  room_open_save_mc(m); break;
+        case RG_TO_CARD: room_save_ai_card(m); break;
         default:        g_room_view = RV_MAIN; g_state.cursor[PAGE_LOBBY] = 1; break;
     }
 }
@@ -1538,6 +1555,256 @@ static void draw_room_load(LauncherModel* m, const Gfx& g, const Input& in, bool
         note(saves ? "AC AND PARTS LOADED" : "AC LOADED");
         g_room_view = RV_GARAGE;
     }
+}
+
+/* ---- SAVE TO MEMORY CARD / SAVE AS AI CARD ---- */
+
+/* Where SAVE TO MEMORY CARD can put the room's AC: a new save on each memory
+ * card in the folder (memory card 1 even before it exists), or into one of
+ * the Master of Arena saves already on them, as EXTRA GARAGE's SAVE TO CARD
+ * does (moa_memcard_add_unit / moa_memcard_fit_story; a .bak is kept). */
+struct RoomTarget {
+    std::string path, stem;
+    int slot = 0;                /* 0: a new save; else that save's directory slot */
+    bool usable = true;          /* the card reads (or isn't there yet: a new card) */
+    bool fresh = false;          /* no card file yet */
+    int free_blocks = 15;
+    moa_story_save save{};
+};
+static std::vector<RoomTarget> g_room_targets;
+static bool g_room_targets_full = false;   /* scanned for a FULL GARAGE room: new saves only */
+static bool g_room_save_confirm = false;
+
+/* In a FULL GARAGE room only NEW SAVE is offered: putting the AC into a save
+ * you have would add parts to it that the save never earned. */
+static void room_scan_targets(LauncherModel* m) {
+    namespace fs = std::filesystem;
+    g_room_targets.clear();
+    g_room_targets_full = g_room.garage;
+    std::vector<std::string> files;
+    const std::string folder = ai_card_folder(m);
+    std::error_code ec;
+    if (!folder.empty())
+        for (fs::directory_iterator it(fs::u8path(folder), ec), end; !ec && it != end; it.increment(ec)) {
+            std::error_code fec;
+            if (!it->is_regular_file(fec)) continue;
+            if (upper(it->path().extension().u8string().c_str()) == ".MCD")
+                files.push_back(it->path().u8string());
+        }
+    std::sort(files.begin(), files.end());
+    const char* card1 = m->s.memcard_path[0];
+    if (card1 && card1[0] && std::find(files.begin(), files.end(), card1) == files.end())
+        files.insert(files.begin(), card1);
+    const std::string mine = room_card_path();
+    std::vector<uint8_t> img(131072);
+    for (const std::string& path : files) {
+        if (fs::u8path(path) == fs::u8path(mine)) continue;   /* the room's own match card */
+        RoomTarget t;
+        t.path = path;
+        t.stem = upper(fs::u8path(path).stem().u8string().c_str());
+        std::error_code xec;
+        t.fresh = !fs::exists(fs::u8path(path), xec);
+        int n = 0;
+        moa_story_save list[15];
+        if (!t.fresh) {
+            size_t got = 0;
+            if (FILE* f = std::fopen(path.c_str(), "rb")) {
+                got = std::fread(img.data(), 1, img.size(), f);
+                std::fclose(f);
+            }
+            t.usable = got == img.size() && img[0] == 'M' && img[1] == 'C';
+            t.free_blocks = 0;
+            if (t.usable)
+                for (int i = 1; i < 16; ++i)
+                    if ((img[(size_t)i * 128] & 0xF0) == 0xA0) ++t.free_blocks;
+            if (t.usable && !g_room_targets_full) n = moa_memcard_list_story(path.c_str(), list, 15);
+            if (n < 0) n = 0;
+        }
+        g_room_targets.push_back(t);                      /* NEW SAVE on this card */
+        for (int k = 0; k < n; ++k) {
+            RoomTarget s = t;
+            s.slot = list[k].slot;
+            s.save = list[k];
+            g_room_targets.push_back(s);
+        }
+    }
+}
+
+/* May the room's AC be written now? A note says why not. */
+static bool room_can_save(LauncherModel* m) {
+    if (!g_room_has_ac) { note("NO AC TO SAVE YET: LOAD OR BUILD ONE FIRST"); return false; }
+    if (m->in_session) { note("CLOSE THE GAME FIRST"); return false; }
+    if (parts_ready(m)) {
+        struct moa_build_check chk;
+        room_check(g_room_ac, &chk);
+        if (chk.blocked) { note("THE GAME WILL NOT FIELD THIS BUILD: FIX IT FIRST"); return false; }
+    }
+    return true;
+}
+
+static void room_open_save_mc(LauncherModel* m) {
+    if (!room_can_save(m)) return;
+    room_scan_targets(m);
+    g_room_save_confirm = false;
+    g_state.cursor[PAGE_AI_PICK] = 0; g_state.top[PAGE_AI_PICK] = 0;
+    g_room_view = RV_SAVE_MC;
+}
+
+static std::string room_target_name(const RoomTarget& t) {
+    const moa_story_save& s = t.save;
+    return upper(s.pilot[0] ? s.pilot : s.ac[0] ? s.ac : s.file);
+}
+
+/* Into a save that is there already: what EXTRA GARAGE's SAVE TO CARD does
+ * over a save. If the room's parts came from that save, they are read again
+ * (they now hold what was added). */
+static void room_save_into(LauncherModel* m, RoomTarget t) {
+    if (g_room.garage) {
+        note("FULL GARAGE ROOM: ONLY A NEW SAVE");
+        room_scan_targets(m);
+        return;
+    }
+    char err[160] = {0};
+    int added = 0;
+    if (!moa_memcard_fit_story(t.path.c_str(), t.slot, &g_room_ac, &added, err, sizeof err)) {
+        note(upper(err[0] ? err : "the memory card could not be written").c_str());
+        room_scan_targets(m);
+        return;
+    }
+    char b[160];
+    std::snprintf(b, sizeof b, "SAVED INTO %s ON %s (%d PART%s ADDED)", room_target_name(t).c_str(),
+                  t.stem.c_str(), added, added == 1 ? "" : "S");
+    note(b);
+    char from[96];
+    std::snprintf(from, sizeof from, "%s  BLOCK %d", t.stem.c_str(), t.slot);
+    if (g_room_owned_known && g_room_owned_from == from) {
+        std::vector<uint8_t> blk(8192);
+        uint8_t owned[256];
+        if (moa_memcard_read_story(t.path.c_str(), t.slot, blk.data()) &&
+            moa_save_owned(blk.data(), blk.size(), owned)) {
+            std::memcpy(g_room_owned, owned, sizeof g_room_owned);
+            g_room_owned_count = 0;
+            for (int i = 0; i < 256; ++i) g_room_owned_count += g_room_owned[i] != 0;
+            room_ac_save();
+        }
+    }
+    room_scan_targets(m);
+}
+
+static void draw_room_save_mc(LauncherModel* m, const Gfx& g, const Input& in) {
+    (void)parts_ready(m);
+    if (g_room_targets_full != g_room.garage) {   /* the host switched FULL GARAGE */
+        g_room_save_confirm = false;
+        room_scan_targets(m);
+    }
+    const int n = (int)g_room_targets.size();
+    const int visible = 9;
+    if (!g_room_save_confirm) move_cursor(PAGE_AI_PICK, n, in, visible);
+    int& cur = g_state.cursor[PAGE_AI_PICK];
+    if (n > 0 && cur >= n) cur = n - 1;
+    const int top = g_state.top[PAGE_AI_PICK];
+
+    header(g, "SAVE TO MEMORY CARD", g_room.garage ? "VERSUS ROOM  ·  FULL GARAGE" : "VERSUS ROOM  ·  GARAGE");
+    panel(g, 24.0f, 76.0f, 270.0f, 340.0f, g_room.garage ? "SAVE TO  ·  NEW SAVES ONLY" : "SAVE TO");
+    int clicked = -1;
+    for (int i = top; i < n && i < top + visible; ++i) {
+        const RoomTarget& t = g_room_targets[(size_t)i];
+        const std::string label = t.slot ? room_target_name(t) : std::string("NEW SAVE");
+        const bool enabled = t.usable && (t.slot != 0 || t.free_blocks > 0);
+        bool hovered = false;
+        if (row(g, 25.0f, 86.0f + kRowH * (i - top), 268.0f, i == cur, enabled, label.c_str(),
+                t.stem.c_str(), false, false, &hovered) && !g_room_save_confirm)
+            clicked = i;
+        if (!g_room_save_confirm && hover_moved(hovered)) cur = i;
+    }
+    if (n == 0)
+        text(g, 40.0f, 96.0f, 11.0f, kDim, "NO MEMORY CARD FOLDER YET. SET MEMORY CARD 1 IN SETTINGS.", 240.0f);
+    if (n > top + visible) text(g, 55.0f, 322.0f, 9.0f, kDim, "MORE BELOW");
+    if (top > 0) text_right(g, 280.0f, 322.0f, 9.0f, kDim, "MORE ABOVE");
+    if (n > 0 && cur < n) {
+        const RoomTarget& t = g_room_targets[(size_t)cur];
+        char b[160];
+        if (!t.usable)
+            std::snprintf(b, sizeof b, "%s  ·  THIS CARD COULD NOT BE READ", t.stem.c_str());
+        else if (t.slot)
+            std::snprintf(b, sizeof b, "%s  BLOCK %d  ·  %s  ·  %d PARTS OWNED", t.stem.c_str(), t.slot,
+                          upper(t.save.ac[0] ? t.save.ac : "AC").c_str(), t.save.owned);
+        else if (t.fresh)
+            std::snprintf(b, sizeof b, "%s  ·  A NEW MEMORY CARD", t.stem.c_str());
+        else if (t.free_blocks <= 0)
+            std::snprintf(b, sizeof b, "%s  ·  THIS CARD IS FULL", t.stem.c_str());
+        else
+            std::snprintf(b, sizeof b, "%s  ·  %d FREE BLOCK%s", t.stem.c_str(), t.free_blocks,
+                          t.free_blocks == 1 ? "" : "S");
+        text(g, 38.0f, 336.0f, 10.0f, t.usable ? kDim : kWarn, b, 244.0f);
+        text(g, 38.0f, 352.0f, 10.0f, kText,
+             t.slot ? "Puts your AC into this save: parts, optional parts, paint, emblem and AC name. "
+                      "Parts the save lacks are added. Money, pilot, progress and HUMAN PLUS stay."
+                    : g_room.garage
+                    ? "Writes your AC as a new save in a free block, owning the parts it carries. "
+                      "FULL GARAGE room: it can't go into a save you have."
+                    : "Writes your AC as a new save in a free block, owning the parts it carries. "
+                      "Nothing on the card is overwritten.", 244.0f);
+    }
+
+    draw_room_ac_box(g, 310.0f, 76.0f, 306.0f, 340.0f, g_room_has_ac ? &g_room_ac : nullptr,
+                     g_room_ac_from.c_str(), true);
+
+    if (g_room_save_confirm && cur < n) {
+        const RoomTarget t = g_room_targets[(size_t)cur];
+        panel(g, 140.0f, 170.0f, 360.0f, 90.0f, "SAVE TO MEMORY CARD");
+        char b[160];
+        std::snprintf(b, sizeof b, "REPLACE %s'S AC WITH %s?", room_target_name(t).c_str(),
+                      upper(g_room_ac.ac[0] ? g_room_ac.ac : "AC").c_str());
+        text(g, 156.0f, 192.0f, 12.0f, kWarn, b, 330.0f);
+        text(g, 156.0f, 222.0f, 10.0f, kText, "A  PUT IT IN (A BACKUP IS KEPT)      B  CANCEL");
+        footer(g, "A  CONFIRM      B  CANCEL");
+        if (in.back) { g_room_save_confirm = false; return; }
+        if (!in.confirm) return;
+        g_room_save_confirm = false;
+        if (room_can_save(m)) room_save_into(m, t);
+        return;
+    }
+    footer(g, "A / ENTER  SAVE HERE      B / ESC  BACK");
+
+    if (in.back) { g_room_view = RV_GARAGE; return; }
+    if (clicked >= 0) cur = clicked;
+    if (!(in.confirm || clicked >= 0) || cur >= n) return;
+    const RoomTarget t = g_room_targets[(size_t)cur];
+    if (!room_can_save(m)) return;
+    if (!t.usable) { note("THIS MEMORY CARD COULD NOT BE READ"); return; }
+    if (t.slot) { g_room_save_confirm = true; return; }
+    if (t.free_blocks <= 0) { note("THIS MEMORY CARD IS FULL"); return; }
+    char err[160] = {0};
+    if (moa_memcard_add_unit(t.path.c_str(), &g_room_ac, err, sizeof err)) {
+        char b[96];
+        std::snprintf(b, sizeof b, "SAVED AS A NEW SAVE ON %s", t.stem.c_str());
+        note(b);
+    } else {
+        note(upper(err[0] ? err : "the memory card could not be written").c_str());
+    }
+    room_scan_targets(m);
+}
+
+/* SAVE AS AI CARD: the room's AC as a new card in the memory card folder, as
+ * EXTRA GARAGE's EXPORT AS AI CARD. An AI card's AC keeps its AI; any other
+ * flies BALANCED until it gets one in AI CARD MANAGEMENT. */
+static void room_save_ai_card(LauncherModel* m) {
+    if (!room_can_save(m)) return;
+    const std::string folder = ai_card_folder(m);
+    if (folder.empty()) { note("NO MEMORY CARD FOLDER YET: SET MEMORY CARD 1 IN SETTINGS"); return; }
+    std::error_code ec;
+    std::filesystem::create_directories(std::filesystem::path(folder), ec);
+    moa_card c = g_room_ac;
+    if (!c.ac[0]) std::strcpy(c.ac, "AC");
+    const std::string path = unused_card_path(folder, c.ac);
+    if (path.empty() || !moa_card_write_png(&c, path.c_str())) {
+        note("THE AI CARD COULD NOT BE WRITTEN");
+        return;
+    }
+    scan_ai_cards(m);
+    const std::string b = "SAVED AS AI CARD " + upper(std::filesystem::path(path).filename().string().c_str());
+    note(b.c_str());
 }
 
 /* ---- MATCH SETTINGS ---- */
@@ -1833,6 +2100,7 @@ static void draw_lobby_page(LauncherModel* m, const LauncherTheme& th,
     if (g_room_view == RV_GARAGE) { draw_room_garage(m, g, in); return; }
     if (g_room_view == RV_SAVES)  { draw_room_load(m, g, in, true); return; }
     if (g_room_view == RV_CARDS)  { draw_room_load(m, g, in, false); return; }
+    if (g_room_view == RV_SAVE_MC) { draw_room_save_mc(m, g, in); return; }
     if (g_room_view == RV_SETTINGS) { draw_room_settings(m, g, in, s.is_host); return; }
 
     const char* problem = room_ready_problem(m, s.is_host);

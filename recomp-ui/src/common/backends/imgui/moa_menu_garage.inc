@@ -55,6 +55,7 @@ static bool g_dc_details = false;
 static int  g_dc_menu = -1;                   /* action menu open: its cursor */
 static bool g_dc_confirm = false;             /* delete: asking */
 static int  g_dc_import = 0;                  /* IMPORT AI CARD: which card */
+static int  g_dc_load_card = 0;               /* LOAD AI CARD: which card */
 static std::vector<moa_story_save> g_dc_story; /* MoA saves on the chosen card */
 static int  g_dc_story_pick = 0;              /* SAVE TO CARD: 0 new, else a save */
 static bool g_dc_story_confirm = false;       /* SAVE TO CARD over a save: asking */
@@ -181,7 +182,7 @@ static std::vector<int> dc_targets(int cur_save) {
     return v;
 }
 
-enum DcRow { DC_SAVE_GARAGE = 0, DC_IMPORT, DC_TO_CARD, DC_SAVES };
+enum DcRow { DC_SAVE_GARAGE = 0, DC_IMPORT, DC_TO_CARD, DC_LOAD_CARD, DC_SAVES };
 enum DcAction { DA_LOAD = 0, DA_EXPORT, DA_DELETE, DA_CANCEL, DA__COUNT };
 
 static void dc_action(LauncherModel* m, int action, int cur_save) {
@@ -270,7 +271,8 @@ static void draw_data_page(LauncherModel* m, const Gfx& g, const Input& in) {
     int activate = -1;
     for (int i = top; i < rows && i < top + visible; ++i) {
         std::string label, value;
-        bool enabled = g_dc_ok || g_dc_files.empty() || i == DC_SAVE_GARAGE || i == DC_TO_CARD;
+        bool enabled = g_dc_ok || g_dc_files.empty() || i == DC_SAVE_GARAGE || i == DC_TO_CARD ||
+                       i == DC_LOAD_CARD;
         bool marked = false;
         if (i == DC_SAVE_GARAGE) {
             label = "SAVE TO CARD";
@@ -281,6 +283,11 @@ static void draw_data_page(LauncherModel* m, const Gfx& g, const Input& in) {
             }
         }
         else if (i == DC_TO_CARD) { label = "EXPORT AS AI CARD"; value = upper(g_garage.ac); }
+        else if (i == DC_LOAD_CARD) {
+            label = "LOAD AI CARD";
+            if (g_ai_cards.empty()) { value = "NO CARDS"; enabled = false; }
+            else value = g_ai_cards[(size_t)(g_dc_load_card % (int)g_ai_cards.size())].label;
+        }
         else if (i == DC_IMPORT) {
             label = "IMPORT AI CARD";
             if (g_ai_cards.empty()) { value = "NO CARDS"; enabled = false; }
@@ -325,6 +332,19 @@ static void draw_data_page(LauncherModel* m, const Gfx& g, const Input& in) {
              "Writes the garage AC, with its AI from AI PROGRAMMING, as a new AI "
              "card in the memory card folder. It then shows in AI CARD MANAGEMENT "
              "and AI ARENA SETUP.", 278.0f);
+    else if (cur == DC_LOAD_CARD) {
+        text(g, 324.0f, 92.0f, 10.0f, kText,
+             "Loads the chosen AI card's AC, with its AI, into the garage in place "
+             "of the garage AC. The card stays as it is. Left and right pick the card.", 278.0f);
+        if (!g_ai_cards.empty()) {
+            const AiCard& c = g_ai_cards[(size_t)(g_dc_load_card % (int)g_ai_cards.size())];
+            draw_emblem(g, 324.0f, 160.0f, 72.0f, c.card);
+            text(g, 408.0f, 162.0f, 13.0f, kBright, c.label.c_str());
+            text(g, 408.0f, 182.0f, 10.0f, kDim, "PILOT");
+            text(g, 408.0f, 196.0f, 11.0f, kText, upper(c.card.pilot).c_str());
+            text(g, 408.0f, 214.0f, 10.0f, kHi, ("AI  " + card_ai_label(c.card)).c_str());
+        }
+    }
     else
         text(g, 324.0f, 92.0f, 10.0f, kText,
              "Writes the chosen AI card's AC as a new save in a free block. Left "
@@ -424,12 +444,23 @@ static void draw_data_page(LauncherModel* m, const Gfx& g, const Input& in) {
         const int n = (int)g_ai_cards.size();
         g_dc_import = (g_dc_import + (in.left ? n - 1 : 1)) % n;
     }
+    if (cur == DC_LOAD_CARD && !g_ai_cards.empty() && (in.left || in.right)) {
+        const int n = (int)g_ai_cards.size();
+        g_dc_load_card = (g_dc_load_card + (in.left ? n - 1 : 1)) % n;
+    }
     if (in.alt && cur_save >= 0 && g_dc_saves[(size_t)cur_save].moa)
         g_dc_marked[(size_t)cur_save] = !g_dc_marked[(size_t)cur_save];
     if (in.confirm) activate = cur;
     if (activate < 0) return;
     cur = activate;
     char err[160] = {0};
+    if (activate == DC_LOAD_CARD) {
+        if (g_ai_cards.empty()) { note("NO AI CARDS IN THE MEMORY CARD FOLDER"); return; }
+        g_garage = g_ai_cards[(size_t)(g_dc_load_card % (int)g_ai_cards.size())].card;
+        if (!g_garage.has_ai) moa_card_set_preset(&g_garage, MOA_AI_PRESET_BALANCED);
+        note(save_garage() ? "AI CARD LOADED INTO THE GARAGE" : "THE GARAGE AC COULD NOT BE WRITTEN");
+        return;
+    }
     if (activate == DC_TO_CARD) {
         const std::string path = unused_card_path(ai_card_folder(m), g_garage.ac);
         if (!path.empty() && moa_card_write_png(&g_garage, path.c_str())) {
@@ -547,8 +578,8 @@ static void draw_garage_page(LauncherModel* m, const Gfx& g, const Input& in) {
         "Paint, emblem and the AC and pilot names.",
         "The garage AC's AI. It goes with the AC when you export it as an AI card "
         "(MEMORY CARD > EXPORT AS AI CARD).",
-        "Memory card manager: load an AC from a save into the garage, save the "
-        "garage AC to the card (a new save or over one), export it as an "
+        "Memory card manager: load an AC from a save or an AI card into the garage, "
+        "save the garage AC to the card (a new save or over one), export it as an "
         "AI card, export saves as AI cards, delete saves (a backup is kept).",
         "Your AI cards: edit their AI, rename, delete, and change their AC. "
         "Cards live in the memory card folder.",

@@ -25,7 +25,10 @@ from code unless marked `?`. Related: `mode-launch.md` (how each mode is started
 3. **Loads are queued.** Most menu loads go into a disc queue and finish over the next frames.
    The game waits with `0x800589DC` (non-zero = still busy) before it relies on them. A direct
    start that runs the same routines from a hook must let the menu loop drain the queue (or
-   wait) before it opens the next screen.
+   wait) before it opens the next screen. **Fast Loading** (the 16-sectors-a-frame drive,
+   `mod_builtin_moa_loading.c`) only covers the initial load since 2026-11-18: it goes back to
+   the drive's real speed once the first usable screen (hub open `0x800552C0` or title open
+   `0x800AAE94`) has opened and the disc queue has stayed empty for 30 frames.
 4. **Anything sent to VRAM must sit in main RAM.** LoadImage / StoreImage go by DMA, which
    only reaches main RAM (0x80000000 … 0x801FFFFF). Mod memory from `psx_mod_alloc_guest_memory`
    (0x81000000) folds onto low RAM there, so an upload from it sends whatever code sits at the
@@ -297,4 +300,4 @@ save). `moa_card_to_save` starts from it since branch `load-game-fixes`.
   `hub-background-direct`, user-tested): the StoreImage from VRAM left the hub's RAM copies
   0x8004ACA8 / 0x8004B6F0 black in the recomp, so `moa_quick_start.c` now writes MENU_TIM 0's
   tile (VRAM (416,0) 16×64, 4-bit) and its 16 colours ((368,225)) from the disc, as Rogue
-  Arena does with its belt tiles. Mission picker fix (§9a) waiting for the user's test.
+  Arena does with its belt tiles. Mission picker fix (§9a) user-tested OK 2026-11-18.

@@ -193,16 +193,33 @@ comes through untouched.
   (id from `0x800996AC(kind, i)`). Masks at 0x8004B508 … 0x8004B560 (8 bytes each). The garage
   and shop lists read them.
 - **`0x8008859C(kind)`** = the first owned part of a kind (lowest set bit), 255 if none.
-- **`0x80083130` = fill empty slots.** Each garage slot that is 255 gets `0x8008859C` of its
-  kind. Then the combination rules, run on every AC: tank legs (id ≥ 27) → booster 255, and a
-  back weapon 40–42 / 44 / 46 on either side is removed `?` (meaning not read); hand slot 15
-  checked against the legs through a jump table (0x80052358) `?`. A build the game itself made
-  never breaks these, so nothing changes.
+- **`0x80083130` = fill empty slots.** An empty core, head, arms, legs, generator, FCS or
+  booster gets `0x8008859C` of its kind. Weapon arms filled in this way also clear the hand
+  weapon and blade. Then the fit rules run on every AC (read 2026-11-18, the same as the ASSEMBLY
+  page, `menus-screens.md` §2h):
+  - caterpillar legs (id ≥ 27): no booster, and no radar 40, 41, 42, 44 or 46 in either back slot
+  - WG-1-KARASAWA (hand 15) comes off legs that can't hold it: 5, 21–24, 26 and the
+    caterpillars (table 0x80052358)
+  - ANKS-1A46J arms (5): no back weapons below 40, no WX-S800-GF (53)
+
+  A build the game itself made never breaks these, so nothing changes.
 - **`0x80067244(flag)` = stand-ins for empty slots.** Only for slots that are 255: MODEL
   queue of the first owned part of that kind (MENU_TMD entry + per-kind offset 3, 14, 54, 78,
   96, 202, 237), TIM queue of its textures (same entries as §7, texture set from
   **0x8003EA72**, the player's own byte 14), then `0x80083130` when flag ≠ 0. A full AC loads
   nothing here; its models and textures come from the hub open and `0x800822B0`.
+- **`0x800822B0` = queue the AC's part textures** (2026-11-18). It is the player's version of
+  §7's table, with v = texture set 0x8003EA72:
+
+  | Archive | Entry |
+  |---|---|
+  | HEAD_T (10) / CORE_T (7) / ARMS_T (9) / LEG_T (8) | head + 18v / core + 11v / arms + 24v / legs + 40v |
+  | WEL_T (14) / WER_T (15) / BWL_T (12) / BWR_T (13) / BST_T (11) | blade / hand weapon / back L / back R / booster, skipped if 255 |
+  | colours | v = 0: `0x80082530` builds them from the garage paint (LoadImage); else TIM queue MENU_TIM 26 + 4v + 0x8003EA73 |
+
+  The garage rebuild `0x80081E20` is the same list plus GENE_T (18) generator and COMP_T (16)
+  FCS (`0x8008201C`), then the part models (`0x80081E48`; which part goes in which MODEL slot:
+  `menus-screens.md` §2h).
 
 ### 4e. LOAD's copy table: save → RAM (2026-11-18)
 

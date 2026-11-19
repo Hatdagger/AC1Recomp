@@ -64,9 +64,12 @@ then calls **`0x80056528`** (back to the hub) or its caller's routine. Children 
 parent through +0x70.
 
 **Token tasks.** Some screens create a tiny idle task only so others can ask "is this page open?"
-with `0x80057470`: `0x80068BEC`, `0x80068C3C`, `0x80068C8C`, `0x80068CDC`, `0x80068D2C`,
-`0x80068D7C`, `0x80068EBC`, `0x80068FFC` (garage pages), `0x80068DCC` (VS menu), `0x80068F5C`
-(Arena Maker). Which token means which page is not read yet `?`.
+with `0x80057470`, and kill it when the page closes. Matched to the pages they open (2026-11-18,
+garage menu input `0x8007CAC8`): `0x80068BEC` ASSEMBLY, `0x80068C3C` OPTIONAL PARTS, `0x80068C8C`
+PERFORMANCE, `0x80068CDC` CHANGE COLOR, `0x80068D2C` EDIT EMBLEM, `0x80068D7C` NAME ENTRY (NEW
+GAME's name entry too), `0x80068EBC` / `0x80068FFC` the garage menu itself (made when it opens).
+The VS AC SETUP and the link menu make the ASSEMBLY, OPTIONAL PARTS and CHANGE COLOR tokens too.
+`0x80068DCC` VS menu, `0x80068F5C` Arena Maker.
 
 ### 1b. Pad input (`0x801B1CB8`)
 
@@ -120,7 +123,8 @@ Counted over all 361 calls in FDAT 206:
 | 8 | 1 | the hub ring is built again (`0x8005557C`) `?` |
 | 9 | 2 | missions and mail page change `?` |
 | 10 | 2 | **a part is equipped** (garage `0x80088340`, option parts `0x80092550`) |
-| 12 | 4 | assembly slot list cursor (Up / Down in `0x800865B4`) |
+| 11 | (the same 2) | **a part is removed**: NO EQUIP picked in ASSEMBLY, an option taken off. Both calls above pick 10 or 11 when they run, so a count of fixed values missed it |
+| 12 | 4 | ASSEMBLY cursor: Up / Down between slots, Left / Right between parts (`0x800865B4`) |
 
 The Rogue Arena work found tones 0, 1, 2 and 10 the same way (`moa_ui_sound.c` on its branch).
 
@@ -172,7 +176,7 @@ incomplete.", "AC equipment incomplete.", "No OPTIONAL parts available.", "Begin
 
 | Page | Opens with | States |
 |---|---|---|
-| ASSEMBLY | windows (16, 40, 144, 184) + (176, 162, 128, 62), `0x800807FC` → `0x800808A0` | `0x80082BEC` slot list (LEGS WP, CORE WP, WEIGHT, NAME, "Necessary parts equipped.") → `0x80086260` → `0x800862DC` → **`0x800865B4` slot input** (equip / unequip messages, tone 12 cursor, part textures queued) → `0x800887E0` part list window (16, 40, 144, 128) → `0x80088924` part list → `0x80089364` close list. Unequip notices `0x80089514` / `0x80089750`. Back: `0x800897E4` |
+| ASSEMBLY | windows (16, 40, 144, 184) + (176, 162, 128, 62), `0x800807E4` → `0x800808A0` | `0x80082BEC` page task → `0x80086260` → `0x800862DC` → **`0x800865B4` slot input** (browse, equip, fix-ups) → on ○ `0x800887E0` → `0x80088924` summary of the AC → `0x8008935C` ✕ / ○ → `0x800897E4` garage menu. Fix-up notices `0x80089514` / `0x80089750`. **Read in depth: §2h** |
 | OPTIONAL PARTS | `0x80091204`: windows (16, 64, 144, ?), (16, 202, 288, 24), (168, 158, 128, 40), (168, 34, 128, 120) | `0x80091610` → `0x80091C7C` → **`0x80092020` input** ("Not enough open slots.", tone 10 on fitting; loads the option part's picture: MODEL slot 1 and SPEC_T textures) → back `0x80092794` |
 | PERFORMANCE | `0x80092A34`: windows (8, 40, 160, 180) + (176, 162, 128, 62) | `0x80092BB4` stats page (PRICE, OFFENSIVE / DEFENSIVE POINT, STABILITY, MOBILITY, MOVING / TURNING SPEED, BOOST ABILITY, SUPPORT SYSTEM, RADAR RANGE, FCS PERFORMANCE, OVERALL, GRADE) → ○ `0x800936A8` |
 | CHANGE COLOR | `0x800809C8`: window (32, 40, 136, 48) | `0x8008A254` (CHANGE PATTERN, EDIT COLOR) → `0x8008A32C` input. Patterns: `0x8008A748` → `0x8008DCC8` (CROSS STRIPES … CUSTOM). Colour schemes list `0x8008A910` → `0x8008AC78`. Edit colour: `0x8008B110` (GENERAL, HEAD, CORE, ARMS, LEGS, DEFAULT) → `0x8008B304` → editor `0x8008B900` / `0x8008B9BC` (windows (16, 40, 144, 128) + (20, 177, 134, 24)) → `0x8008BDF0` → close `0x8008CDF4` |
@@ -292,6 +296,112 @@ code as the Scenario garage.
 
 Settings live at `0x8004B568` (defaults from `0x800D5860`, `boot-loads.md` §2).
 
+### 2h. ASSEMBLY in depth (2026-11-18)
+
+The garage's ASSEMBLY page, which the VS AC SETUP also runs (§2f). The rules match `moa_parts.c`
+(`moa_build_fit`, `moa_build_check`) and `acr/acr_gen1_fit.c`, which apply them to whole builds.
+This section adds how the page applies them one swap at a time, what it shows, and what it loads.
+
+**The AC it edits.** 12 bytes at `0x80036FB0`, in the save's order: core, booster, head, arms,
+blade, hand weapon, back L, back R, generator, FCS, (unused), legs. 255 = empty. Option parts are
+bits of the u16 at `0x8003EA70`. Owned parts are counts (`0x80036FEC`, numbering in `moa_card.c`
+`moa_owned_index`). The page reads a copy at `0x8003EB20`, made when it opens. Equipping never
+changes a count, because an equipped part is one of the owned ones. The same back weapon on both
+sides needs 2 owned.
+
+**Rows** (row → kind `0x800CD618`; kind table `0x800D4544`, 16 bytes per kind: part count, MENU_TMD
+start, owned-bit mask): 0 head, 1 core, 2 arms, 3 legs, 4 generator, 5 FCS, 6 options, 7 booster,
+8 back L, 9 back R, 10 blade, 11 hand weapon. The cursor skips a row when no part of its kind is
+owned. It always skips the options row, because the page clears that mask when it opens (options
+have their own page). It also skips the back row that a two-slot unit blocks.
+
+**Controls** (state `0x800865B4`):
+
+| Button | Does |
+|---|---|
+| Up / Down | next row (tone 12) |
+| Left / Right | previous / next owned part of the row's kind, in id order (`0x80089E4C(task, 'P' / 'N')`). After the last one comes NO EQUIP (every row but the core), then it wraps around. Nothing is fitted yet: the AC on screen just wears the part (tone 12) |
+| R1 or R2 held + Left / Right | jump to the previous / next group: legs humanoid / reverse joint / four legs / caterpillar (ids from 0, 14, 21, 27), arms regular / weapon (from 12), back missiles / rockets / cannons and guns / radars / two-slot units (from 0, 18, 28, 40, 52) |
+| L1 or L2 held + Left / Right | the part preview's slide value is ±360 or ±540 instead of ±180 (faster? `?`) |
+| △ | show or hide the hovered part's full spec page (`0x80083E7C`, task `0x80093B18`) |
+| ✕ | fit the hovered part (checks and fix-ups below) |
+| ○ | leave (tone 0). The equipped part's textures go back, and a summary of the whole AC follows (`0x800887E0` → `0x80088924`). ✕ or ○ there (`0x8008935C`) returns to the garage menu |
+
+**The numbers show the AC as it would be with the hovered part** (`0x8008284C`). It copies the
+garage, puts the hovered part in, applies the fit rules, runs the stat totals `0x8007E730` and
+puts the garage back. The totals block is `0x8004B710`:
+
+| Offset | Value |
+|---|---|
+| +0x00 | energy left = generator output − drain |
+| +0x04 / +0x08 / +0x0C | AP / weight / price totals |
+| +0x10 | leg load left = legs' max − weight of everything but the legs |
+| +0x14 | arm load left = core's max − arms, plus the hand weapon and blade on regular arms |
+| +0x18 / +0x1A / +0x1C (u16) | output, legs' max, core's max |
+
+`0x80083AA8` draws them as EP, LEGS WP and CORE WP ("left / max"), AP and WEIGHT. **A negative
+"left" is drawn in red** (the text task's +0x16 set to 13). A back weapon on both sides with only
+one owned is counted once. While the hovered part can't be fitted, a warning mark shows (sprite
+`0x800CD82C` at (20, 48), set by `0x800862DC`).
+
+**✕ refused** (a message box, nothing changes), checked in this order:
+
+| When | Message |
+|---|---|
+| the hovered part is the one fitted | "This part is already equipped." (NO EQUIP on an empty slot: "No part to cancel.") |
+| blade or hand weapon row, no arms | "Can't equip without an ARM part." |
+| blade or hand weapon row, weapon arms (id 12 and up) | "Can't equip with ARM type weapon." |
+| caterpillar legs (27 and up): the booster row, or a back row with radar 40, 41, 42, 44 or 46 | "Can't equip with a caterpillar." |
+| hand weapon row: WG-1-KARASAWA (15) on legs that can't hold it (5, 21–24, 26 and the caterpillars, table `0x80052460`) | "Can't equip with current legs." |
+| a back row with ANKS-1A46J arms (5): a back weapon (below 40) or WX-S800-GF (53) | "Unable to equip." |
+
+**✕ accepted.** The part goes into the garage byte, and the preview model is copied into the AC's
+model slot (`0x800860D8`, no disc read). Then come the fix-ups below. If none applies, tone 10
+plays (11 for NO EQUIP). A fix-up shows its message instead, and the caterpillar ones chain
+through `0x80089514` / `0x80089750`:
+
+| Fitted | The game then |
+|---|---|
+| arms: NO EQUIP or weapon arms | removes the blade and hand weapon: "Unequipped the ARM weapon." |
+| arms: regular, in place of weapon arms | puts back the last blade and hand weapon of this visit (the ones the AC had when the page opened, or fitted since), the hand weapon only if the legs can hold it. No message |
+| arms: ANKS-1A46J | removes back weapons (below 40) and WX-S800-GF: "Unequipped the BACK weapons." or "Unequipped the left / right BACK weapon." |
+| legs: a caterpillar | removes the booster ("Unequipped the booster."), radars 40, 41, 42, 44, 46 ("Unequipped the radar.") and the KARASAWA ("Unequipped the right ARM weapon.") |
+| legs: not a caterpillar, in place of one | fits the first owned booster. No message |
+| legs that can't hold the KARASAWA (table `0x80052820`) | removes it: "Unequipped the right ARM weapon." |
+| back: a two-slot unit (52 and up) | empties the other back slot: "Unequipped the left / right BACK weapon." |
+| back: the weapon the other side carries, with only one owned | takes it off the other side: "Moved the BACK weapons." |
+| core | fits again the options the AC had when the page opened, in bit order. The first one that doesn't fit the core's slots (core +54, option +40) is removed, and so is every option after it. No message. Going back to a bigger core during the same visit brings them back |
+
+All five copies of the KARASAWA-and-legs table (`0x800522A0`, `0x80052358`, `0x80052460`,
+`0x800527B0`, `0x80052820`) list the same legs.
+
+**On opening** (`0x800807E4` → `0x800808A0` → `0x80082BEC`), the page copies the owned table,
+builds the masks (`0x80090FD8`) and runs `0x80083130`. That fills an empty core, head, arms, legs,
+generator, FCS or booster with the first owned part of its kind, and applies the same rules. If
+anything changed, it shows "Necessary parts equipped.". The hand weapon and blade are remembered
+at this point, and again whenever one is fitted (task +0x8A / +0x8B), for the arms rule above.
+
+**Loads while browsing.** The AC's part models sit in MODEL slots 3–14. The hub open loads them
+(`0x80081E48`): 3 head, 4 core, 5 arms, 6 legs, 7 blade, 8 hand weapon, 9 back L, 10 back R,
+11 generator, 12 FCS, 14 booster. The MENU_TMD entry is the kind's start + the part id: core 3,
+legs 14, arms 54, head 78, booster 96, back 110, blade 170, hand weapon 176, FCS 202, options 218,
+generator 237. Entry 2 is shown for NO EQUIP `?`. A hovered part's model is read into preview
+slot 1 or 2, taking turns. **Its textures are queued straight into the AC's own texture pages
+in VRAM** (the entries of `0x800822B0`, `boot-loads.md` §4d), so the AC on screen wears them.
+Moving to another row, or ○, queues the fitted part's textures again (for an empty slot, the
+first owned part's). When NO EQUIP comes up on a required row, the first owned part of that kind
+is also loaded into MODEL slot 17 and its textures queued, as a stand-in `?`. Leaving loads
+nothing else, and the hub reloads the models when it opens.
+
+**The sortie check `0x8007E164`** is the only check outside the ASSEMBLY page (callers: the
+garage menu, VS START for each player, the link menu, the arena's challenge). It fails on a
+missing head, core, arms, generator, FCS or legs, or a missing
+booster on legs that aren't caterpillars. It also fails when energy left is below 0, the arm load
+is over the core's max, or the carried weight is over the legs' max, **unless `0x8003EACA` ≠ 0**
+(Human Plus limits waived). Then it passes and writes "Illegal machine." into the caller's text.
+With Human Plus on, it first writes a full-width "Rebel>" there. It checks neither option slots
+nor the fit rules above, which only the garage enforces.
+
 ## 3. What this means for overlays and the launcher
 
 - **Replacing a screen:** hook the hub's pick (`menus-hub.md` §5), run your own screen, and call
@@ -308,12 +418,21 @@ Settings live at `0x8004B568` (defaults from `0x800D5860`, `boot-loads.md` §2).
   29, `0x8009CD38`) shows how the game loads one part's model and textures on its own.
 - **One code path for both garages:** fixes or overlays on the assembly / option / colour pages
   reach the VS AC SETUP too.
+- **An assembly of your own** (overlay or launcher) that should behave like the game's: write
+  the garage bytes, apply the fix-ups in §2h (they differ from "refuse anything illegal": the game
+  removes, moves or restores parts and says so), then refresh the AC as LOAD's finish does
+  (`boot-loads.md` §4a). The game's preview numbers are `0x8007E730` on a temporary copy of the
+  garage. Its textures go straight into the AC's VRAM pages, so a mod that previews parts the
+  same way must put the fitted part's textures back afterwards.
 
 ## 4. Open
 
-- Which token task marks which garage page (§1a).
-- The sprite routine's first argument; the text routine's colour value.
+- ~~Which token task marks which garage page~~ (§1a, 2026-11-18).
+- The sprite routine's first argument; the text routine's colour value (ASSEMBLY turns a number
+  red by setting the text task's +0x16 to 13 after creating it, §2h).
 - Whether contents are really placed relative to their layer's window, and the layer order.
 - Tones 8 and 9 (one or two uses each).
 - The garage exit's `0x8003EA7D` values 1 … 3 (Arena Maker roads).
-- The detail key in the shop's part list.
+- The detail key in the shop's part list (ASSEMBLY's is △, §2h; the shop's may be the same).
+- ASSEMBLY (§2h): what the preview slide value (±180 / 360 / 540) changes, MENU_TMD entry 2 and
+  MODEL slot 17 (NO EQUIP stand-ins).

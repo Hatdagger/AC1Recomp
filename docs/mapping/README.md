@@ -22,7 +22,7 @@ Several chats map Master of Arena at the same time. To avoid double work:
 | Menus: scenario hub | `menus-hub.md` | hub chat | The hub ring (FDAT 206 from `0x800552C0`): its 8 entries, tables, input, models and labels, and how to add / remove / replace entries. Not the screens behind the entries (garage, shop, …) | static read done 2026-11-17, icon and caption pictures found |
 | Missions | `missions.md` | missions chat | Scenario missions apart from the shared fight code: picking and launching a mission (mission screen table `0x8019F7A8`, list builder `0x800942BC`, which routine sets the mission id), the missions engine FDAT 207, **per-mission code and maps = FDAT 0–99** (5 entries per mission, not MIS.T), MIS.T (mission screen data, briefings, mail), objectives, win/lose checks, timer, results and rewards, non-AC enemies and the enemy list, scripted sequences, mail triggers. The AC object, damage and weapons in flight stay with the battle chat | claimed 2026-11-17 |
 | Menus and screens | `menus-screens.md` | boot chat | The screens behind the hub entries: Garage (all its pages), Shop, System (the card screen: DATA SAVE / LOAD, reports, EXIT GAME), Arena and Ex Arena lists, Arena Maker; the VS menu's own screens (AC SETUP, SELECT MAP); and the menu building blocks they share (tasks, windows, text and font, cursors and pad input, message boxes, menu sounds). For each screen: how it opens, what it loads, its states and tables, how it closes. Goal: Rogue Arena's overlays and moving menus into the launcher. Not the hub ring (hub chat), the missions or mail screens (missions chat), the title / NEW-LOAD / VS START flow (launch chat, `boot-loads.md`) or the arena fight launch (`boot-loads.md` §7) | static read done 2026-11-18: building blocks (tasks, pad, windows, text, prompts, sounds), every screen's states; **ASSEMBLY in depth 2026-11-18** (§2h: controls, fit rules and fix-ups with their messages, preview numbers, loads, sortie check); **Shop in depth 2026-11-18** (§2i: lists, prices, refusals, leaving, texture backup); **claimed 2026-11-18: the rest of the Garage in depth (OPTIONAL PARTS, PERFORMANCE / GRADE, CHANGE COLOR, EDIT EMBLEM)**; open items in its §4 |
-| Renderer | `renderer.md` | renderer chat | How a fight is drawn, in every engine: frame anatomy (scene render, draw / display buffers, ordering table, flip), camera → view (GTE matrix, projection), which routine draws what (stage, ACs, object pool, effects, HUD), the ACs' joint matrices, culling and sorting. Goal: the framework's render passes (in-between frames), widescreen and draw-distance features, native drawing later. Not what AC object fields mean in play (battle chat), the camera record's setup fields (data chat), what is loaded into VRAM (boot chat) or mission maps (missions chat) | plan written 2026-11-18 (§3 work order); steps 1–2 (frame anatomy, camera) done for VS 2026-11-18; camera-only render pass user-tested OK and merged 2026-11-18 (`99ae2cf`); step 3 (draw list) static first cut for VS 2026-11-18 |
+| Renderer | `renderer.md` | renderer chat | How a fight is drawn, in every engine: frame anatomy (scene render, draw / display buffers, ordering table, flip), camera → view (GTE matrix, projection), which routine draws what (stage, ACs, object pool, effects, HUD), the ACs' joint matrices, culling and sorting. Goal: the framework's render passes (in-between frames), widescreen and draw-distance features, native drawing later. Not what AC object fields mean in play (battle chat), the camera record's setup fields (data chat), what is loaded into VRAM (boot chat) or mission maps (missions chat) | plan written 2026-11-18 (§3 work order); steps 1–2 (frame anatomy, camera) done for VS 2026-11-18; camera-only render pass user-tested OK and merged 2026-11-18 (`99ae2cf`); step 3 (draw list) static first cut for VS 2026-11-18; step 4 (ACs: pose records, joints, model and shadow draws) read for VS 2026-11-18, test 2 (ACs glide) written on branch `renderer-vs-ac-pass` (not pushed yet) |
 
 Not claimed yet (claim before starting): sound/music (the menu music is already described in the project doc
 `rogue-arena-music.md`: a SEQ on the sound chip started by `0x80064F24`; fight music is CD audio), stage data
@@ -245,6 +245,21 @@ Renderer chat → battle chat (2026-11-18, VS engine, static read):
   test `?`, and passes +0x6C, +0x6D, +0x76, +0x7A, +0x7C, +0x7E to the pose routine `0x80059624`.
   The VS main loop stops counting steps (match struct +0x12) at 0x4000 (`0x800526AC`). Details in
   `renderer.md`, "Draw list (VS)".
+
+Renderer chat → battle chat (2026-11-18, VS engine, static read, details in `renderer.md` "ACs (VS)"):
+- AC **+0x10 / +0x14 are angles** (x, z) beside the facing +0x12: the model draw builds
+  `RotMatrixYXZ`(+0x10, 0x800 − +0x12, +0x14) (`0x8002A224`). +0x0E = model number `?` (model table
+  slot 0x80 + it).
+- The pose routine `0x80059624` reads +0x6C main animation (frame counter +0x76), **+0x6D a
+  second-layer animation and +0x7C its frame counter**, **+0x7A the cross-fade step** on an
+  animation change (4.12 a frame; 0 = cut), **+0x84 the aim table** and +0x7E / +0x80 / +0x82 the aim
+  angles (clamped per axis by that table). So the "post-shot hold" is the firing animation playing on
+  the second layer: it ends when that animation runs out.
+
+Renderer chat → data chat (2026-11-18):
+- Weapon detail +0x04 (slot +11, copied into AC +0x6D by the gun / cannon fire) is a second-layer
+  animation number for the pose routine (the model's +0x18 animation list). Worth a line in
+  `parts-tables.md`. Details in `renderer.md` "ACs (VS)".
 
 Boot chat (menus lane) → Rogue Arena work (2026-11-18, ASSEMBLY, details in `menus-screens.md` §2h):
 - The garage's preview numbers are `0x8007E730` run on a temporary copy of the garage. Results go

@@ -11,7 +11,10 @@ from. Status: lane claimed 2026-11-18; **steps 1 and 2 done for VS (FDAT 209), 2
 anatomy (VS)", "Camera (VS)"). **First milestone (camera-only render pass) passed 2026-11-18**:
 user-tested (the camera moves more smoothly, no visual defects) and merged into master
 (`99ae2cf`). Step 3 (draw list): static first cut for VS
-2026-11-18 (§1 "Draw list (VS)"), not yet confirmed on screen.
+2026-11-18 (§1 "Draw list (VS)"), not yet confirmed on screen. **Step 4 (ACs) read for VS
+2026-11-18** (§1 "ACs (VS)"): pose records, joint records, the joint hierarchy, the model and
+shadow draws; test 2 (ACs glide) written on branch `renderer-vs-ac-pass` (local; not pushed, built or tested
+yet).
 
 ## 1. What we already have
 
@@ -23,7 +26,7 @@ user-tested (the camera moves more smoothly, no visual defects) and merged into 
 | Sound upkeep inside the scene render reads the SPU (the sandbox refuses that): skip it during a redraw | `0x80053FE4`, `0x80053808` | `moa_link_netplay.c` (`moa_link_sound_filter`) |
 | Camera record, 56 bytes per player: distance, height, smoothing, angles, cockpit-view joints | VS `0x801D6EF8` / `0x801D6F30`, arena `0x801E29C8`; chase `0x800878FC`, cockpit `0x80087B90` | `stat-block.md` "Camera setup" |
 | VS main loop: one step per pass, "draw both views" at the end; steps elapsed = match struct +0x12 | loop from `0x80052124`, match struct `0x80097EA0` | `battle-system.md` |
-| AC object: position +0x08/+0x0A/+0x0C, facing +0x12, last step's position +0x20…, model data pointer +0x68 `?`, animation player +0x6C, velocity +0xD4… | 376 bytes, P1 / P2 back to back | `battle-system.md` |
+| AC object: position +0x08/+0x0A/+0x0C, facing +0x12, last step's position +0x20…, pose record pointer +0x68 (see "ACs (VS)"), animation player +0x6C, velocity +0xD4… | 376 bytes, P1 / P2 back to back | `battle-system.md` |
 | Object pool (bullets, missiles, …): 256 × 228 bytes, update routine at record +0x18 | `0x801D6F6C` (VS) | `battle-system.md` "The object pool" |
 | AC models, skeletons, joint animations, textures decoded from the disc (export + software preview) | `acr/` (`acr_models_moa.c`, `acr_motion_moa.c`, `acr_model.c`), `moa_ac_view.c` | repo; Armored-CoreR `docs/research/gen1-models.md` |
 | Where the AC textures sit in VRAM; 16 texture sets per `*_T` archive; P1/P2 set swap `0x800C0E7C`; fight engines never load textures | | `boot-loads.md` |
@@ -32,7 +35,7 @@ user-tested (the camera moves more smoothly, no visual defects) and merged into 
 | Widescreen is offered with the GTE game mode | `game.toml` `[widescreen] offer = true, gte_game_mode = true` | repo |
 | **Frame cadence: at most 22 frames a second.** One logic step per frame; the frame end does `DrawSync(0)`, waits until 715 scanlines (root counter 1, `0x80016724`) have passed since the last frame start, swaps buffers, starts the next OT. No `VSync` wait in the fight loop | frame-end wait `slti 0x2CB`: VS (209) `0x8005C080`, arena (210) `0x8005E2D0`, link (208) `0x8005CED4`, missions (207) `0x8005D2CC`, replay (211) `0x8005C624` | Armored-CoreR `gen1-timing.md` |
 | Camera as measured: eye / look-at pairs per player (VS) `0x801A9A88`, eye copies `0x800441D8`. Projection: one view H 320 on 320×240, centre (160, 120); **VS: two side-by-side 160×240 halves, H 160 each, centre row 115** | | Armored-CoreR `gen1-engine-map.md` |
-| Rotation-matrix builder in the main program: RotMatrix `0x80029F94`, M = Rx·Ry·Rz (the order the model export uses); a Ry·Rx·Rz version `0x8002A224` that nothing calls | | Armored-CoreR `gen1-models.md` |
+| Rotation-matrix builder in the main program: RotMatrix `0x80029F94`, M = Rx·Ry·Rz (the order the model export uses); a Ry·Rx·Rz version `0x8002A224` that nothing in the main program calls (**the engines do: it builds each AC's rotation**, see "ACs (VS)") | | Armored-CoreR `gen1-models.md` |
 
 ### Main program routines the engines call (named 2026-11-18)
 
@@ -286,9 +289,124 @@ when its +0x30 bit 8 is set, hides this one `?`; bit 14 is passed on).
    which: next, with the frame-layer tool or by reading each.
 
 For render passes (steps 4–5): what moves per step is the AC pose (`0x80059624`'s joint
-matrices), AC position and facing (+0x08…, +0x0E), shadow height (+0x2C), stage objects and pool
-records. The colour pulse and the texture scroll step with the render's own frame counter, so a
-pass already shows the next frame's value (harmless).
+matrices), AC position and angles (+0x08…, +0x10…; +0x0E is the model number, see "ACs (VS)"),
+shadow height (+0x2C), stage objects and pool records. The colour pulse and the texture scroll
+step with the render's own frame counter, so a pass already shows the next frame's value
+(harmless).
+
+### ACs (VS, FDAT 209) — step 4
+
+Read from FDAT 209 on 2026-11-18 (static read, nothing measured in a run yet). `?` marks guesses.
+
+**Each frame** (scene render `0x80067404`, after the buffer swap):
+1. `0x8005A72C`: every pose record in use goes to state 1.
+2. Each AC in play (word +0 set) is posed: **`0x80059624(&AC+0x68, AC+0x0E + 0x80, AC+0x6C,
+   AC+0x76; AC+0x7A, AC+0x6D, AC+0x7C, &AC+0x7E)`** → its record goes to state 2 (a record already
+   at 2 returns at once: one pose per frame).
+3. `0x8005AC68(record)` shows all joints again; `0x8005ACC8(record, camera record +4)` hides the
+   joints on the cockpit view's list (P1's before view 1, P2's before view 2, shown again between).
+4. The views draw (model `0x80062C00`, shadow `0x800629E0`), both reading the pose.
+5. After the submit, `0x8005A81C` frees records still at state 1 (not posed this frame).
+
+The only other caller of the pose routine is match start (`0x80083730` in `0x8008342C`), which
+makes the record. So **between two frames nothing writes the joint matrices**: at the pass point
+they still hold the pose frame n was drawn with.
+
+**Pose records:** two of 40 bytes, `0x801A2E10` (P1) and `0x801A2E38` (P2), handed out by
+`0x8005A884` (there are no others: pool objects with a skeleton, `0x80061F64`, would find none
+free in VS `?`).
+
+| + | What |
+|---|---|
+| 0x00 | state: 0 free, 1 kept from the last frame, 2 posed this frame |
+| 0x02 | model number (a different one frees and remakes the record) |
+| 0x04 / 0x06 / 0x08 | main animation, its frame, the fraction to the next (4.12) |
+| 0x0A / 0x0C | cross-fade weight (4.12, counts down from 0x1000) and its step per frame |
+| 0x0E | aim table in use (from AC +0x84; −1 none) |
+| 0x10 / 0x12 | second-layer animation (from AC +0x6D; 0xFF none) and its frame |
+| 0x14 / 0x18 | key cursors (main, second layer) |
+| 0x1C | the model |
+| 0x20 | the joint array (heap `0x8009AFC0`: joint count × 124 bytes) |
+| 0x24 | owner (&AC+0x68; cleared when the record is freed) |
+
+**The model** = model table `0x801A27FC`[AC+0x0E + 0x80] (filled by `0x800587F0` (one
+slot; no `jal` to it in FDAT 209), `0x80058730` (a list; called at `0x800559D0`, `0x80055AD4`, `0x80055AEC`) and `0x800584FC`; `0x801A27F8` = model + model[+8] while it draws). Its header matches PA entry 0 as
+`acr_models_moa.c` reads it: **+5 = joint count**, +8 = mesh table `?`, **+0x0C = joint table**,
+**+0x10 = main animation list** (by AC +0x6C), +0x14 = aim tables (by AC +0x84; the decoder's
+"stop"), +0x18 = second-layer animation list (by AC +0x6D).
+
+**Joint table** (read by `0x80058838`): u16 count, then u16 words: low 4 bits = op, next 4 = sub,
+high byte = joint number. Op 3 + a u16 = parent (0xFFFF = none); op 2 + a u16 = mesh slot; op 8 =
+a joint (sub 0: slot −2, a node that draws nothing; sub 1: slot −1, no joint at this number).
+That is the decoder's format (`parse_joint_table`): **the engine's joint number is the decoded
+skeleton's node id**, and the joint array is indexed by it.
+
+**Joint record** (124 bytes; joint array + number × 0x7C):
+
+| + | What |
+|---|---|
+| 0x00…0x11 | the sampled key: position, angles, scale (3 × s16 each) `?` |
+| 0x12 | mesh slot (−1 no joint, −2 draws nothing; −0x1000 added = hidden for the cockpit view) |
+| 0x14…0x25 | local rotation (3×3, 4.12) = `RotMatrix`(+0x52), columns scaled by +0x58 / +0x5A / +0x5C |
+| 0x26 | flags: bit 0 rebuild the local rotation, bit 1 rebuild the model-space matrix, bit 2 angles still easing (+0x5E chases +0x52 by 1/8 a frame, snaps within 64), bit 5 don't take the parent's rotation, bit 6 played by the second layer (set with bit 3 when that animation starts; the aim layer and a new cross-fade leave the joint alone), bit 7 cross-fading |
+| **0x28…0x47** | **the joint's model-space MATRIX**: rotation at +0x28, t[3] (s32) at +0x3C / +0x40 / +0x44. **This is what the model and shadow draws read** |
+| 0x48 | parent joint (pointer; 0 = root) |
+| 0x4C / 0x4E / 0x50 | position (offset from the parent) |
+| 0x52 / 0x54 / 0x56 | angles (4,096 a turn) |
+| 0x58 / 0x5A / 0x5C | scale (4.12) |
+| 0x5E…0x62, 0x64…0x68 | angles and position at the start of a cross-fade (also the easing state) |
+
+**What the pose routine does, in order:** makes or remakes the record and joint array on a new
+model; on a new aim table re-bases the aim joints; on a new main animation with AC +0x7A ≠ 0 starts
+a **cross-fade** (each joint's pose → its "from" fields, weight 0x1000, step AC +0x7A); samples the
+main animation at **AC +0x76** (frame and 4.12 fraction from `0x8005953C`, keys `0x8005893C`,
+in-between keys `0x80058E90` with the GTE: the game already interpolates between keyframes) and
+the second layer at **AC +0x7C**; adds the **aim angles AC +0x7E / +0x80 / +0x82** (clamped per
+axis by the aim table, `0x800595B0`) to the table's joints with per-joint weights; steps the
+cross-fade (weight −= step; GTE GPF: value = new + (from − new) × weight); eases flagged angles;
+runs `RotMatrix` + scale on dirty joints; then `0x800594EC` walks every joint (`0x800592D4`, parent
+first, recursive): **model = parent × [R | T]**, t = parent R · position + parent t (MVMVA),
+R = parent R · local R column by column (local R alone with flag bit 5). That is the decoded
+skeleton's rule (`acr_model.h`: parent × T(position) × Rx·Ry·Rz).
+
+**AC model draw `0x80062C00(model, &AC+0x08, &AC+0x10, record; &AC+0x150, AC+0x164, area, two OT
+offsets from AC +0x42, AC+0x72, AC+0x74)`:**
+- Object rotation = **`RotMatrixYXZ`(AC+0x10, 0x800 − AC+0x12, AC+0x14)** (`0x8002A224`) at
+  `0x800AAFC0`; translation = view R · (position − eye) at `0x800AAFD4`.
+- Lights from the area's light set (`0x801A8D80` + area +0x30 × 104): `SetColorMatrix`,
+  `SetBackColor`, light matrix = L · object rotation.
+- Near (position − eye within ±4,096 on every axis): rotation = (view R ≫ 2) · object, shift
+  `0x801A2564` = 0. Far: view R · object, translation × 4, shift 2. **A model unit is 1/4 of a
+  world unit.**
+- `0x8006C6F4` picks the mesh draw, `0x8005D9A4` or `0x8006A5A8` (clipped `?`). Per joint with a
+  slot ≥ 0: R = object · joint rotation, T = object · joint t (low halves) + object t, then the
+  slot's mesh (32-byte entries from `0x801A27F8`) `?`.
+
+**Shadow `0x800629E0(drawn, model, &(x, AC+0x2C, z), &AC+0x10; record, …)`:** the same object
+rotation (rebuilt only when the AC itself was not drawn in this view), translation from the floor
+point, then `0x8005CB2C(record, …)` draws it from the pose's joints `?`.
+
+**For render passes:** AC position and angles are logic state: blend them before the pass's
+render runs. The pose is made inside the render, so blend it at the entry of the first per-view
+draw `0x800670C8` (after both poses, before anything is drawn), between the pose frame n was drawn
+with (read at the pass point) and the one the pass's render has just made. Model-space joint
+matrices blend on their own (slerp + lerp); the AC's rotation and position come from the blended
+AC fields.
+
+### Test 2: ACs glide (VS) — branch `renderer-vs-ac-pass` (local), not pushed, built or tested yet
+
+Same package and plugin as the first milestone (`acrecomp.moa.frame-rate`,
+`mod_builtin_moa_frame_rate.c`).
+
+| Item | Choice |
+|---|---|
+| AC position, angles | motion kit (`render_pass_motion.h`): SVECTOR AC+0x08, ANGLES AC+0x10, captured at the pass point, written at the start of each pass. Limits per step: 512 world units, a quarter turn (battle lane's measured speeds: 83 at full boost, 150 at the fall limit, 38 turning; a round restart moves an AC by thousands) |
+| Shadow height | AC +0x2C blended the same way; 32767 (nothing below) is not blended |
+| Pose | each joint's +0x28 MATRIX, pose n read at the pass point (record at state 2), blended at the entry of `0x800670C8` in each pass. A joint that moved more than 1,024 model units or turned more than a quarter turn keeps the new matrix (not measured yet). No pose blend for a placed AC or a remade record (other joint array or model) |
+| Hooks | `0x800670C8` added to `game.toml`; the plugin also checks the first words of `0x80059624`, `0x800592D4`, `0x80062C00` and `0x800670C8` |
+| Counters | `ac_glide`, `ac_placed`, `joints_blended`, `joints_placed`, `pose_unmatched` (debug-tools build) |
+| Host tests | new AC test (mock render, sandboxed passes): 6,652 checks, 0 failed, and it catches a missing pose write, a missing position blend and a double blend in view 2; the step-cap test (1,999 of 1,999) and the frame-clock test (99.96 %) still pass |
+| Still stepping | shots, missiles and effects (object pool, step 5); the HUD lock box, which reads the lock slots' target positions (refreshed each step; step 8) |
 
 ## 2. What the mapping switches on (the payoff)
 
@@ -333,6 +451,9 @@ Then the other engines look for the same routines (§4).
 4. **ACs in battle.** How AC +0x68 (model data) and the animation player (+0x6C) become joint
    matrices each frame, and where those land; tie them to the decoded skeletons (`acr_model.h`).
    Paint and the pre-painted texture sets (`0x800C0D14`, byte 14).
+   **Read for VS 2026-11-18** (§1 "ACs (VS)"); test 2 (ACs glide) written, waiting for a build
+   and a test by eye. Still to do: paint / pre-painted sets, and the mesh format behind
+   `0x801A27F8` (with step 6's stage format).
 5. **Objects and effects.** Per pool kind: how it is drawn, its blend mode, any particle lists
    outside the pool. Moving values and their identity, for the render-pass blending.
 6. **Stage.** The geometry format in FDAT 5s+1 / 5s+4, how it is split up, what decides which

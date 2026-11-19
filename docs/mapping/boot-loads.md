@@ -28,7 +28,10 @@ from code unless marked `?`. Related: `mode-launch.md` (how each mode is started
    wait) before it opens the next screen. **Fast Loading** (the 16-sectors-a-frame drive,
    `mod_builtin_moa_loading.c`) only covers the initial load since 2026-11-18: it goes back to
    the drive's real speed once the first usable screen (hub open `0x800552C0` or title open
-   `0x800AAE94`) has opened and the disc queue has stayed empty for 30 frames.
+   `0x800AAE94`) has opened and the disc queue has stayed empty for 30 frames. The switch back
+   must use `psx_mod_set_disc_speed_live` (from the Rogue Arena merge): the plain
+   `psx_mod_set_disc_speed` is only read when a session starts, so the first version left the
+   drive fast for the whole session.
 4. **Anything sent to VRAM must sit in main RAM.** LoadImage / StoreImage go by DMA, which
    only reaches main RAM (0x80000000 … 0x801FFFFF). Mod memory from `psx_mod_alloc_guest_memory`
    (0x81000000) folds onto low RAM there, so an upload from it sends whatever code sits at the

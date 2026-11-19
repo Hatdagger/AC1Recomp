@@ -86,8 +86,11 @@ static void moa_fast_loading_vblank(void) {
         return;
     }
     if (++moa_idle_frames < MOA_BOOT_IDLE_FRAMES) return;
-    /* Divisor 1 = the drive's authentic timing. */
-    if (psx_mod_set_disc_speed(1u, 0u)) {
+    /* Divisor 1 = the drive's authentic timing, applied to the running drive.
+     * (psx_mod_set_disc_speed only takes effect when a session starts, so it
+     * left the drive fast for the whole session.) The live call is refused
+     * while a read is in progress: it is tried again on the next frame. */
+    if (psx_mod_set_disc_speed_live(1u, 0u)) {
         moa_fast_on = 0;
         psx_mod_counter_add("moa.fast-loading.boot_done", 1);
     }

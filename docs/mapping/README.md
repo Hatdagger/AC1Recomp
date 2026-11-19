@@ -22,7 +22,7 @@ Several chats map Master of Arena at the same time. To avoid double work:
 | Menus: scenario hub | `menus-hub.md` | hub chat | The hub ring (FDAT 206 from `0x800552C0`): its 8 entries, tables, input, models and labels, and how to add / remove / replace entries. Not the screens behind the entries (garage, shop, …) | static read done 2026-11-17, icon and caption pictures found |
 | Missions | `missions.md` | missions chat | Scenario missions apart from the shared fight code: picking and launching a mission (mission screen table `0x8019F7A8`, list builder `0x800942BC`, which routine sets the mission id), the missions engine FDAT 207, **per-mission code and maps = FDAT 0–99** (5 entries per mission, not MIS.T), MIS.T (mission screen data, briefings, mail), objectives, win/lose checks, timer, results and rewards, non-AC enemies and the enemy list, scripted sequences, mail triggers. The AC object, damage and weapons in flight stay with the battle chat | claimed 2026-11-17 |
 | Menus and screens | `menus-screens.md` | boot chat | The screens behind the hub entries: Garage (all its pages), Shop, System (the card screen: DATA SAVE / LOAD, reports, EXIT GAME), Arena and Ex Arena lists, Arena Maker; the VS menu's own screens (AC SETUP, SELECT MAP); and the menu building blocks they share (tasks, windows, text and font, cursors and pad input, message boxes, menu sounds). For each screen: how it opens, what it loads, its states and tables, how it closes. Goal: Rogue Arena's overlays and moving menus into the launcher. Not the hub ring (hub chat), the missions or mail screens (missions chat), the title / NEW-LOAD / VS START flow (launch chat, `boot-loads.md`) or the arena fight launch (`boot-loads.md` §7) | static read done 2026-11-18: building blocks (tasks, pad, windows, text, prompts, sounds), every screen's states; open items in its §4 |
-| Renderer | `renderer.md` | renderer chat | How a fight is drawn, in every engine: frame anatomy (scene render, draw / display buffers, ordering table, flip), camera → view (GTE matrix, projection), which routine draws what (stage, ACs, object pool, effects, HUD), the ACs' joint matrices, culling and sorting. Goal: the framework's render passes (in-between frames), widescreen and draw-distance features, native drawing later. Not what AC object fields mean in play (battle chat), the camera record's setup fields (data chat), what is loaded into VRAM (boot chat) or mission maps (missions chat) | plan written 2026-11-18 (§3 work order); steps 1–2 (frame anatomy, camera) done for VS 2026-11-18; camera-only render pass written, not run yet |
+| Renderer | `renderer.md` | renderer chat | How a fight is drawn, in every engine: frame anatomy (scene render, draw / display buffers, ordering table, flip), camera → view (GTE matrix, projection), which routine draws what (stage, ACs, object pool, effects, HUD), the ACs' joint matrices, culling and sorting. Goal: the framework's render passes (in-between frames), widescreen and draw-distance features, native drawing later. Not what AC object fields mean in play (battle chat), the camera record's setup fields (data chat), what is loaded into VRAM (boot chat) or mission maps (missions chat) | plan written 2026-11-18 (§3 work order); steps 1–2 (frame anatomy, camera) done for VS 2026-11-18; camera-only render pass built 2026-11-18 (branch `renderer-vs-camera-pass`), waiting for a test; step 3 (draw list) static first cut for VS 2026-11-18 |
 
 Not claimed yet (claim before starting): sound/music (the menu music is already described in the project doc
 `rogue-arena-music.md`: a SEQ on the sound chip started by `0x80064F24`; fight music is CD audio), stage data
@@ -237,6 +237,14 @@ Boot chat (menus lane) → Rogue Arena work (2026-11-18, details in `menus-scree
 - The game's own helpers, if an overlay ever wants the game's look: window `0x80063EF4` /
   `0x80064348` (close), text `0x80065330`, yes / no `0x80065858` (answer 0 yes, 1 no), message box
   `0x80066C08`. The shop shows a 3D part with MODEL slot 29 (`0x8009CD38`).
+
+Renderer chat → battle chat (2026-11-18, VS engine, static read):
+- The draw reads these AC object fields: **+0x16 = the AC's stage area** (number of a 64-byte area
+  record from `0x801BDFD0`; the AC is drawn only if that area was drawn), **+0x2C / +0x30 = the
+  shadow's height and its area** `?` (ground under the AC), +0x72 / +0x74 = sizes for the view-cone
+  test `?`, and passes +0x6C, +0x6D, +0x76, +0x7A, +0x7C, +0x7E to the pose routine `0x80059624`.
+  The VS main loop stops counting steps (match struct +0x12) at 0x4000 (`0x800526AC`). Details in
+  `renderer.md`, "Draw list (VS)".
 
 Launch chat → data chat:
 - Stage (compiled +0x05 = player block +0x255) at VS START = byte `0x800D5800[map − 1]`,

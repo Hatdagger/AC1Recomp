@@ -8,8 +8,9 @@ natively (the custom-engine road).
 Disc: USA disc 1 (SLUS-01030 v1.0). Written 2026-11-18 from the repo (master) and the
 framework docs in `psxrecomp/docs`. Nothing below is measured yet unless it says where it came
 from. Status: lane claimed 2026-11-18; **steps 1 and 2 done for VS (FDAT 209), 2026-11-18** (§1 "Frame
-anatomy (VS)", "Camera (VS)"). First milestone (camera-only render pass) written, waiting for
-review and a test run.
+anatomy (VS)", "Camera (VS)"). First milestone (camera-only render pass) reviewed, fixed and
+built 2026-11-18, waiting for the user's test run. Step 3 (draw list): static first cut for VS
+2026-11-18 (§1 "Draw list (VS)"), not yet confirmed on screen.
 
 ## 1. What we already have
 
@@ -63,6 +64,12 @@ lives in the engines.
 | VBlanks since a0 / VBlank count | `0x800166FC` / `0x80016710` | read `0x80043C74` |
 | Scanlines since a0 (the frame-time wait) | `0x80016724` | `GetRCnt(RCntCNT1)` (`0x8002B600`), 16-bit wrap |
 | `DrawSync(0)` then `VSync(0)` | `0x80016678` | |
+| `rsin` / `rcos` | `0x80028B64` / `0x80028C34` | 12-bit angle; odd / even in the angle (named 2026-11-18, step 3) |
+| `SetLightMatrix` / `SetColorMatrix` / `SetBackColor` | `0x80029B54` / `0x80029B84` / `0x80029CE4` | write GTE L (c8–c12) / LR (c16–c20) / BK (c13–c15) |
+| `SetFogNearFar(near, far, h)` `?` | `0x80028CD4` | returns at once when far − near < 100, as PsyQ's does |
+| `Square0` / `RotTrans` | `0x80029E2C` / `0x80029F64` | GTE SQR / MVMVA (R · V0 + TR), RotTrans also stores the flag word |
+| `StoreImage` | `0x8002C7BC` | string (next to LoadImage) |
+| `malloc` / `free` wrappers | `0x80016610` / `0x80016658` | call `0x8002BE54` / `0x8002BF04` |
 
 ### Frame anatomy (VS, FDAT 209)
 
@@ -190,12 +197,22 @@ Read from FDAT 209 on 2026-11-18 (step 2). Anything not yet proven by a run is m
   them inside the render; smoothing, cockpit view and the camera record are logic-side (the camera
   routine, data lane), so a pass only needs the render's two arguments.
 
-### First milestone: camera-only render pass (VS) — written, not run yet
+### First milestone: camera-only render pass (VS) — built, not run yet
 
 Package `acrecomp.moa.frame-rate` (`mods/preloaded`, off by default, option "Frame rate": display /
 60 / 120), plugin `psxrecomp/runtime/src/mod_builtin_moa_frame_rate.c`, on branch
-**`renderer-vs-camera-pass`** (pushed 2026-11-18, commit `540e22c`). Not built or run yet; merge into
-master after a test.
+**`renderer-vs-camera-pass`** (pushed 2026-11-18, commits `540e22c` and fix `34a6e64`). Built
+2026-11-18 (CI run 44433465501, started by hand: CI builds only master on its own); not run yet;
+merge into master after a test.
+
+Checked before the test (2026-11-18): compiles with `-Wall -Wextra -Wpedantic`; the engine entry
+word and all five code signatures match FDAT 209; engine hooks need no regenerated game C (the VS
+AI hook `0x8007DA4C` went in the same way). The pass point is not refused as busy for frame n's
+list walk: a `DrawOTag` kick holds the CPU until the walk ends (`dma.c`
+`hold_cpu_for_gpu_linked_list`). **Fixed (`34a6e64`):** the main loop counts steps only while
+below 0x4000 (`0x800526AC`, about 12 minutes), so the "one step since the last call" check failed
+for the rest of a long fight; an unchanged count at 0x4000 now counts as one step (host test: 1,999
+of 1,999 frames planned across the cap, 256 before).
 
 | Item | Choice |
 |---|---|
@@ -204,9 +221,70 @@ master after a test.
 | Pass | cameras blended linearly between the last two steps (a coordinate that jumps more than 2,048 in a step = cut: that camera is not blended), buffer index ^ 1 (so the render's swap draws into frame n's area), frame start = Timer 1 − 800 (so the 715-line wait ends at once), call the render; inside passes `0x800535F4` (queued sounds), `0x80053DD0` (frame-begin sound upkeep) and `0x80053284` (start a sound) are skipped |
 | Frame timing | from Timer 1 (count and part-line) and the VBlank clock: VBlanks before the flip, and how long frame n stays up if the next frame takes the usual 715 lines (2 or 3 VBlanks). Unit-tested against a simulated frame clock: 99.96 % exact; the rest are VBlanks that fall between the timer tick and the game's `PutDispEnv` |
 | Hooks | `game.toml` `mod_function_entry_funcs`: `0x80067404`, `0x800535F4`, `0x80053DD0`, `0x80053284` (each hook checks the engine entry word and six code signatures first) |
-| Counters | `moa.frame-rate.` `enabled`, `frames`, `passes`, `unpaired`, `unavailable`, `period_2`, `period_3_plus`, `camera_move_lt64` / `lt256` / `lt1024` / `le2048`, `camera_cut` |
-| To check in a run | RENDER_PASSES.md "Porting a title" step 7: `render_pass_stats` (passes, no faults), `render_pass_dump` images between their neighbours, `PSX_RENDER_PASS_VERIFY=1` with `verify_mismatch` 0; the camera-move counters to set the cut limit from real motion |
+| Counters | `moa.frame-rate.` `enabled`, `frames`, `passes`, `unpaired`, `unavailable` (and by reason: `unavailable_no_presenter` / `_backend` / `_disabled` / `_session` / `_fast_forward` / `_busy` / `_other`), `period_2`, `period_3_plus`, `camera_move_lt64` / `lt256` / `lt1024` / `le2048`, `camera_cut` |
+| To check in a run | RENDER_PASSES.md "Porting a title" step 7: `render_pass_stats` (passes, no faults), `render_pass_dump` images between their neighbours, `PSX_RENDER_PASS_VERIFY=1` with `verify_mismatch` 0; the camera-move counters to set the cut limit from real motion. **CI builds are Release, so they have no TCP debug server** (`PSX_DEBUG_TOOLS` off): all of these need a debug-tools build (`-DPSX_DEBUG_TOOLS=ON`, as branch `mapping-debug` makes). First test is by eye |
 | Expected look | the camera glides; ACs, shots and effects still step at the game's rate (and sit one step ahead of the camera inside a frame), until steps 4–5 blend them |
+
+### Draw list (VS, FDAT 209) — static first cut
+
+Read from FDAT 209 and `SLUS_010.30` (code loaded at `0x80011000`) on 2026-11-18 (step 3). What a
+routine draws is named from the data it walks and what it calls: **nothing here is confirmed on
+screen yet**, `?` marks guesses. Confirm with `tools/gpu_frame_layers.py` (`GPU_FRAME_TOOLS.md`),
+which needs a debug-tools build.
+
+Scene render `0x80067404`, one frame, both views:
+
+| When | Routine | What it draws or does |
+|---|---|---|
+| before the swap | `0x80066E34` | **colour pulse**: 8 colours from `0x80090014` scaled by `rsin`(frame counter `0x801A8C34` × 512) into `0x80099FC0`, a table the mesh code reads: blinking lights `?` |
+| before the swap | `0x8005BB40` | **scrolling texture**: when its counter `0x801A8CC2` runs out (reload `0x801A8CC1`), `StoreImage` + `LoadImage` move a VRAM rectangle by a step (settings from `0x801A8CC0`: mode, rectangle, step), using `malloc` / `free`: a stage texture that scrolls `?`. Inside a pass this VRAM write is outside the rect, so it is journaled and rolled back |
+| per AC | `0x80059624(AC+0x68, AC+0x0E + 0x80, AC+0x6C, AC+0x76; AC+0x7A, AC+0x6D, AC+0x7C, AC+0x7E)` | **AC pose**: animation player → joint matrices (`RotMatrix`, 13 GTE commands), for each AC whose word +0 is set (`0x801D4BC0`, `0x801D4D38`). Step 4. Pool objects with a skeleton use it too (`0x80061F64`) |
+| around it | `0x8005A72C`, `0x8005AC68` / `0x8005ACC8`, `0x8005A81C` (after the submit) | upkeep of the AC model records (AC +0x68: P1 `0x801A2E10`, P2 `0x801A2E38`) `?` |
+| per view | `0x80067004` | for the eye's area and its neighbours, `0x80066E74` → `0x8005B96C` fills the list at `0x801ADC70` (≤ 16 × 48 bytes; next free `0x801ADF70`, count `0x801ADF74`) that the per-view draw transforms: per-area lights or effects `?` |
+| per view | `0x80066B10` | **that view's HUD** (viewed player `0x8003EAA0`): gauges and numbers `0x80056754` (text `0x80065494`, icons `0x800572B4`, fade box `0x800632E8`), text `0x80057210`, icons at points put through `RotTrans` `0x80057B8C` / `0x80057E8C` / `0x80058208` (radar, markers `?`), text at a projected point `0x800580EC` `?`, sight `0x800576E0` |
+| per view | **`0x80061C3C`** | **stage** (below) |
+| per view | **`0x80065C44`** | **objects**: ACs, their shadows, stage objects, the object pool (below) |
+| after both views | `0x800632E8`, `0x80065494`, `0x800659DC`, `0x800572B4` | fade box (POLY_F4, semi-transparent while fading), text, shared HUD, into OT B over both views |
+
+**Stage, `0x80061C3C`.** Starts at the eye's area (`0x801A9AAC`; the 64-byte area records from
+`0x801BDFD0` the camera's area check uses) and walks its **neighbour list** (area +0x26 count, +0x28
+→ u16 entries: low 9 bits = area number; bits 11–13 name an extra entry after the list whose area,
+when its +0x30 bit 8 is set, hides this one `?`; bit 14 is passed on).
+- **Distance cut-off:** with area +0x30 bit 12 set, an area is drawn only while
+  ((eye − area centre +0x10 / +0x12 / +0x14) ÷ 2)² ≫ 18 < area +0x34 & 0xFFF, i.e. distance below
+  about 1,024 × √limit. Bitsets of areas looked at / drawn in this view: `0x801A8C38` / `0x801A8C78`
+  (32 areas a word); the object draw only draws things in "drawn" areas.
+- **One area, `0x80061700`:** skipped when +0x30 bit 11 is set or the box test `0x80061560(+0x18
+  min, +0x20 max)` fails (view cone `?`). Model = table `0x801A2C0C`[area +0x1E], up to two levels
+  of detail. Within 1,300 of the area's box the near level is drawn lit (light set `0x801A8D80` +
+  (area +0x30 byte 0) × 104, `SetFogNearFar`) by `0x8006CAEC` / `0x8006D8EC`; otherwise the far level
+  by `0x80060CB4`, or it is queued on two lists drawn at the end: `0x8005FE60` → `0x800600A0` and
+  `0x8006861C` → `0x80067D00` / `0x8006882C`. With +0x30 bit 13 set, the far level is also forced
+  outside the box grown by (+0x34 ≫ 8) & 0xFFF0. Both levels use the scaled view matrices from the
+  camera step (far `0x801A9B10` family, near `0x801A9B90` family; level = −(area +0x16) & 3 `?`).
+- For draw distance (step 7): these cut-offs and the near / far switch are where far geometry is
+  dropped or simplified.
+
+**Objects, `0x80065C44`.**
+1. **ACs** (`0x801D4BC0`, `0x801D4D38`): if the AC's area (AC +0x16) was drawn and the view-cone test
+   `0x8006647C(AC +0x08 position, +0x72, +0x74)` `?` passes: **AC model `0x80062C00`** (facing
+   AC +0x0E + 0x80, model record AC +0x68; meshes through `0x8006C6F4`, `0x8005D9A4`, `0x8006A5A8`).
+   **Shadow `0x800629E0`** `?` at (x, AC +0x2C, z) when the area at AC +0x30 was drawn (same facing
+   and record).
+2. **Stage objects:** 128 records of 52 bytes from `0x801D2EF8` (centre +0 / +2 / +4; +6 = −1 off;
+   flags +0x1C: bit 15 off, bit 0 = drawn only while the eye is inside the box centre ± signed bytes
+   × 256 at +0x22…+0x27, the area-box layout in `battle-system.md`). By flag: bit 1 → `0x80063648`,
+   bit 3 → `0x80063004`, bit 5 → `0x80062F34`, otherwise a model through `0x80061F64`.
+3. `0x800665BC` (24 GTE commands, view-cone test) `?`.
+4. **Object pool** (256 × 228 bytes from `0x801D6F6C`), per kind, after the area bit and the
+   view-cone test: `0x80061F64` (models, posed with `0x80059624`), `0x80061484`, `0x800645D8`,
+   `0x800651E4`, `0x8006288C`, `0x80064EE4`, `0x80064C68` (sprites and effects `?`). Which kind is
+   which: next, with the frame-layer tool or by reading each.
+
+For render passes (steps 4–5): what moves per step is the AC pose (`0x80059624`'s joint
+matrices), AC position and facing (+0x08…, +0x0E), shadow height (+0x2C), stage objects and pool
+records. The colour pulse and the texture scroll step with the render's own frame counter, so a
+pass already shows the next frame's value (harmless).
 
 ## 2. What the mapping switches on (the payoff)
 
@@ -245,6 +323,8 @@ Then the other engines look for the same routines (§4).
 3. **Draw list.** Every routine the scene render calls, named by what it draws: stage, ACs,
    object pool, effects, shadows, HUD, radar, text. *Method:* `tools/gpu_frame_layers.py`
    (`GPU_FRAME_TOOLS.md`) gives one image per guest function from one captured frame.
+   **Static first cut done for VS** (§1 "Draw list (VS)"); still to do: which pool kind is which
+   routine, and the on-screen check with the frame-layer tool (debug-tools build).
 4. **ACs in battle.** How AC +0x68 (model data) and the animation player (+0x6C) become joint
    matrices each frame, and where those land; tie them to the decoded skeletons (`acr_model.h`).
    Paint and the pre-painted texture sets (`0x800C0D14`, byte 14).

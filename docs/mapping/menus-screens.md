@@ -273,7 +273,7 @@ Loads are in `boot-loads.md` §5. The states after them:
 | State | Does |
 |---|---|
 | `0x800B1658` … `0x800B1CA4` | each player's AC: stand-ins `0x80067244`, slot rules `0x80083130`, models `0x80081E48`, textures `0x80082014` |
-| `0x800B1E98` | draw the menu (`0x800B1EF0`: VS START, 1P AC SETUP, 2P AC SETUP, SELECT MAP, and the win / LOSE counts `?`) |
+| `0x800B1E98` | draw the menu (`0x800B1EF0`: VS START, 1P AC SETUP, 2P AC SETUP, SELECT MAP, and the 1P / 2P WIN / LOSE counts). **Read in depth: §2p** |
 | **`0x800B22D8`** | **input**: VS START → `0x800B2D7C` (`mode-launch.md` §5), AC SETUP → `0x800B3C10`, SELECT MAP → `0x800B38C0` (stage preview reloaded by `0x800B3BA4`), ○ → "Exit VS Mode?" → `0x800B5AEC` (back to the title) |
 | `0x800B3C10` → **`0x800B3DDC`** | AC SETUP menu (`0x800B3C6C`: ASSEMBLY, OPTIONAL PARTS, CHANGE PATTERN, EDIT COLOR, SYSTEM) |
 | `0x800B56B4` → `0x800B5798` | ASSEMBLY summary (NAME, TYPE, E.C., ARMOR POINT, WEIGHT, LEFT …), then the **garage's own assembly page** `0x80082BEC` |
@@ -914,6 +914,93 @@ from the 12-byte sprite records at `0x800D58CC`. DEFAULT copies `0x800D5860` bac
 EXIT checks every pair of actions: if two have the same button, "Overlapping key assignments."
 and you stay; otherwise apply (`0x800B9CB0` → `0x800B6A80`) and back to Options.
 
+### 2p. VS menu in depth (2026-11-19)
+
+The loads (`boot-loads.md` §5), the staging area and VS START (`mode-launch.md` §5) were already
+mapped; this is the menu itself. Read from `0x800B0CB4` … `0x800B6A7F`.
+
+**Every time the menu opens (`0x800B0FE4`)**, before anything else, the map is picked by the
+VS STAGE option (`0x8004B59B`, §2o): first visit (`0x8003EA7E` = 0) → map 1; **RANDOM** → map =
+(low byte of `0x8003EABC` × 5 ÷ 128) + 1 (1 … 10); **TURN** → map + 1, 11 wraps to 1; SELECT
+leaves it. So RANDOM and TURN change the map on every return from a fight too.
+
+**First visit only** (VS picked on the title; `0x8003EA7E` = 0): the garage becomes the VS default
+AC (`0x800633A4`), **all settings are reset to the new-game defaults** (`0x800B69F8`, §2o: volumes,
+time limit, keys, vibration), the option parts `0x8003EA70` = 0, then **both players get the same
+key layout and vibration** (below), the extras of both are cleared, and the rest of the staging
+area is filled as `mode-launch.md` §5 says.
+
+**Per-player copies the menu keeps** (added to the staging area of `mode-launch.md` §5):
+
+| Address | Size | Holds |
+|---|---|---|
+| **`0x8004B4A8`** / **`0x8004B4D8`** | 48 each | P1 / P2 **key layout** (12 masks, as the settings record +0x00) |
+| **`0x8003EAD0`** / **`0x8003EAD1`** | 1 each | P1 / P2 **VIBRATION** |
+| `0x8004A7D0` / `0x8004A7D8` | 8 each | P1 / P2 extras (Human PLUS …) |
+| task +0x85 | 1 | which player's textures are in the front texture set now |
+| **`0x801B1CD8`** | 1 | **pad swap**: 1 = the menu's pad reader `0x800639A4` swaps the two pads' halves, so **player 2's controller drives every menu** (set while 2P AC SETUP is open, cleared when it closes and at VS START) |
+
+The other settings (volumes, VS STAGE, VS TIME LIMIT, TEXT MESSAGE) have one shared copy.
+
+**The menu (`0x800B1DC4` / `0x800B1EF0`)**: windows (16, 40, 136, 96) rows, (160, 16, 152, 56) the
+WIN / LOSE table, (184, 96, 108, 104) the map preview; tone 6. Rows **VS START, 1P AC SETUP, 2P AC
+SETUP, SELECT MAP**; the table shows 1P / 2P **WIN** and **LOSE** from `0x8003EAB0` … `0x8003EAB6`
+(`battle-system.md`; shown up to 999; cleared when the menu starts from the title, `0x800A6C70`).
+
+**Input (`0x800B22D8`)**: **either controller** moves the cursor (Up / Down of both pads, the
+high half too), 4 rows, wrapping, tone 1. ✕ of either pad (tone 2) by the jump table
+`0x8005383C`; ○ of either pad (tone 0) → "Exit VS Mode?" (`0x80065858`, starts on NO) → yes →
+`0x800B5AEC` (TIM queue MENU_TIM 5, close everything, texture sets back `0x800B5BF8`, then the
+title `0x800AAE94`; `0x8003EA7E` cleared, `mode-launch.md` §2).
+
+| Row | ✕ does |
+|---|---|
+| VS START | P1's key layout `0x8004B4A8` → settings, P1 vibration → `0x8004B59D`, **apply** `0x800B6A80` (P1's compiled block); P2's 12 masks from `0x8004B4D8` and P2's vibration (bit 21) are written **straight into P2's compiled block `0x80045788`**; then `0x800B2D7C` (the checks and compile of `mode-launch.md` §5) |
+| 1P / 2P AC SETUP | load player p into the garage (below), window (72, 80, 136, 120), the AC SETUP menu `0x800B3C10` |
+| SELECT MAP | only when VS STAGE = SELECT; otherwise the box "Cannot select due to option setup" (`0x80053808`). Arrows (sprites `0x800CE660` / `0x800CE66C` at x 160 / 300, y 140), old map kept in task +0x86 → `0x800B38C0` |
+
+**SELECT MAP (`0x800B38C0`)**: waits while the disc is busy; **Right / Left** (player 1's pad only)
+map ± 1, wrapping 1 … 10, tone 1, and the preview is reloaded at once (`0x800B3BA4`: TIM queue
+MENU_TIM (stage − 10) after the disc is free). ✕ keeps the map; ○ puts the old one back (and its
+preview). Maps → stages (`0x800D5800`): **1 → 20, 2 → 21, 3 → 22, 4 → 23, 5 → 30, 6 → 33,
+7 → 34, 8 → 35, 9 → 36, 10 → 37** (preview entries 10 … 13, 20, 23 … 27).
+
+**AC SETUP for player p.** On ✕ (`0x800B2748`):
+- p = 2 first swaps the two players' button masks in the compiled blocks (`0x800B6430`, so the
+  Options page, which writes P1's block, edits P2's) and sets the pad swap `0x801B1CD8` = 1;
+- p's owned parts `0x8004A7E0 + 256p` → the garage page's copy `0x8003EB20`, p's names `0x8004AB18 +
+  36p` → `0x800371EC`, part lists `0x80090FD8`, p's extras `0x8004A7D0 + 8p` → `0x8003EAC8`, p's
+  key layout → settings `0x8004B568`, p's vibration → `0x8004B59D`;
+- **`0x800B3584(p)`** puts the rest of p into the garage: owned → `0x80036FEC`, paint `0x8004B730 +
+  48p` → `0x80036FBC`, parts `0x80045940 + 12p` → `0x80036FB0`, file table `0x8004AB60 + 60p` →
+  `0x801FBB00` (sizes `0x8004A9E0 + 30p` → `0x801D0B28`), options `0x8003EAC0 + 2p` → `0x8003EA70`,
+  pattern / variant → `0x8003EA72` / `0x8003EA73`, and when the other player's textures are in front,
+  swaps the texture sets (`0x800C0E7C`, task +0x85).
+
+The AC SETUP menu (`0x800B3C6C`: **ASSEMBLY, OPTIONAL PARTS, CHANGE PATTERN, EDIT COLOR, SYSTEM**;
+input `0x800B3DDC`, jump table `0x8005396C`):
+
+| Row | Check (message box) | Then |
+|---|---|---|
+| ASSEMBLY | core fitted ("You don't have a CORE part.") | summary page `0x800B56B4` (NAME, TYPE, E.C., ARMOR POINT, WEIGHT, LEFT …) → the garage's ASSEMBLY `0x80082BEC` (§2h) |
+| OPTIONAL PARTS | core fitted; options owned ("No OPTIONAL parts available.") | `0x800B4C18` → the garage's page `0x80091610` (§2j) |
+| CHANGE PATTERN | "Your equipment is incomplete." | `0x800B4A68` → `0x8008DCC8` (§2l) |
+| EDIT COLOR | the same | `0x800B48E4` → `0x8008B110` (§2l) |
+| SYSTEM | — | `0x800B4F78`: **DATA LOAD** (card screen, §2n) or **OPTION** (§2o) |
+
+Back from SYSTEM (`0x800B5470`): the extras `0x8003EAC8` → p's `0x8004A7D0 + 8p`, the settings' 12
+masks → **p's key layout** `0x8004B4A8 + 48p`, VIBRATION → `0x8003EAD0 + p`. So **KEY ASSIGN and
+VIBRATION in VS are per player**; the other Options rows change the shared copy, and TEXT MESSAGE
+can't be changed here (§2o). A DATA LOAD unpacks a whole scenario save, settings included
+(`boot-loads.md` §4e), so the save's key layout and vibration become p's, and its volumes, VS STAGE
+and time limit replace the shared ones (from the code; not tried).
+
+○ on the AC SETUP menu → **`0x800B4408`**: the garage goes back to p's staging (owned → `0x8004A7E0
++ 256p`, paint → `0x8004B730 + 48p`, parts → `0x80045940 + 12p`, file table and sizes back, options
+`0x8003EA70` → `0x8003EAC0 + 2p`, pattern / variant → `0x8003EAD2 + p` / `0x8003EAB8 + p`, names
+`0x800371EC` → `0x8004AB18 + 36p`), for p = 2 the masks are swapped back (`0x800B6430`) and
+`0x801B1CD8` = 0, then the VS menu.
+
 ## 3. What this means for overlays and the launcher
 
 - **Replacing a screen:** hook the hub's pick (`menus-hub.md` §5), run your own screen, and call
@@ -958,6 +1045,12 @@ and you stay; otherwise apply (`0x800B9CB0` → `0x800B6A80`) and back to Option
 - **Settings in the launcher** (§2o): the 56-byte record at `0x8004B568` (save +3276) is the whole
   Options screen. Writing it and calling `0x800B6A80` applies it in game; KEY ASSIGN only needs
   "one button per action, no two the same".
+- **VS from the launcher** (§2p): per-player key layouts are `0x8004B4A8` / `0x8004B4D8` and
+  vibration `0x8003EAD0` / `0x8003EAD1`; VS START writes P2's straight into P2's compiled block. The
+  repo's direct start (`moa_vs_direct.c`) presses the game's own VS START, so it gets this for
+  free; code that skips VS START altogether would have to copy them itself. Entering
+  VS from the title resets every setting to the defaults (§2o), so settings the player chose in
+  Scenario don't carry into VS.
 
 ## 4. Open
 
@@ -984,3 +1077,7 @@ and you stay; otherwise apply (`0x800B9CB0` → `0x800B6A80`) and back to Option
   Failure (missions lane).
 - Options (§2o): what else reads the sound flags `0x80044200` / `0x80044202`; which cursor byte of
   KEY ASSIGN is the column (check in game).
+- VS menu (§2p): whether the SELECT MAP page really ignores player 2's pad (only the low half is
+  read); the VS-only checks before AC SETUP's ASSEMBLY (a core is always there in VS?); whether a
+  DATA LOAD in VS really replaces the shared volumes / time limit (from the code, not tried);
+  the sprite `0x801FBEB8` +22 toggle on the VS START row (blink `?`).

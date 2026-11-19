@@ -34,6 +34,7 @@
 #include "psx_netplay.h"
 #include "spu.h"
 #include "moa_netplay_room.h"
+#include "moa_netplay_menu.h"
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -70,6 +71,11 @@ static int moa_link_engine_loaded(void)
 {
     return moa_code_is(MOA_LINK_FRAME, 0x3C028009u, 0x90420F90u) &&
            moa_code_is(MOA_LINK_ROLES, 0x3C028004u, 0x9042EA91u);
+}
+
+int moa_link_netplay_engine_loaded(void)
+{
+    return moa_link_engine_loaded();
 }
 
 /* The versus menu fills both player blocks (each player's AC and the stage)
@@ -128,12 +134,22 @@ static void moa_link_wait_entry(struct CPUState *cpu, uint32_t address)
     psx_mod_write_byte(MOA_RECV + 0u, 82); /* 'R' */
     const uint32_t ra = cpu->gpr[31];
     if (ra == MOA_RA_FRAME_WAIT) {
-        /* v0 = port-1 pad | port-2 pad << 16, just read by the caller. */
-        const uint16_t pad2_now = (uint16_t)(cpu->gpr[2] >> 16);
+        /* v0 = port-1 pad | port-2 pad << 16, just read by the caller, who
+         * keeps it in s1 (the delay slot of this call) and sends s1's low
+         * half as player 1's pad. The versus room's hold-START menu reads
+         * its codes here and takes them (and START) out of both pads; the
+         * fight gets what is left. */
+        uint16_t pad1_now = (uint16_t)cpu->gpr[2];
+        uint16_t pad2_now = (uint16_t)(cpu->gpr[2] >> 16);
+        moa_np_menu_pads(&pad1_now, &pad2_now);
+        cpu->gpr[2] = (uint32_t)pad1_now | (uint32_t)pad2_now << 16;
+        cpu->gpr[17] = (cpu->gpr[17] & 0xFFFF0000u) | pad1_now;
         psx_mod_write_byte(MOA_RECV + 1u, psx_mod_read_byte(MOA_SEND + 1u));
         psx_mod_write_byte(MOA_RECV + 6u, psx_mod_read_byte(MOA_SEND + 6u));
         psx_mod_write_half(MOA_RECV + 2u, psx_mod_read_half(MOA_REMOTE_PAD));
         psx_mod_write_half(MOA_REMOTE_PAD, pad2_now);
+        /* CONTINUE? answers itself in a versus room (between rounds X). */
+        moa_np_menu_continue();
         /* Each peer hears its own player's channel (see "Sound for two
          * listeners"); renewed every frame, lapses after the match. */
         spu_output_mono_request(psx_netplay_local_slot() == 1 ? 1 : 0, 30);

@@ -38,6 +38,21 @@ void moa_np_room_engine_load(void);
 /* The versus menu opens again after a match. */
 void moa_np_room_menu_back(void);
 
+/* For the hold-START menu (moa_netplay_menu.c). The room's stages: count,
+ * the id (20..39) and name of entry i. The stage the set is on now (player
+ * 2's block +0x255, guest memory). Writing one into both blocks (guest
+ * memory: only from a hook the guest's code runs). Whether the set is
+ * decided (the win table against the rounds; the same on both PCs). A
+ * pilot's name for this PC's screen (slot 0 host, 1 guest). Leave the match
+ * for the room now (both PCs go back). */
+int moa_np_room_stage_count(void);
+int moa_np_room_stage_at(int i, const char **name);
+int moa_np_room_stage_now(void);
+void moa_np_room_set_stage(int id);
+int moa_np_room_set_over(void);
+const char *moa_np_room_pilot(int slot);
+void moa_np_room_leave(void);
+
 /* Any other moment the start is busy (menus, disc reads): the VS screen's
  * own redraw (a few times a second). Presentation only. */
 void moa_np_room_tick(void);

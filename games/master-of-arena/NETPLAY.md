@@ -23,10 +23,15 @@ Both players need the same build and the same disc.
    fast speed for the whole set). The guest sees them as they change.
 4. Both pilots press READY. After a three-second count the match starts by
    itself: no logos, title or menus; a VS screen shows both ACs while both
-   PCs load. Between rounds the game's CONTINUE? goes on (X: next round, O:
-   end the set). When a pilot has won the set, both go back to the room,
+   PCs load. Between rounds the game's CONTINUE? answers itself and the next
+   round loads. When a pilot has won the set, both go back to the room,
    which shows the result; READY again for another set.
-5. Each player sees and hears their own side. Start pauses for both.
+5. Each player sees and hears their own side. There is no pause: holding
+   START for a second opens a small menu over the running fight (RESUME,
+   RESTART ROUND, CHANGE STAGE, RETURN TO LOBBY; `moa_netplay_menu.c`).
+   Restart and stage changes are asked of the other pilot, who accepts or
+   declines from their own menu within 10 seconds; the score stays.
+   RETURN TO LOBBY (press twice) or Esc takes both PCs back to the room.
 
 Memory cards are match-only copies on both sides: nothing done in a netplay
 session is written back to a player's own save file.

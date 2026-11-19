@@ -59,6 +59,7 @@
 #define NP_STAGE_P2      0x8004578Du  /* player 2 block +0x255 */
 #define NP_WINS_1P       0x8003EAB0u  /* u16, the versus win table */
 #define NP_WINS_2P       0x8003EAB4u
+#define NP_ROLES_DONE    0x8003EA91u  /* link engine: roles settled (0 on a set's first round) */
 #define NP_ENGINE_LOAD   0x80012348u  /* exe: loading screen before an engine */
 #define NP_SIG_ENGINE_LOAD 0x27BDFF60u  /* addiu sp,sp,-160 */
 #define NP_DISC_READ     0x800167A0u  /* exe: archive sector read */
@@ -73,6 +74,7 @@ static const struct { int id; const char *name; } k_np_stages[] = {
 
 static struct {
     int active, stage, time, rounds;
+    int stage_shown;          /* the screen's stage: the room's, then the set's now */
     /* the set (host statics: leaving and the screen only) */
     int fight_seen, decided, left, round;
     uint64_t decided_ms;
@@ -232,10 +234,10 @@ static void np_vs_draw(int force)
     static const char *const times[3] = { "2:00", "5:00", "NO LIMIT" };
     const unsigned w1 = psx_mod_read_half(NP_WINS_1P), w2 = psx_mod_read_half(NP_WINS_2P);
     if (R.rounds > 1 && R.round > 1)
-        snprintf(foot, sizeof foot, "%s    TIME %s    %u - %u", np_stage_name(R.stage),
+        snprintf(foot, sizeof foot, "%s    TIME %s    %u - %u", np_stage_name(R.stage_shown),
                  times[R.time >= 0 && R.time <= 2 ? R.time : 0], w1, w2);
     else
-        snprintf(foot, sizeof foot, "%s    TIME %s", np_stage_name(R.stage),
+        snprintf(foot, sizeof foot, "%s    TIME %s", np_stage_name(R.stage_shown),
                  times[R.time >= 0 && R.time <= 2 ? R.time : 0]);
     v.footer = foot;
     int ww = 0, wh = 0, w = 0, h = 0;
@@ -284,6 +286,54 @@ static void np_leave(int done)
     psx_request_return_to_lobby();
 }
 
+/* ---- for the hold-START menu (moa_netplay_menu.c) ------------------------------ */
+
+int moa_np_room_stage_count(void)
+{
+    return (int)(sizeof k_np_stages / sizeof k_np_stages[0]);
+}
+
+int moa_np_room_stage_at(int i, const char **name)
+{
+    if (i < 0 || i >= moa_np_room_stage_count()) return 0;
+    if (name) *name = k_np_stages[i].name;
+    return k_np_stages[i].id;
+}
+
+int moa_np_room_stage_now(void)
+{
+    const int now = psx_mod_read_byte(NP_STAGE_P2);
+    return now >= 20 && now <= 39 ? now : R.stage;
+}
+
+void moa_np_room_set_stage(int id)
+{
+    if (id < 20 || id > 39) return;
+    psx_mod_write_byte(NP_STAGE_P1, (uint8_t)id);
+    psx_mod_write_byte(NP_STAGE_P2, (uint8_t)id);
+}
+
+int moa_np_room_set_over(void)
+{
+    np_read_opts();
+    if (!R.active) return 0;
+    const unsigned w1 = psx_mod_read_half(NP_WINS_1P), w2 = psx_mod_read_half(NP_WINS_2P);
+    const unsigned need = (unsigned)(R.rounds + 1) / 2u;
+    return w1 >= need || w2 >= need;
+}
+
+const char *moa_np_room_pilot(int slot)
+{
+    if (slot < 0 || slot > 1 || !R.pilot[slot][0]) return slot ? "PILOT 2" : "PILOT 1";
+    return R.pilot[slot];
+}
+
+void moa_np_room_leave(void)
+{
+    if (!R.active) return;
+    np_leave(R.decided);
+}
+
 /* ---- the hooks' side ------------------------------------------------------------ */
 
 /* The boot's title: a new session. */
@@ -330,6 +380,7 @@ void moa_np_room_title(void)
                                      k ? -0.55f : 0.55f, 0.06f, 1.3f);
     }
     R.round = 1;
+    R.stage_shown = R.stage;
     np_vs_open();
     psx_mod_counter_add("moa.room.match", 1);
 }
@@ -337,9 +388,23 @@ void moa_np_room_title(void)
 void moa_np_room_link_start(void)
 {
     np_read_opts();
-    if (!R.active || R.stage < 20 || R.stage > 39) return;
-    psx_mod_write_byte(NP_STAGE_P1, (uint8_t)R.stage);
-    psx_mod_write_byte(NP_STAGE_P2, (uint8_t)R.stage);
+    if (!R.active) return;
+    /* The set's first round (roles flag clear: the exe came from the menu):
+     * the room's stage. Later rounds (the exe reloads the engine straight
+     * from CONTINUE?, the flag stays set): the stage the set is on now, kept
+     * in player 2's block. The engine restores only player 1's block at its
+     * exit, and the cable exchange that would refill player 2's is skipped,
+     * so it survives the reload; CHANGE STAGE writes it there
+     * (moa_netplay_menu.c). The engine reads player 1's stage on even rounds
+     * and player 2's on odd ones, so both get it. */
+    int stage = R.stage;
+    if (psx_mod_read_byte(NP_ROLES_DONE)) {
+        const int now = psx_mod_read_byte(NP_STAGE_P2);
+        if (now >= 20 && now <= 39) stage = now;
+    }
+    if (stage < 20 || stage > 39) return;
+    psx_mod_write_byte(NP_STAGE_P1, (uint8_t)stage);
+    psx_mod_write_byte(NP_STAGE_P2, (uint8_t)stage);
     np_vs_draw(0);
 }
 
@@ -361,7 +426,11 @@ void moa_np_room_fight_frame(void)
 void moa_np_room_engine_load(void)
 {
     if (!R.active || R.left || !R.fight_seen) return;      /* the start has its own screen */
-    if (R.decided || R.rounds <= 1) return;
+    if (R.decided) return;
+    /* Another round of the set (the next one, a draw replayed, or a restart
+     * from the hold-START menu): the stage it will load, for the screen. */
+    const int now = psx_mod_read_byte(NP_STAGE_P2);
+    if (now >= 20 && now <= 39) R.stage_shown = now;
     const unsigned w1 = psx_mod_read_half(NP_WINS_1P), w2 = psx_mod_read_half(NP_WINS_2P);
     R.round = (int)(w1 + w2) + 1;
     np_vs_open();

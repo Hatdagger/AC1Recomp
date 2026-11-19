@@ -253,6 +253,23 @@ int moa_screen_emblem_from_tim(const uint8_t *tim, uint32_t bytes, uint32_t out[
 /* The shutters' timing: closed (the two halves meet) this long after they start. */
 #define MOA_VS_SHUTTER_MEET 0.30f
 
+/* The hold-START menu of a network fight (moa_netplay_menu.c), for
+ * psx_mod_set_overlay_image: everything see-through except a small dark box
+ * in the bottom-left corner (title, rows, cursor, footer) and an optional
+ * one-line strip across the top. title NULL: no box. Rows at most 12, 26
+ * characters each; `dim` greys a row (NULL: none); `marked` gets a gold dot
+ * (-1: none). NULL until the font is loaded. */
+struct moa_screen_netmenu {
+    const char *strip;
+    const char *title;
+    const char *const *row;
+    const int *dim;
+    int count, cursor, marked;
+    const char *footer;
+};
+const uint32_t *moa_screen_render_netmenu(int win_w, int win_h, const struct moa_screen_netmenu *m,
+                                          int *out_w, int *out_h);
+
 #ifdef __cplusplus
 }
 #endif

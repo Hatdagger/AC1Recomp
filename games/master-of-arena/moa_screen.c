@@ -1815,3 +1815,71 @@ int moa_screen_emblem_from_tim(const uint8_t *d, uint32_t n, uint32_t out[64 * 6
 #undef RD32
 #undef RD16
 }
+
+/* ---- the hold-START menu of a network fight (moa_screen_render_netmenu) ------ */
+const uint32_t *moa_screen_render_netmenu(int win_w, int win_h, const struct moa_screen_netmenu *m,
+                                          int *out_w, int *out_h)
+{
+    static uint32_t *buf;
+    static int bw;
+    *out_w = *out_h = 0;
+    if (!s_font_ok || !m) return NULL;
+    int W = CONTENT_W;
+    if (win_w > 0 && win_h > 0) W = (int)((int64_t)CANVAS_H * win_w / win_h);
+    if (W < CONTENT_W) W = CONTENT_W;
+    if (W > MAX_W) W = MAX_W;
+    W &= ~1;
+    if (W != bw || !buf) {
+        free(buf);
+        buf = (uint32_t *)malloc((size_t)W * CANVAS_H * 4u);
+        bw = buf ? W : 0;
+        if (!buf) return NULL;
+    }
+    const int keep_w = s_w, keep_h = s_h;            /* borrow fill()/text(), as the tiles do */
+    s_w = W; s_h = CANVAS_H;
+    memset(buf, 0, (size_t)W * CANVAS_H * 4u);       /* see-through everywhere */
+    const uint32_t veil = 0xC40A0C10u, white = rgb(235, 238, 242), grey = rgb(150, 156, 168);
+    const uint32_t gold = rgb(255, 200, 80), idle = rgb(150, 178, 210), dimc = rgb(84, 90, 100);
+    if (m->strip && m->strip[0]) {
+        fill(buf, 0, 0, W, 46, veil);
+        fill(buf, 0, 46, W, 48, rgb(255, 200, 80) & 0xA0FFFFFFu);
+        char s[96];
+        snprintf(s, sizeof s, "%s", m->strip);
+        text(buf, NULL, s, W / 2, 23, text_width(s, 2) <= W - 40 ? 2 : 1, white);
+    }
+    if (m->title) {
+        int count = m->count < 0 ? 0 : m->count > 12 ? 12 : m->count;
+        int wide = text_width(m->title, 2);
+        for (int i = 0; i < count; i++) {
+            const int n = m->row[i] ? text_width(m->row[i], 2) + 56 : 0;
+            if (n > wide) wide = n;
+        }
+        if (m->footer && text_width(m->footer, 1) > wide) wide = text_width(m->footer, 1);
+        const int pad = 18, rh = 34;
+        const int bwid = wide + 2 * pad;
+        const int bh = pad + 32 + 14 + count * rh + 10 + (m->footer ? 22 : 0) + pad / 2;
+        const int x0 = 24, x1 = x0 + bwid, y1 = CANVAS_H - 24, y0 = y1 - bh;
+        fill(buf, x0, y0, x1, y1, veil);
+        frame_rect(buf, x0, y0, x1, y1, 2, rgb(70, 110, 160));
+        text_left(buf, m->title, x0 + pad, y0 + pad + 16, 2, white);
+        fill(buf, x0 + pad, y0 + pad + 38, x1 - pad, y0 + pad + 40, rgb(60, 80, 110));
+        int y = y0 + pad + 46 + rh / 2;
+        for (int i = 0; i < count; i++, y += rh) {
+            const int on = i == m->cursor, dim = m->dim && m->dim[i];
+            if (on) {
+                fill(buf, x0 + 6, y - rh / 2 + 2, x1 - 6, y + rh / 2 - 2, 0xB0203858u);
+                for (int k = 0; k < 8; k++)             /* the cursor: a gold marker */
+                    fill(buf, x0 + pad + k, y - (8 - k), x0 + pad + k + 1, y + (8 - k), gold);
+            }
+            if (m->row[i])
+                text_left(buf, m->row[i], x0 + pad + 24, y, 2, dim ? dimc : on ? white : idle);
+            if (i == m->marked)
+                fill(buf, x1 - pad - 10, y - 5, x1 - pad, y + 5, gold);
+        }
+        if (m->footer) text_left(buf, m->footer, x0 + pad, y1 - pad / 2 - 11, 1, grey);
+    }
+    s_w = keep_w; s_h = keep_h;
+    s_dirty = 1;
+    *out_w = W; *out_h = CANVAS_H;
+    return buf;
+}

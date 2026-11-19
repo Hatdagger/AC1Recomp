@@ -113,14 +113,30 @@ void psx_mod_set_loading_screen(const char *text, int percent);
  * its own). Its picture is psx_mod_set_loading_image, as offline. While it is
  * up in netplay the screen is redrawn about 30 times a second at most. */
 void psx_game_netplay_loading_screen(const char *text, int percent);
+/* Trusted game code: this PC's own pad in a netplay session, just before it is
+ * sent to the match (after the capture and the netplay pad transform). The
+ * filter may rewrite the buttons (active-low, 0xFFFF = none) and the sticks
+ * (0x80 centred). What it leaves is this player's input on every PC, so it is
+ * input, not simulation state: it may use host state (a menu the player has
+ * open, a held button's wall time). Main thread; it may run more than once per
+ * guest frame, so keep it a function of its input, the wall clock and the
+ * game's state. Not called for a spectator. NULL removes it. MoA's hold-START
+ * menu in network fights (games/master-of-arena/moa_netplay_menu.c). */
+typedef struct PSXGameNetPad {
+    uint32_t struct_size, seat, buttons, lx, ly, rx, ry;
+} PSXGameNetPad;
+typedef void (*PSXGameNetplayPadFilter)(PSXGameNetPad *pad);
+void psx_game_set_netplay_local_pad_filter(PSXGameNetplayPadFilter filter);
 /* Offline only. A picture for the loading screen, 0xAARRGGBB, stretched over
  * the whole window instead of the black screen and OSD text (the text passed
  * above is then only logged). Copied; NULL clears it. Render it at the
  * window's aspect from psx_mod_window_size. */
 void psx_mod_set_loading_image(const uint32_t *argb, int w, int h);
-/* Offline only. A picture drawn over the live game (the game keeps running
- * and showing underneath), 0xAARRGGBB, stretched over the whole window and
- * blended by its alpha: a menu over a dimmed game. Copied; NULL clears it.
+/* A picture drawn over the live game (the game keeps running and showing
+ * underneath), 0xAARRGGBB, stretched over the whole window and blended by its
+ * alpha: a menu over a dimmed game. Offline, and for trusted game code in a
+ * netplay session (presentation only: each peer its own picture, never the
+ * guest's). Copied; NULL clears it.
  * Below the runtime's own menus. Returns 1 when it is shown see-through; 0
  * when this renderer can't blend it (Vulkan) and nothing was set, so the
  * caller can fall back to psx_mod_set_loading_image. */

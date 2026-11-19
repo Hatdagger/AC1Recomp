@@ -6951,6 +6951,29 @@ extern "C" int debug_server_get_trigger_override(uint32_t* lt, uint32_t* rt);
  * title pad transform runs on its local pad before staging, so the
  * transformed pad (buttons, sticks, presented type, NeGcon I/II) is what every
  * peer receives and simulates. Each peer transforms only its own seat. */
+/* psx_game_set_netplay_local_pad_filter (mod_plugins.h): trusted game code's
+ * last word on this PC's own pad before it is staged for the match. */
+static PSXGameNetplayPadFilter s_np_local_pad_filter = nullptr;
+extern "C" void psx_game_set_netplay_local_pad_filter(PSXGameNetplayPadFilter filter) {
+    s_np_local_pad_filter = filter;
+}
+static void netplay_game_filter_local_pad(PsxNetPad* pad) {
+    if (!s_np_local_pad_filter || psx_netplay_is_spectator()) return;
+    const int seat = psx_netplay_local_slot();
+    if (seat < 0 || seat >= PSX_MAX_PLAYERS) return;
+    PSXGameNetPad p{};
+    p.struct_size = sizeof p;
+    p.seat = (uint32_t)seat;
+    p.buttons = pad->buttons;
+    p.lx = pad->lx; p.ly = pad->ly; p.rx = pad->rx; p.ry = pad->ry;
+    s_np_local_pad_filter(&p);
+    pad->buttons = (uint16_t)(p.buttons & 0xFFFFu);
+    pad->lx = (uint8_t)(p.lx > 255u ? 255u : p.lx);
+    pad->ly = (uint8_t)(p.ly > 255u ? 255u : p.ly);
+    pad->rx = (uint8_t)(p.rx > 255u ? 255u : p.rx);
+    pad->ry = (uint8_t)(p.ry > 255u ? 255u : p.ry);
+}
+
 static void netplay_transform_local_pad(PsxNetPad* pad, int override_active) {
     if (!PSXRecompV4::mod_runtime_netplay_input_active() ||
         psx_netplay_is_spectator())
@@ -7208,6 +7231,7 @@ static void netplay_barrier_admit(int override) {
                 capture_local_human_pad(&local);
             }
             netplay_transform_local_pad(&local, override >= 0);
+            netplay_game_filter_local_pad(&local);
             psx_netplay_stage_local(&local);
         } else if (psx_start_bisect_spin_log() && !g_headless) {
             /* Dense SDL-only samples while admit waits without capture. */

@@ -66,9 +66,9 @@
 #define QS_LOAD_IMAGE      0x8002C75Cu  /* boot exe */
 #define QS_MOVE_IMAGE      0x8002C81Cu
 #define QS_STORE_IMAGE     0x8002C7BCu  /* (rect, dst) */
-#define QS_HUB_CLUT_RECT   0x800D460Cu  /* (416,0,16,64): MENU_TIM 0 colours */
+#define QS_HUB_CLUT_RECT   0x800D460Cu  /* (416,0,16,64): the hub background tile */
 #define QS_HUB_CLUT_SAVE   0x8004ACA8u
-#define QS_HUB_ROW_RECT    0x800D4614u  /* (368,225,16,1) */
+#define QS_HUB_ROW_RECT    0x800D4614u  /* (368,225,16,1): its 16 colours */
 #define QS_HUB_ROW_SAVE    0x8004B6F0u
 #define QS_DRAW_SYNC       0x8002C4B0u
 #define QS_EMBLEM_RECT     0x800CC070u
@@ -172,6 +172,76 @@ static uint32_t call(struct CPUState *cpu, uint32_t fn, uint32_t a0, uint32_t a1
     return psx_mod_call_guest(cpu, fn, cpu->gpr[31], a0, a1, a2, 0);
 }
 
+/* The hub's background is a 64x64 4-bit tile + 16 colours (MENU_TIM 0,
+ * VRAM (416,0) and (368,225)) that every hub open puts back from two RAM
+ * copies (LoadImage at 0x800553AC / 0x800553BC). The title branch of the
+ * menu entry fills the copies from VRAM (StoreImage at 0x800A6EB4 /
+ * 0x800A6EC8); a direct start opens the hub before that, so they are still
+ * zero: black hub. As Rogue Arena does with its belt tiles, the copies are
+ * written here, from the disc's own tile, so nothing depends on reading VRAM
+ * back. Returns 0 if the disc data can't be read (the caller then stores
+ * from VRAM, as the title does). */
+#define QS_MENU_TIM_PATH   "GG/MS/MENU_TIM.T"
+#define QS_TILE_BYTES      2048u              /* 16 VRAM words x 64 rows */
+#define QS_TILE_CLUT_BYTES 32u
+static uint8_t qs_tile[QS_TILE_BYTES], qs_tile_clut[QS_TILE_CLUT_BYTES];
+static int qs_tile_ok = -1;                   /* -1 not read yet */
+
+static int qs_tile_read(void)
+{
+    uint32_t lba = 0, size = 0;
+    static uint8_t sec[2048];
+    if (!psx_mod_disc_file_extent(QS_MENU_TIM_PATH, &lba, &size) ||
+        !psx_mod_read_disc_sectors(lba, 1u, sec))
+        return 0;
+    /* Header: u16 count, then one u16 start sector per entry (entry n at 2 + 2n). */
+    const uint32_t a = (uint32_t)(sec[2] | sec[3] << 8), b = (uint32_t)(sec[4] | sec[5] << 8);
+    if (b <= a || b - a > 64u || (uint64_t)b * 2048u > size) return 0;
+    static uint8_t ent[64u * 2048u];
+    if (!psx_mod_read_disc_sectors(lba + a, b - a, ent)) return 0;
+    const uint32_t n = (b - a) * 2048u;
+    int got_pix = 0, got_clut = 0;
+#define RD32(o) ((uint32_t)ent[o] | (uint32_t)ent[(o) + 1] << 8 | \
+                 (uint32_t)ent[(o) + 2] << 16 | (uint32_t)ent[(o) + 3] << 24)
+#define RD16(o) ((uint32_t)ent[o] | (uint32_t)ent[(o) + 1] << 8)
+    uint32_t o = 0;
+    while (o + 20u <= n && RD32(o) == 0x10u) {       /* one TIM: id, flags, [CLUT], image */
+        const uint32_t flags = RD32(o + 4u);
+        o += 8u;
+        for (int part = (flags & 8u) ? 0 : 1; part < 2; part++) {
+            const uint32_t len = RD32(o);
+            if (len < 12u || o + len > n) return 0;
+            const uint32_t x = RD16(o + 4u), y = RD16(o + 6u), w = RD16(o + 8u), h = RD16(o + 10u);
+            if (part == 1 && x == 416u && y == 0u && w == 16u && h == 64u && len - 12u >= QS_TILE_BYTES) {
+                memcpy(qs_tile, ent + o + 12u, QS_TILE_BYTES);
+                got_pix = 1;
+            }
+            if (part == 0 && x == 368u && y == 225u && w == 16u && h == 1u && len - 12u >= QS_TILE_CLUT_BYTES) {
+                memcpy(qs_tile_clut, ent + o + 12u, QS_TILE_CLUT_BYTES);
+                got_clut = 1;
+            }
+            o += len & ~3u;
+        }
+    }
+#undef RD32
+#undef RD16
+    return got_pix && got_clut;
+}
+
+static int qs_hub_tile(void)
+{
+    if (qs_tile_ok < 0) qs_tile_ok = qs_tile_read();
+    if (!qs_tile_ok) { qs_log("moa.start.hub_tile_disc_failed"); return 0; }
+    for (uint32_t i = 0; i < QS_TILE_BYTES; i += 4u)
+        psx_mod_write_word(QS_HUB_CLUT_SAVE + i, (uint32_t)qs_tile[i] | (uint32_t)qs_tile[i + 1] << 8 |
+                                                 (uint32_t)qs_tile[i + 2] << 16 | (uint32_t)qs_tile[i + 3] << 24);
+    for (uint32_t i = 0; i < QS_TILE_CLUT_BYTES; i += 4u)
+        psx_mod_write_word(QS_HUB_ROW_SAVE + i, (uint32_t)qs_tile_clut[i] | (uint32_t)qs_tile_clut[i + 1] << 8 |
+                                                (uint32_t)qs_tile_clut[i + 2] << 16 | (uint32_t)qs_tile_clut[i + 3] << 24);
+    qs_log("moa.start.hub_tile");
+    return 1;
+}
+
 /* §3: what the title's SCENARIO row does before NEW/LOAD (0x800AB58C). */
 static void qs_scenario(struct CPUState *cpu)
 {
@@ -187,6 +257,13 @@ static void qs_scenario(struct CPUState *cpu)
     call(cpu, QS_PICTURE, ARCH_MENU_TIM, 0, 0);
     call(cpu, QS_PICTURE, ARCH_MENU_TIM, 1, 0);
     call(cpu, QS_PICTURE, ARCH_MENU_TIM, 4, 0);
+    /* The hub background's RAM copies (see qs_hub_tile), for LOAD GAME and
+     * NEW GAME alike. */
+    if (!qs_hub_tile()) {
+        call(cpu, QS_STORE_IMAGE, QS_HUB_CLUT_RECT, QS_HUB_CLUT_SAVE, 0);
+        call(cpu, QS_STORE_IMAGE, QS_HUB_ROW_RECT, QS_HUB_ROW_SAVE, 0);
+        call(cpu, QS_DRAW_SYNC, 0, 0, 0);
+    }
 }
 
 static int qs_read_save(uint8_t save[SAVE_BYTES])
@@ -242,15 +319,7 @@ static int qs_load(struct CPUState *cpu)
     static uint8_t save[SAVE_BYTES];
     if (!qs_read_save(save)) { qs_log("moa.start.load_bad_save"); return 0; }
     qs_repair_save(save);
-    qs_scenario(cpu);
-    /* The title branch of the menu entry keeps two strips of MENU_TIM 0's
-     * colours (StoreImage at 0x800A6EB4 / 0x800A6EC8) and the hub open puts
-     * them back (LoadImage at 0x800553AC / 0x800553BC). On a fresh boot the
-     * hub opened here before that store, so it put back zeros: black hub
-     * background. Store them now, from the MENU_TIM 0 just loaded. */
-    call(cpu, QS_STORE_IMAGE, QS_HUB_CLUT_RECT, QS_HUB_CLUT_SAVE, 0);
-    call(cpu, QS_STORE_IMAGE, QS_HUB_ROW_RECT, QS_HUB_ROW_SAVE, 0);
-    call(cpu, QS_DRAW_SYNC, 0, 0, 0);
+    qs_scenario(cpu);          /* includes the hub background (qs_hub_tile) */
     /* LOAD ('N' path), after its card read */
     for (size_t k = 0; k < sizeof k_unpack / sizeof k_unpack[0]; k++)
         for (uint32_t i = 0; i < k_unpack[k].bytes; i++)
@@ -298,7 +367,9 @@ static int qs_load(struct CPUState *cpu)
         call(cpu, QS_MOVE_IMAGE, QS_WEAPON_CLUT, 0, 494);
         call(cpu, QS_DRAW_SYNC, 0, 0, 0);
     }
-    /* LOAD's callback (0x800AC9E8): the hub. */
+    /* LOAD's callback (0x800AC9E8): the hub. The background copies once more,
+     * right before it reads them, in case anything since wrote over them. */
+    if (qs_tile_ok > 0) (void)qs_hub_tile();
     call(cpu, QS_HUB_OPEN, 0, 0, 0);
     qs_log("moa.start.load_hub");
     return 1;

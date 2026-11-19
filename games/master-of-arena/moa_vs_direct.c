@@ -316,6 +316,8 @@ void moa_vs_direct_reset(void)
  *   - When the menu reaches its input state (0x800B22D8, every load done),
  *     the state is switched straight to VS START (0x800B2D7C), the state the
  *     menu's own VS START row goes to. Both pads read idle until then.
+ *   - LOADING = FAST ends there (moa_np_room_fast_load_end): VS START's
+ *     loads and the fight's run at the drive's real speed.
  *   - VS START loads the units' graphics (filter below), then goes ahead with
  *     the game's own build check, stat blocks, stage, music and launch.
  *
@@ -541,6 +543,13 @@ static int vsd_np_vs_input_filter(struct CPUState *cpu, uint32_t address)
     const uint32_t task = cpu->gpr[4];
     if (task < 0x801B1CE8u || task >= 0x801D0AF8u) {   /* not a menu task: leave it */
         psx_mod_counter_add("moa.vsd.net_input_not_task", 1);
+        return 0;
+    }
+    /* LOADING = FAST covers the boot and the menu's setup; VS START's loads
+     * and the fight's run at the drive's real speed. A read still going:
+     * the menu's input runs (pads idle) and this is tried next frame. */
+    if (!moa_np_room_fast_load_end()) {
+        psx_mod_counter_add("moa.vsd.net_fast_off_wait", 1);
         return 0;
     }
     psx_mod_write_word(task + VSD_TASK_STATE, VSD_MENU_VS_START);

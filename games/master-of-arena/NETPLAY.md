@@ -20,8 +20,8 @@ Both players need the same build and the same disc.
 3. The host sets MATCH SETTINGS: stage (Green Silo by default, or RANDOM),
    time limit (the game's 2:00 / 5:00 / none), rounds (single, best of 3,
    best of 5), FULL GARAGE, and loading (FAST: both PCs read the disc at the
-   fast speed until the first fight is running, then at the drive's real
-   speed). The guest sees them as they change.
+   fast speed for the boot, then at the drive's real speed from VS START
+   on). The guest sees them as they change.
 4. Both pilots press READY. After a three-second count the match starts by
    itself: no logos, title or menus; a black screen covers the start until
    the game's own loading picture. Between rounds the game's CONTINUE? answers itself and the next
@@ -58,8 +58,8 @@ the set's rounds (the versus win table in the exe's data) and the return to
 the room. The room's options travel in
 PSX_NET_GAME_OPTS, which the host settles into the START message
 (`room=1;stage;time;rounds;garage;fastdisc`); `fastdisc` sets both drives'
-speed when the session starts (main.cpp), and `moa_np_room_disc_frame` puts
-them back to real speed from a guest hook once the first fight runs
+speed when the session starts (main.cpp), and `moa_np_room_fast_load_end`
+puts them back to real speed from a guest hook just before VS START
 (`psx_game_set_disc_speed_in_hook`, the same instant on both PCs). Each pilot's AC is the only save on a
 match-only card (PSX_MEMCARD1_NETPLAY); READY is that card's share bit.
 

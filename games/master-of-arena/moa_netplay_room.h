@@ -30,8 +30,11 @@ void moa_np_room_link_start(void);
 /* Every frame of a fight (the link engine's packet). */
 void moa_np_room_fight_frame(void);
 
-/* Every frame of a fight, from the same hook: LOADING = FAST ends once the
- * first fight is running (the drive back at its real speed). */
+/* LOADING = FAST ends (the drive back at its real speed). Guest hooks only.
+ * 1 = done (or nothing to do), 0 = a read is in progress: try next frame.
+ * The direct start calls it just before VS START (moa_vs_direct.c); the
+ * fight's packet calls moa_np_room_disc_frame as a fallback. */
+int moa_np_room_fast_load_end(void);
 void moa_np_room_disc_frame(void);
 
 /* The versus menu opens again after a match. */

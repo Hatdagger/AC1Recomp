@@ -156,6 +156,7 @@ static void moa_link_wait_entry(struct CPUState *cpu, uint32_t address)
         spu_output_mono_request(psx_netplay_local_slot() == 1 ? 1 : 0, 30);
         /* The versus room: the set is followed. */
         moa_np_room_fight_frame();
+        moa_np_room_disc_frame();
     } else if (ra == MOA_RA_ROLE_WAIT) {
         /* Role negotiation: we offered 'M'aster, the other side 'S'lave. The
          * local player is then the player-1 block, the remote the player-2

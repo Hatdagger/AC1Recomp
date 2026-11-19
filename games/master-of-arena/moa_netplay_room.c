@@ -272,6 +272,29 @@ void moa_np_room_fight_frame(void)
     if (R.decided && now - R.decided_ms >= NP_LEAVE_AFTER_MS) np_leave(1);
 }
 
+/* LOADING = FAST (fastdisc=N): the fast drive covers the start of the set,
+ * from boot through the first fight's load, as master's Fast Loading and
+ * Rogue Arena do for their first load; then the drive goes back to its real
+ * speed for the rest of the session. Called from the link engine's packet
+ * (a guest hook), so the switch lands at the same emulated instant on both
+ * PCs and rollback replays it; every condition is guest-visible: the drive's
+ * speed (in the snapshots), the settled options (the same on every PC) and
+ * the match struct. A read in progress refuses it: tried next frame. */
+#define NP_MATCH_END     0x80098E30u  /* match +0x10: 0 while fighting */
+#define NP_MATCH_STEPS   0x80098E32u  /* match +0x12: steps of this round */
+#define NP_FAST_UNTIL    60u          /* steps into the first fight */
+void moa_np_room_disc_frame(void)
+{
+    if (psx_game_disc_speed() == 1) return;     /* real speed already (or ORIGINAL) */
+    const char *o = getenv("PSX_NET_GAME_OPTS");
+    if (!o || np_opt(o, "room", 0) != 1) return;
+    if (psx_mod_read_half(NP_MATCH_END) != 0 ||
+        psx_mod_read_half(NP_MATCH_STEPS) < NP_FAST_UNTIL)
+        return;
+    if (psx_game_set_disc_speed_in_hook(1u, 0u))
+        psx_mod_counter_add("moa.room.fast_load_off", 1);
+}
+
 void moa_np_room_menu_back(void)
 {
     if (!R.active || R.left || !R.fight_seen) return;

@@ -960,6 +960,21 @@ int psx_mod_set_disc_speed_live(uint32_t divisor,
                                 uint32_t instant_max_per_frame);
 
 /*
+ * Trusted game code: the same change, made from a guest hook (a game
+ * function entry or filter), also in netplay: a guest hook runs at the same
+ * emulated instant on every peer and again when rollback replays the frame,
+ * and the drive's speed is part of every snapshot. Returns 0 and changes
+ * nothing while a data read is in progress (call again on a later frame).
+ * Never call it from host code (vblank plugins, the launcher, timers): there
+ * it would land at a different instant on each peer. MoA's versus room: the
+ * fast drive for the start of a match, then real speed (moa_netplay_room.c).
+ */
+int psx_game_set_disc_speed_in_hook(uint32_t divisor,
+                                    uint32_t instant_max_per_frame);
+/* The running drive's speed divisor: 0 bounded instant, 1 real timing. */
+int psx_game_disc_speed(void);
+
+/*
  * Turn the title's [[draw_distance.clamp]] sites on or off for this session
  * (draw_distance.h): a far primitive the game would drop past the end of its
  * ordering table is kept in the farthest slot instead. Returns 1 when the

@@ -127,6 +127,9 @@ int cdrom_load_in_progress(void);
 /* Physical non-XA data-read command state, without the logical load gap
  * bridge used by cdrom_load_in_progress(). Diagnostics only. */
 int cdrom_data_read_active(void);
+/* The running drive's speed divisor (0 = bounded instant, 1 = real timing,
+ * N = N times faster). Part of every snapshot. */
+int cdrom_get_speed(void);
 
 /* boot_state / netplay digest — full controller FSM (sector FIFOs included). */
 uint32_t cdrom_snapshot_bytes(void);

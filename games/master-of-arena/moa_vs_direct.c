@@ -16,6 +16,11 @@
 
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <time.h>
+#endif
 
 /* ---- the game (menu module, FDAT 206) ----------------------------------- */
 
@@ -293,26 +298,39 @@ void moa_vs_direct_reset(void)
     moa_vs_direct_clear();
 }
 
+
 /* ---- netplay: from boot straight to the match ---------------------------------
  *
  * A netplay match boots on both PCs in lockstep, so nothing can be fast
- * forwarded: every logo, title and menu step costs real time. Instead, the
- * first title of a session becomes the versus menu (as offline), each
- * player's unit is the first Master of Arena save on that player's match
- * card (slot 1 = player 1 / host, slot 2 = player 2 / guest; the launcher
- * puts the chosen AC there), VS START is pressed for them and the units'
- * graphics load as offline. The link engine's loading screen follows.
+ * forwarded. The first title of a session becomes the versus menu's setup
+ * (as offline), each player's unit is the first Master of Arena save on that
+ * player's match card (slot 1 = player 1 / host, slot 2 = player 2 / guest;
+ * the launcher puts the chosen AC there), and the match starts from there.
+ *
+ * No menu is ever on screen and nothing presses its buttons (2026-11-19):
+ *   - A black cover goes up at the title (presentation only, each PC its
+ *     own) and comes down at the exe's loading screen before the link engine.
+ *   - The versus menu's setup still runs behind it: it loads what the match
+ *     needs besides the ACs (docs/mapping/boot-loads.md §9, "VS without
+ *     menus": the saved VRAM blocks, sound bank, menu pictures, model slots).
+ *   - When the menu reaches its input state (0x800B22D8, every load done),
+ *     the state is switched straight to VS START (0x800B2D7C), the state the
+ *     menu's own VS START row goes to. Both pads read idle until then.
+ *   - VS START loads the units' graphics (filter below), then goes ahead with
+ *     the game's own build check, stat blocks, stage, music and launch.
  *
  * Both peers must do exactly the same thing, also when rollback runs frames
  * again. So: the cards are the session's synced match cards (identical on
  * both PCs), and the progress lives in guest memory, not in host statics:
  * 8 bytes of the link struct's send packet (0x80043C70 + 944), which only the
  * link engine uses and which is idle from boot until that engine starts.
- * They are cleared again before VS START goes ahead.
+ * They are cleared again before VS START goes ahead. The cover is the only
+ * host state, and it never reaches the simulation.
  *
  * A player whose card holds no save keeps the versus menu's default AC; with
  * no save on either card the title opens as before (players use the menu).
- * After the match the game returns to the versus menu as usual.
+ * If the menu never reaches its input state, the start gives up: the cover
+ * comes down and the players see the versus menu.
  */
 #define VSD_NP_STATE        (0x80043C70u + 944u)  /* 8 bytes, see above */
 #define VSD_NP_MAGIC0       0x56u              /* 'V' */
@@ -321,19 +339,21 @@ void moa_vs_direct_reset(void)
 #define VSD_TITLE_FLAG      0x8003EA7Au        /* 1 until the first title has opened */
 #define VSD_MENU_VS_START   0x800B2D7Cu        /* versus menu: VS START state */
 #define VSD_SIG_VS_START    0x27BDFFD0u
-#define VSD_INPUT_A         0x800639A4u        /* menu: controller sampling */
+#define VSD_MENU_VS_INPUT   0x800B22D8u        /* versus menu: input state (menus-screens.md §2f) */
+#define VSD_TASK_STATE      0x78u              /* a menu task's state routine (menus-screens.md §1) */
+#define VSD_INPUT_A         0x800639A4u        /* menu: controller sampling, once a frame */
 #define VSD_SIG_INPUT_A     0x27BDFFE8u
 #define VSD_INPUT_B         0x800AF590u
 #define VSD_SIG_INPUT_B     0x27BDFFD0u
 #define VSD_PAD1            0x800458D8u        /* port 1: status, id, buttons (low = held) */
 #define VSD_PAD2            0x800458FAu
-#define VSD_PAD_UP          0x0010u
-#define VSD_PAD_DOWN        0x0040u
-#define VSD_PAD_X           0x4000u
-#define VSD_VS_ROW          0x801B2038u        /* versus menu cursor: 0 = VS START */
-#define VSD_NP_GIVE_UP      4000u              /* menu never answered: hand it over */
+#define VSD_NP_GIVE_UP      3600u              /* samples without the input state: give up */
+#define VSD_NP_START_AGAIN  600u               /* samples without VS START running: set it again */
+#define VSD_EXE_LOADING     0x80012348u        /* exe: loading screen before an engine */
+#define VSD_SIG_EXE_LOADING 0x27BDFF60u        /* addiu sp,sp,-160 */
+#define VSD_COVER_MAX_MS    30000u             /* the cover never stays longer than this */
 
-enum { NP_PHASE_DOWN = 0, NP_PHASE_UP, NP_PHASE_PRESS, NP_PHASE_LOADING };
+enum { NP_PHASE_WAIT = 0, NP_PHASE_LOADING };
 
 struct vsd_np {                                /* the 8 guest bytes */
     uint8_t phase, step;
@@ -362,6 +382,47 @@ static void vsd_np_put(const struct vsd_np *n)
     psx_mod_write_half(VSD_NP_STATE + 6u, n->frames);
 }
 
+/* ---- the cover (host state, presentation only) ---- */
+
+static int vsd_cover_up;
+static uint64_t vsd_cover_ms;
+
+static uint64_t vsd_now_ms(void)
+{
+#ifdef _WIN32
+    return (uint64_t)GetTickCount64();
+#else
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+#endif
+}
+
+static void vsd_cover(int on, const char *why)
+{
+    static const uint32_t k_black[4 * 4] = {
+        0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u,
+        0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u,
+        0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u };
+    if (on) {
+        if (!vsd_cover_up) vsd_cover_ms = vsd_now_ms();
+        vsd_cover_up = 1;
+        psx_mod_set_loading_image(k_black, 4, 4);  /* a picture hides the text */
+        psx_game_netplay_loading_screen("LOADING", -1);
+    } else {
+        if (!vsd_cover_up) return;
+        vsd_cover_up = 0;
+        psx_game_netplay_loading_screen(NULL, 0);
+    }
+    psx_mod_counter_add(why, 1);
+}
+
+static void vsd_cover_check(void)
+{
+    if (vsd_cover_up && vsd_now_ms() - vsd_cover_ms > VSD_COVER_MAX_MS)
+        vsd_cover(0, "moa.vsd.net_cover_timeout");
+}
+
 static void vsd_np_end(const char *why)
 {
     for (unsigned i = 0; i < 8; i++) psx_mod_write_byte(VSD_NP_STATE + i, 0);
@@ -388,13 +449,18 @@ static void vsd_np_upload_emblem(struct CPUState *cpu, unsigned player)
     if (vsd_np_card_unit(player, &u)) vsd_upload_emblem_data(cpu, u.clut, u.emblem);
 }
 
+static int vsd_np_menu_in_memory(void)
+{
+    return psx_mod_read_word(VSD_MENU_VERSUS) == VSD_SIG_MENU_VERSUS &&
+           psx_mod_read_word(VSD_FADE) == VSD_SIG_FADE &&
+           psx_mod_read_word(VSD_MENU_VS_START) == VSD_SIG_VS_START;
+}
+
 static int vsd_np_title_filter(struct CPUState *cpu, uint32_t address)
 {
     if (psx_mod_read_word(address) != VSD_SIG_TITLE_OPEN ||
         psx_mod_read_byte(VSD_TITLE_FLAG) != 1u ||          /* only the boot's title */
-        psx_mod_read_word(VSD_MENU_VERSUS) != VSD_SIG_MENU_VERSUS ||
-        psx_mod_read_word(VSD_FADE) != VSD_SIG_FADE ||
-        psx_mod_read_word(VSD_MENU_VS_START) != VSD_SIG_VS_START)
+        !vsd_np_menu_in_memory())
         return 0;
     /* A new session: the versus room forgets the last match (before the
      * versus menu's setup below runs its hooks). */
@@ -406,6 +472,7 @@ static int vsd_np_title_filter(struct CPUState *cpu, uint32_t address)
         psx_mod_counter_add("moa.vsd.net_no_saves", 1);
         return 0;                                  /* the title, as before */
     }
+    vsd_cover(1, "moa.vsd.net_cover_up");
     const uint32_t ra = cpu->gpr[31];
     (void)psx_mod_call_guest(cpu, VSD_SCREEN_RESET, ra, 0, 0, 0, 0);
     (void)psx_mod_call_guest(cpu, VSD_GARAGE_DEFAULT, ra, 0, 0, 0, 0);
@@ -421,61 +488,69 @@ static int vsd_np_title_filter(struct CPUState *cpu, uint32_t address)
     /* The launcher's versus room: its time limit (guest memory, before VS
      * START compiles the players) and the pilots' names (moa_netplay_room.c). */
     moa_np_room_title();
-    const struct vsd_np n = { NP_PHASE_DOWN, 0, 0, 0 };
+    const struct vsd_np n = { NP_PHASE_WAIT, 0, 0, 0 };
     vsd_np_put(&n);
     psx_mod_counter_add(have[0] && have[1] ? "moa.vsd.net_boot" : "moa.vsd.net_boot_one_card", 1);
     return 1;                                      /* the title is not opened */
 }
 
-/* The versus menu's controller sampling: while the start is ours, both pads
- * read as the script says (player 1) or idle (player 2). The cursor is moved
- * down and back first: its answer shows the menu takes input (the first
- * press after it opens is otherwise lost), then X on VS START. */
+/* The menu's controller sampling, once a frame: while the start is ours,
+ * both pads read idle (nothing on the menu moves), and the start's clocks
+ * run. */
 static void vsd_np_input_entry(struct CPUState *cpu, uint32_t address)
 {
     (void)cpu;
+    vsd_cover_check();
     struct vsd_np n;
     if (!vsd_np_get(&n)) return;
     const uint32_t word = psx_mod_read_word(address);
     if (word != VSD_SIG_INPUT_A && word != VSD_SIG_INPUT_B) return;
-    if (psx_mod_read_word(VSD_MENU_VS_START) != VSD_SIG_VS_START) {   /* not the menu */
+    if (!vsd_np_menu_in_memory()) {                   /* not the menu */
         vsd_np_end("moa.vsd.net_left_menu");
         return;
     }
-    uint16_t press = 0;
-    const uint32_t t = n.t;
-    switch (n.phase) {
-    case NP_PHASE_DOWN:
-    case NP_PHASE_UP: {
-        const unsigned want = n.phase == NP_PHASE_DOWN ? 1u : 0u;
-        const unsigned row = psx_mod_read_byte(VSD_VS_ROW);
-        if (row == want && t >= 20u) { n.phase++; n.t = 0; break; }
-        if (t > VSD_NP_GIVE_UP) { vsd_np_end("moa.vsd.net_menu_timeout"); return; }
-        if (row != want && (t % 30u) < 4u) press = row < want ? VSD_PAD_DOWN : VSD_PAD_UP;
-        n.t++;
-        break;
+    if (n.phase == NP_PHASE_WAIT && n.t > VSD_NP_GIVE_UP) {
+        /* The menu never got to its input state: hand it to the players. */
+        vsd_np_end("moa.vsd.net_menu_timeout");
+        vsd_cover(0, "moa.vsd.net_cover_gave_up");
+        return;
     }
-    case NP_PHASE_PRESS:
-        if (t < 4u) press = VSD_PAD_X;
-        if (t >= 12u) { n.phase = NP_PHASE_LOADING; n.t = 0; break; }
-        n.t++;
-        break;
-    default:                                       /* VS START runs (filter below) */
-        if (n.step == 0 && t > 600u) {             /* it never did: press again */
-            n.phase = NP_PHASE_PRESS; n.t = 0;
-            psx_mod_counter_add("moa.vsd.net_press_again", 1);
-            break;
-        }
-        if (n.t < 0xFFFFu) n.t++;
-        break;
+    if (n.phase == NP_PHASE_LOADING && n.step == 0 && n.t > VSD_NP_START_AGAIN) {
+        n.phase = NP_PHASE_WAIT;                   /* VS START never ran: set it again */
+        n.t = 0;
+        psx_mod_counter_add("moa.vsd.net_start_again", 1);
     }
+    if (n.t < 0xFFFFu) n.t++;
     vsd_np_put(&n);
     psx_mod_write_byte(VSD_PAD1, 0);
     psx_mod_write_byte(VSD_PAD1 + 1u, 0x41);
-    psx_mod_write_half(VSD_PAD1 + 2u, (uint16_t)~press);
+    psx_mod_write_half(VSD_PAD1 + 2u, 0xFFFFu);
     psx_mod_write_byte(VSD_PAD2, 0);
     psx_mod_write_byte(VSD_PAD2 + 1u, 0x41);
     psx_mod_write_half(VSD_PAD2 + 2u, 0xFFFFu);
+}
+
+/* The versus menu's input state (a0 = the menu's task): every load of its
+ * opening is done. Instead of reading the pads, go to VS START, as the
+ * menu's own VS START row does. */
+static int vsd_np_vs_input_filter(struct CPUState *cpu, uint32_t address)
+{
+    (void)address;
+    struct vsd_np n;
+    if (!vsd_np_get(&n) || n.phase != NP_PHASE_WAIT || !vsd_np_menu_in_memory()) return 0;
+    const uint32_t task = cpu->gpr[4];
+    if (task < 0x801B1CE8u || task >= 0x801D0AF8u) {   /* not a menu task: leave it */
+        psx_mod_counter_add("moa.vsd.net_input_not_task", 1);
+        return 0;
+    }
+    psx_mod_write_word(task + VSD_TASK_STATE, VSD_MENU_VS_START);
+    n.phase = NP_PHASE_LOADING;
+    n.step = 0;
+    n.t = 0;
+    n.frames = 0;
+    vsd_np_put(&n);
+    psx_mod_counter_add("moa.vsd.net_to_vs_start", 1);
+    return 1;                                      /* no input this frame */
 }
 
 /* VS START, held back while the units' graphics load; then it goes ahead
@@ -484,10 +559,9 @@ static void vsd_np_input_entry(struct CPUState *cpu, uint32_t address)
 static int vsd_np_vs_start_filter(struct CPUState *cpu, uint32_t address)
 {
     struct vsd_np n;
-    if (!vsd_np_get(&n) || n.phase < NP_PHASE_PRESS ||
+    if (!vsd_np_get(&n) || n.phase != NP_PHASE_LOADING ||
         psx_mod_read_word(address) != VSD_SIG_VS_START)
         return 0;
-    if (n.phase == NP_PHASE_PRESS) n.phase = NP_PHASE_LOADING;
     unsigned step = n.step;
     uint32_t frames = n.frames;
     int timed_out = 0;
@@ -503,11 +577,22 @@ static int vsd_np_vs_start_filter(struct CPUState *cpu, uint32_t address)
     return 0;                                      /* VS START goes ahead */
 }
 
+/* The exe's loading screen before an engine: the game's own pictures take
+ * over from the cover (the exe is always in memory). */
+static void vsd_np_exe_loading_entry(struct CPUState *cpu, uint32_t address)
+{
+    (void)cpu;
+    if (psx_mod_read_word(address) != VSD_SIG_EXE_LOADING) return;
+    vsd_cover(0, "moa.vsd.net_cover_down");
+}
+
 PSX_MOD_CONSTRUCTOR(moa_vs_direct_register)
 {
     (void)psx_game_register_offline_function_filter(VSD_TITLE_OPEN, vsd_title_filter);
     (void)psx_game_register_netplay_function_filter(VSD_TITLE_OPEN, vsd_np_title_filter);
     (void)psx_game_register_netplay_function_entry(VSD_INPUT_A, vsd_np_input_entry);
     (void)psx_game_register_netplay_function_entry(VSD_INPUT_B, vsd_np_input_entry);
+    (void)psx_game_register_netplay_function_filter(VSD_MENU_VS_INPUT, vsd_np_vs_input_filter);
     (void)psx_game_register_netplay_function_filter(VSD_MENU_VS_START, vsd_np_vs_start_filter);
+    (void)psx_game_register_netplay_function_entry(VSD_EXE_LOADING, vsd_np_exe_loading_entry);
 }

@@ -20,10 +20,11 @@ Both players need the same build and the same disc.
 3. The host sets MATCH SETTINGS: stage (Green Silo by default, or RANDOM),
    time limit (the game's 2:00 / 5:00 / none), rounds (single, best of 3,
    best of 5), FULL GARAGE, and loading (FAST: both PCs read the disc at the
-   fast speed for the whole set). The guest sees them as they change.
+   fast speed until the first fight is running, then at the drive's real
+   speed). The guest sees them as they change.
 4. Both pilots press READY. After a three-second count the match starts by
-   itself: no logos, title or menus; a VS screen shows both ACs while both
-   PCs load. Between rounds the game's CONTINUE? answers itself and the next
+   itself: no logos, title or menus; a black screen covers the start until
+   the game's own loading picture. Between rounds the game's CONTINUE? answers itself and the next
    round loads. When a pilot has won the set, both go back to the room,
    which shows the result; READY again for another set.
 5. Each player sees and hears their own side. There is no pause: holding
@@ -53,18 +54,21 @@ Offline, VS Mode is the stock split-screen versus on controllers 1 and 2.
 `moa_netplay_room.c` brings the room's choices into the match: the time
 limit before VS START, the stage when the link engine starts (both are guest
 memory, written by hooks the game's own code runs, so rollback replays them),
-the set's rounds (the versus win table in the exe's data), the VS screen
-(host-side only) and the return to the room. The room's options travel in
+the set's rounds (the versus win table in the exe's data) and the return to
+the room. The room's options travel in
 PSX_NET_GAME_OPTS, which the host settles into the START message
 (`room=1;stage;time;rounds;garage;fastdisc`); `fastdisc` sets both drives'
-speed for the session (main.cpp). Each pilot's AC is the only save on a
+speed when the session starts (main.cpp), and `moa_np_room_disc_frame` puts
+them back to real speed from a guest hook once the first fight runs
+(`psx_game_set_disc_speed_in_hook`, the same instant on both PCs). Each pilot's AC is the only save on a
 match-only card (PSX_MEMCARD1_NETPLAY); READY is that card's share bit.
 
 `moa_vs_direct.c` (netplay section) starts the first match without menus:
-the boot's title is replaced by the versus menu, both cards' first saves are
-written into the versus staging area, the cursor is moved and VS START
-pressed for the players, and the units' graphics load while VS START is held
-back. A match boots in lockstep and cannot be fast forwarded, so this is what
+the boot's title is replaced by the versus menu's setup behind a black
+cover, both cards' first saves are written into the versus staging area, and
+when the menu reaches its input state that state is switched straight to VS
+START (nothing presses its buttons); the units' graphics load while VS START
+is held back, then the game's own VS START launches the link engine. A match boots in lockstep and cannot be fast forwarded, so this is what
 saves the waiting. Its progress lives in 8 bytes of guest memory (the link
 struct's send packet, idle until the link engine starts) so rollback can
 rewind it; the cards are the synced match cards, identical on both PCs.

@@ -419,7 +419,7 @@ static int vsd_np_title_filter(struct CPUState *cpu, uint32_t address)
     for (unsigned p = 0; p < 2; p++)
         if (have[p]) moa_vs_direct_set_unit(p, &unit[p]);
     /* The launcher's versus room: its time limit (guest memory, before VS
-     * START compiles the players) and the VS screen (moa_netplay_room.c). */
+     * START compiles the players) and the pilots' names (moa_netplay_room.c). */
     moa_np_room_title();
     const struct vsd_np n = { NP_PHASE_DOWN, 0, 0, 0 };
     vsd_np_put(&n);
@@ -442,7 +442,6 @@ static void vsd_np_input_entry(struct CPUState *cpu, uint32_t address)
         vsd_np_end("moa.vsd.net_left_menu");
         return;
     }
-    moa_np_room_tick();
     uint16_t press = 0;
     const uint32_t t = n.t;
     switch (n.phase) {
@@ -489,7 +488,6 @@ static int vsd_np_vs_start_filter(struct CPUState *cpu, uint32_t address)
         psx_mod_read_word(address) != VSD_SIG_VS_START)
         return 0;
     if (n.phase == NP_PHASE_PRESS) n.phase = NP_PHASE_LOADING;
-    moa_np_room_tick();
     unsigned step = n.step;
     uint32_t frames = n.frames;
     int timed_out = 0;

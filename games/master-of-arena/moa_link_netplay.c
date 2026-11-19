@@ -154,7 +154,7 @@ static void moa_link_wait_entry(struct CPUState *cpu, uint32_t address)
         /* Each peer hears its own player's channel (see "Sound for two
          * listeners"); renewed every frame, lapses after the match. */
         spu_output_mono_request(psx_netplay_local_slot() == 1 ? 1 : 0, 30);
-        /* The versus room: the VS screen shuts, the set is followed. */
+        /* The versus room: the set is followed. */
         moa_np_room_fight_frame();
     } else if (ra == MOA_RA_ROLE_WAIT) {
         /* Role negotiation: we offered 'M'aster, the other side 'S'lave. The

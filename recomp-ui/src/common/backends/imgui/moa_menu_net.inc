@@ -100,6 +100,36 @@ static bool address_usable(const char* ip) {
            std::strcmp(ip, "Detecting...") != 0;
 }
 
+/* HIDE MY IP (the room list): this PC's own addresses, local and public, stay
+ * off the network pages and the room, for streaming or screenshots. Kept
+ * between runs. */
+static bool g_hide_ip = false, g_hide_ip_loaded = false;
+
+static std::string hide_ip_path() { return asset("saves/netplay/hide-ip.txt"); }
+
+static bool hide_ip() {
+    if (!g_hide_ip_loaded) {
+        g_hide_ip_loaded = true;
+        if (FILE* f = std::fopen(hide_ip_path().c_str(), "rb")) {
+            g_hide_ip = std::fgetc(f) == '1';
+            std::fclose(f);
+        }
+    }
+    return g_hide_ip;
+}
+
+static void set_hide_ip(bool on) {
+    g_hide_ip = on;
+    g_hide_ip_loaded = true;
+    std::error_code ec;
+    std::filesystem::create_directories(
+        std::filesystem::u8path(hide_ip_path()).parent_path(), ec);
+    if (FILE* f = std::fopen(hide_ip_path().c_str(), "wb")) {
+        std::fputs(on ? "1\n" : "0\n", f);
+        std::fclose(f);
+    }
+}
+
 static const char* disc_complaint(const LauncherModel* m) {
     return m->verify.netplay_detail[0] ? m->verify.netplay_detail
                                        : "The game disc is needed for network play.";
@@ -167,7 +197,8 @@ static void draw_net_mode(LauncherModel* m, const Gfx& g, const Input& in) {
         y += 19.0f;
         text(g, 324.0f, y, 11.0f, kDim, "ADDRESS");
         text(g, 424.0f, y, 11.0f, kText,
-             address_usable(m->netplay_host_ip) ? m->netplay_host_ip : "NOT FOUND");
+             hide_ip() ? "HIDDEN"
+             : address_usable(m->netplay_host_ip) ? m->netplay_host_ip : "NOT FOUND");
         y += 19.0f;
         text(g, 324.0f, y, 11.0f, kDim, "MEMORY CARD");
         std::snprintf(buf, sizeof buf, "%u / 15 BLOCKS",
@@ -292,6 +323,13 @@ static void host_room(LauncherModel* m) {
     m->netplay_lobby_max_slots = max_slots;
     m->netplay_local_room = m->netplay_lan_only || !np_connected(m);
     m->netplay_status[0] = '\0';
+    /* The public IP for the room's address lines, asked once now (it can take
+     * up to a second) rather than on the room's first frame. A lookup that
+     * failed last time is tried again. */
+    if (m->netplay_local_room && !hide_ip()) {
+        if (!address_usable(m->netplay_public_ip)) m->netplay_public_ip_resolved = false;
+        np_ensure_public_ip(m);
+    }
 }
 
 /* The stock Host Lobby dialog, for a room name or a password. */
@@ -651,12 +689,13 @@ static void draw_net_rooms(LauncherModel* m, const Gfx& g, const Input& in) {
 
     /* One cursor: HOST A ROOM, the rooms, the recent addresses, then the
      * fixed rows. */
-    enum Extra { EX_DIRECT = 0, EX_OPTIONS, EX_CLASSIC, EX__COUNT };
+    enum Extra { EX_DIRECT = 0, EX_OPTIONS, EX_CLASSIC, EX_HIDE_IP, EX__COUNT };
     int extras[EX__COUNT];
     int ne = 0;
     if (lan) extras[ne++] = EX_DIRECT;
     extras[ne++] = EX_OPTIONS;
     extras[ne++] = EX_CLASSIC;
+    extras[ne++] = EX_HIDE_IP;
     const int nr = (int)rooms.size();
     const int nq = (int)recents.size();
     const int nl = 1 + nr + nq;
@@ -715,12 +754,13 @@ static void draw_net_rooms(LauncherModel* m, const Gfx& g, const Input& in) {
 
     panel(g, 24.0f, 298.0f, 340.0f, 118.0f, "OTHER");
     static const char* const extra_label[EX__COUNT] = {
-        "JOIN BY ADDRESS", "HOST WITH OPTIONS", "FULL NETWORK PAGE" };
+        "JOIN BY ADDRESS", "HOST WITH OPTIONS", "FULL NETWORK PAGE", "HIDE MY IP" };
     for (int i = 0; i < ne; ++i) {
         bool hovered = false;
+        const bool toggle = extras[i] == EX_HIDE_IP;
         if (row(g, 25.0f, 306.0f + kRowH * i, 338.0f, nl + i == cur,
-                extras[i] == EX_CLASSIC || disc, extra_label[extras[i]], ">",
-                false, false, &hovered))
+                extras[i] == EX_CLASSIC || toggle || disc, extra_label[extras[i]],
+                toggle ? nullptr : ">", toggle, toggle && hide_ip(), &hovered))
             clicked = nl + i;
         if (hover_moved(hovered)) cur = nl + i;
     }
@@ -778,6 +818,10 @@ static void draw_net_rooms(LauncherModel* m, const Gfx& g, const Input& in) {
              : ex == EX_OPTIONS
                  ? "Host with a room name or a password of your choosing. "
                    "Needs a keyboard."
+             : ex == EX_HIDE_IP
+                 ? "Keeps your local and public IP off these pages and out "
+                   "of your room, for streaming or screenshots. Pilots on "
+                   "your network still see your room in their list."
                  : "The full network page: match settings, chat and the "
                    "rest. Needs a mouse or a keyboard.", 208.0f);
     }
@@ -792,7 +836,7 @@ static void draw_net_rooms(LauncherModel* m, const Gfx& g, const Input& in) {
         text(g, 394.0f, 380.0f, 10.0f, kDim, buf);
         std::snprintf(buf, sizeof buf, "ROOMS %02d", nr);
         text_right(g, 604.0f, 396.0f, 10.0f, kDim, buf);
-        if (lan && address_usable(m->netplay_host_ip)) {
+        if (lan && !hide_ip() && address_usable(m->netplay_host_ip)) {
             std::snprintf(buf, sizeof buf, "ADDRESS  %s", m->netplay_host_ip);
             text(g, 394.0f, 396.0f, 10.0f, kDim, buf);
         }
@@ -827,9 +871,16 @@ static void draw_net_rooms(LauncherModel* m, const Gfx& g, const Input& in) {
             switch (extras[cur - nl]) {
                 case EX_DIRECT:  direct_open(m); break;
                 case EX_OPTIONS: host_room_dialog(m); break;
+                case EX_HIDE_IP:
+                    set_hide_ip(!hide_ip());
+                    note(hide_ip() ? "YOUR IP IS HIDDEN" : "YOUR IP IS SHOWN");
+                    break;
                 default:         g_state.classic_net = true; break;
             }
         }
+    } else if ((in.left || in.right) && cur >= nl && extras[cur - nl] == EX_HIDE_IP) {
+        set_hide_ip(!hide_ip());
+        note(hide_ip() ? "YOUR IP IS HIDDEN" : "YOUR IP IS SHOWN");
     } else if (in.alt && on_recent) {
         recent_forget(recents[cur - 1 - nr]);
         note("FORGOTTEN");
@@ -1987,7 +2038,10 @@ static void draw_room_settings(LauncherModel* m, const Gfx& g, const Input& in, 
 
 /* ---- the room itself ---- */
 
-enum LobbyRow { LOBBY_READY = 0, LOBBY_GARAGE, LOBBY_SETTINGS, LOBBY_CONNECTION, LOBBY_LEAVE };
+/* No CONNECTION row (the stock Lobby Settings dialog): the host's addresses
+ * show in the room itself, and the stock match tuning stays on its automatic
+ * defaults (user, 2026-11-18). */
+enum LobbyRow { LOBBY_READY = 0, LOBBY_GARAGE, LOBBY_SETTINGS, LOBBY_LEAVE };
 
 static void draw_pilot(const Gfx& g, float x, float y, const LobbySnapshot& s, int seat,
                        bool remote_ready) {
@@ -2207,14 +2261,13 @@ static void draw_lobby_page(LauncherModel* m, const LauncherTheme& th,
 
     const char* problem = room_ready_problem(m, s.is_host);
     struct Entry { LobbyRow id; const char* label; };
-    const Entry entries[5] = {
+    const Entry entries[4] = {
         { LOBBY_READY, "READY" },
         { LOBBY_GARAGE, "GARAGE" },
         { LOBBY_SETTINGS, "MATCH SETTINGS" },
-        { LOBBY_CONNECTION, s.is_host ? "CONNECTION" : "CONNECTION INFO" },
         { LOBBY_LEAVE, "LEAVE ROOM" },
     };
-    const int count = 5;
+    const int count = 4;
     move_cursor(PAGE_LOBBY, count, in, count);
     int& cur = g_state.cursor[PAGE_LOBBY];
 
@@ -2258,9 +2311,27 @@ static void draw_lobby_page(LauncherModel* m, const LauncherTheme& th,
                  g_room.garage ? "FULL (EVERY PART)" : "YOUR OWN PARTS");
         }
         y = 352.0f;
+        /* The host of a LAN / direct room shows where to connect: the local
+         * IP for this network, the public IP below it for the internet (with
+         * the port forwarded). HIDE MY IP in the room list keeps both off. */
+        const bool show_ip = s.is_host && m->netplay_local_room &&
+                             m->netplay_host_endpoint[0] && !hide_ip();
         if (s.seated_players < 2) {
             text(g, 340.0f, y, 11.0f, kHi, "STANDING BY");
-            text(g, 340.0f, y + 16.0f, 10.0f, kText, "Waiting for another pilot to join.", 264.0f);
+            if (show_ip) {
+                np_ensure_public_ip(m);   /* asked when the room opened; kept */
+                const char* port = std::strrchr(m->netplay_host_endpoint, ':');
+                const bool pub = address_usable(m->netplay_public_ip);
+                char b[96];
+                text(g, 340.0f, y + 16.0f, 10.0f, kDim, "LOCAL IP");
+                text(g, 412.0f, y + 16.0f, 10.0f, kText, m->netplay_host_endpoint);
+                std::snprintf(b, sizeof b, "%s%s", pub ? m->netplay_public_ip : "NOT FOUND",
+                              pub && port ? port : "");
+                text(g, 340.0f, y + 30.0f, 10.0f, kDim, "PUBLIC IP");
+                text(g, 412.0f, y + 30.0f, 10.0f, pub ? kText : kDim, b);
+            } else {
+                text(g, 340.0f, y + 16.0f, 10.0f, kText, "Waiting for another pilot to join.", 264.0f);
+            }
         } else if (s.local_rom_missing) {
             text(g, 340.0f, y, 10.0f, kWarn, "The game disc was not found on this machine.", 264.0f);
         } else if (both) {
@@ -2284,11 +2355,6 @@ static void draw_lobby_page(LauncherModel* m, const LauncherTheme& th,
     }
     if (m->netplay_status[0] && !both)
         text(g, 38.0f, 396.0f, 10.0f, kWarn, m->netplay_status, 262.0f);
-    if (s.is_host && s.seated_players < 2 && m->netplay_local_room && m->netplay_host_endpoint[0]) {
-        char b[96];
-        std::snprintf(b, sizeof b, "ADDRESS  %s", m->netplay_host_endpoint);
-        text(g, 340.0f, 384.0f, 10.0f, kDim, b);
-    }
     footer(g, "A / ENTER  SELECT      START  READY      B / ESC  LEAVE");
 
     moa_menu_lobby_popups(m, th, np, s);
@@ -2344,10 +2410,6 @@ static void draw_lobby_page(LauncherModel* m, const LauncherTheme& th,
         case LOBBY_SETTINGS:
             g_state.cursor[PAGE_NET_MODE] = 0;
             g_room_view = RV_SETTINGS;
-            break;
-        case LOBBY_CONNECTION:
-            g_lobby_settings_synced = false;
-            m->netplay_lobby_settings_open = true;
             break;
         case LOBBY_LEAVE:
             g_state.cursor[PAGE_LOBBY] = 0;

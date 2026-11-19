@@ -316,7 +316,7 @@ void moa_vs_direct_reset(void)
  *   - The versus menu's setup still runs behind it: it loads what the match
  *     needs besides the ACs (docs/mapping/boot-loads.md §9, "VS without
  *     menus": the saved VRAM blocks, sound bank, menu pictures, model slots).
- *   - Once the menu reaches its input state (0x800B22D8, every load done),
+ *   - Once the menu reaches its input state (0x800B22D0, every load done),
  *     that state is taken over each frame (a0 = the menu's task):
  *       1. LOADING = FAST ends (moa_np_room_fast_load_end);
  *       2. both cards' units are written (not at the title: the menu's
@@ -349,7 +349,9 @@ void moa_vs_direct_reset(void)
 #define VSD_TITLE_FLAG      0x8003EA7Au        /* 1 until the first title has opened */
 #define VSD_MENU_VS_START   0x800B2D7Cu        /* versus menu: VS START state */
 #define VSD_SIG_VS_START    0x27BDFFD0u
-#define VSD_MENU_VS_INPUT   0x800B22D8u        /* versus menu: input state (menus-screens.md §2f) */
+#define VSD_MENU_VS_INPUT   0x800B22D0u        /* versus menu: input state, as the menu stores it in
+                                                * task +0x78 (0x800B1ED8): two loads, then the
+                                                * routine menus-screens.md lists at 0x800B22D0 */
 #define VSD_TASKS_FIRST     0x801B1CE8u        /* the menu's task area (menus-screens.md §1) */
 #define VSD_TASKS_END       0x801D0AF8u
 #define VSD_INPUT_A         0x800639A4u        /* menu: controller sampling, once a frame */
@@ -358,7 +360,7 @@ void moa_vs_direct_reset(void)
 #define VSD_SIG_INPUT_B     0x27BDFFD0u
 #define VSD_PAD1            0x800458D8u        /* port 1: status, id, buttons (low = held) */
 #define VSD_PAD2            0x800458FAu
-#define VSD_NP_GIVE_UP      3600u              /* samples waiting for the input state */
+#define VSD_NP_GIVE_UP      1800u              /* samples waiting for the input state */
 #define VSD_COVER_MAX_MS    180000u            /* safety: the cover never stays longer */
 #define VSD_FAST_WAIT       120u               /* frames to wait for the drive to slow down */
 #define VSD_TASK_STATE      0x78u              /* a menu task's state routine */
@@ -588,7 +590,7 @@ static void vsd_np_input_entry(struct CPUState *cpu, uint32_t address)
     psx_mod_write_half(VSD_PAD2 + 2u, 0xFFFFu);
 }
 
-/* The versus menu's task once it sits in its input state (0x800B22D8: every
+/* The versus menu's task once it sits in its input state (0x800B22D0: every
  * load of its opening is done), or 0. The frame loop (0x800A7104) runs the
  * live tasks of 0x801B1CE8 ... 0x801D0AF8, 0xF0 bytes each (+0 live, +0x78
  * the state routine it calls with a0 = the task). */

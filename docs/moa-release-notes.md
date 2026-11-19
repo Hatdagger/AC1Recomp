@@ -6,10 +6,22 @@ your own copy of Armored Core: Master of Arena (USA).**
 This is a test release. Please report problems in this repository's Issues
 (what you did, what you saw, Windows or Linux/Steam Deck).
 
-## What's new in 0.8.4.3
+## What's new in 0.8.4.4.2
 
-- **MEMORY CARD: one SAVE TO CARD option.** SAVE AS VERSUS UNIT and PUT INTO
-  STORY SAVE are now a single row. Left and right choose NEW SAVE or any
-  Master of Arena save on the card (story saves and versus units alike).
-  Saving over a save keeps its money, pilot, progress and Human Plus, adds
-  any parts it doesn't own, and keeps a backup of the card.
+- **Rogue Arena reworked.** A 49-opponent run with its own hub screen: pick
+  a prize after each win, a VS screen before each fight, a victory screen,
+  hub backgrounds that change colour as you climb (belt ranks), and music.
+- **START GAME menu in the launcher.** LOAD GAME (pick a save, straight to
+  the hub), NEW GAME (straight to name entry) and LAUNCH GAME (FULL BOOT
+  toggle to see the logos and intro).
+- **AI Battle starts straight into the fight** (no stop on the versus menu).
+- **Fast Loading only speeds up the first load**, then the disc runs at its
+  normal speed. Fixes problems later loads had with it.
+- **New first-run display settings:** 4:3, borderless fullscreen, 1440p,
+  sharp (nearest) textures, vsync on. Your own settings are kept.
+- **Fixes:** hub background and emblem after LOAD GAME, emblem plates on
+  ACs, empty hands and weapon arms, a CD reading fix.
+- **Project Phantasma missions:** all 17 are listed again for testing.
+  Missions 1, 7, 9, 11 and 14 may still be broken.
+- **Netplay** works as in 0.8.4.4 (start from the title and use the
+  versus menu).

@@ -1838,7 +1838,7 @@ const uint32_t *moa_screen_render_netmenu(int win_w, int win_h, const struct moa
     const int keep_w = s_w, keep_h = s_h;            /* borrow fill()/text(), as the tiles do */
     s_w = W; s_h = CANVAS_H;
     memset(buf, 0, (size_t)W * CANVAS_H * 4u);       /* see-through everywhere */
-    const uint32_t veil = 0xC40A0C10u, white = rgb(235, 238, 242), grey = rgb(150, 156, 168);
+    const uint32_t veil = 0xA80A0C10u, white = rgb(235, 238, 242), grey = rgb(150, 156, 168);
     const uint32_t gold = rgb(255, 200, 80), idle = rgb(150, 178, 210), dimc = rgb(84, 90, 100);
     if (m->strip && m->strip[0]) {
         fill(buf, 0, 0, W, 46, veil);

@@ -217,7 +217,7 @@ The same screen serves the hub's System entry (callback 0) and the title's LOAD 
 
 | State | Does |
 |---|---|
-| `0x80059554` | task (group 0), report window (?, 40, 128, 144), tone 6 |
+| `0x80059554` | task (group 0), report window (16, 40, 128, 144), tone 6 (from the title's LOAD GAME it goes straight to the slot window `0x8005A90C`). **Read in depth: §2n** |
 | `0x800597E4` | menu window (160, 32, 144, 160): **DATA SAVE, DATA LOAD, EMBLEM SAVE, EMBLEM LOAD, OPTION, EXIT GAME** (names at `0x800CB844`); the left window shows the reports (`0x80059A70`: CREDITS, MISSION REPORT with Sorties / Success / Failure / Overall, ARENA REPORT 1 / 2 with Challenge / Lose) |
 | **`0x8005A280`** | **input**: Up / Down tone 1, ✕ → row, ○ → close (`0x8005DA2C` → `0x80056528`, or the callback) |
 | `0x8005A90C` → `0x8005A99C` | SLOT 1 / SLOT 2 window (96, 96, 128, 48) |
@@ -289,7 +289,7 @@ code as the Scenario garage.
 | State | Does |
 |---|---|
 | `0x800B6F4C` | rows MASTER VOLUME, BGM VOLUME, TEXT MESSAGE, VS STAGE, KEY ASSIGN, VS TIME LIMIT, VIBRATION; windows (24, 64, 136, 120) + (16, 200, 288, 24) |
-| **`0x800B7388`** | input; ○ applies the settings (`0x800B6A80`) and closes (`0x800B7910` → `0x800B79BC`) |
+| **`0x800B7388`** | input; ○ applies the settings (`0x800B6A80`) and closes (`0x800B7910` → `0x800B79BC`). **Read in depth: §2o** |
 | `0x800B7A34` → `0x800B7ABC` | ON / OFF picker (168, 64, 136, 48) |
 | `0x800B7E70` → `0x800B7EF4` | VS STAGE: SELECT, RANDOM, TURN (168, 64, 136, 72) |
 | `0x800B8298` | volume slider (168, ?, 80, 16) |
@@ -776,6 +776,144 @@ the next DATA SAVE stores it. The Extra Garage's EMBLEM import only has to produ
 colour 0 see-through. Any mod that uses VRAM around (922, 0)–(959, 127) or (960, 0) while the editor
 is open would clash with it.
 
+### 2n. System / card screen in depth (2026-11-19)
+
+Read from `0x80059554` … `0x8005F8FF` and the card routines `0x80070120` … `0x80074994`,
+`0x800C1A78` … `0x800C4970`. States are in §2c; this is what they show and do.
+
+**Reports (left window, `0x80059A70(task, page)`).** L1 / R1 flip the page (task +0xB0: 0 … 2,
+no wrap, each flip redraws). CREDITS (`0x8003EA74`) is on every page. Numbers are drawn as text
+built in `0x8019E818` …; integer maths, rounded down.
+
+| Page | Row | Value |
+|---|---|---|
+| 0 MISSION REPORT | Sorties | u16 `0x8004AC58` |
+| | Success | u16 `0x8004AC5C`, and its % = Success × 100 ÷ Sorties |
+| | Failure | u16 `0x8004AC60`, and its % = **100 − Success %** (not Failure ÷ Sorties, so a sortie that is neither shows as a failure in the %) |
+| | Overall % | (missions **completed** in mission slots 0 … 19, `0x80093C7C`: T+20[slot] bit 1, T = `0x8019F7A8`) **+ 1 for each of HD-HELM (head 12), P/CV (FCS 10), WX-ED2 (back 55)** that is owned (`0x80036FEC` + owned index 12 / 118 / 212) or on sale (`0x800370EC` + the same) **× 100 ÷ 22**. With 20 slots and 3 parts it can pass 100 `?` (whether every slot can be completed is for the missions lane) |
+| 1 ARENA REPORT 1 | Challenge / Win / Lose | u16 `0x8004B5A0` / `0x8004B5B2` / `0x8004B5C4` (arena 0: three arrays of 9 u16, one per arena) |
+| | % beside Win / Lose | Win × 100 ÷ Challenge, and 100 − that |
+| | Overall % | opponents beaten in arena 0: bit 0 of the 48 bytes `0x8004B5D7` … `0x8004B606` (`0x8004B5A0` + 0x37 …) × 100 ÷ 48 |
+| 2 ARENA REPORT 2 | Challenge / Win / Lose | the same arrays summed over arenas 1 … 8 (the Ex Arenas) |
+| | Overall % | bit 0 of the 117 bytes `0x8004B608` … `0x8004B67C` (`0x8004B5A0` + 0x68 …) × 100 ÷ **109** (the loop counts 117 bytes, the divisor is 117 − 8) |
+
+A sortie ends up in Success or Failure by the missions code, not here (missions lane).
+
+**Menu input (`0x8005A280`).** Up / Down wrap over the 6 rows (task +0xA5), tone 1. ✕ (tone 2) by
+the jump table `0x800510F0`: the row is written as **two letters**, task +0xA9 = 'S' (save) or 'L'
+(load) and +0xAE = 'D' (data) or 'E' (emblem), and every card row then goes to the slot window
+(`0x8005A854` → `0x8005A90C`): DATA SAVE 'S' 'D', DATA LOAD 'L' 'D', EMBLEM SAVE 'S' 'E', EMBLEM
+LOAD 'L' 'E'; OPTION → `0x8005EDAC` (closes the windows, then Options `0x800B6D48`); EXIT GAME →
+"EXIT GAME?" (`0x80065858`, starts on NO) → `0x8005A6C0`. While task +0x84 is set (opened with a
+callback, the title's LOAD GAME) only ○ is read, and ✕ is ignored.
+
+**Slot and card check (`0x8005A99C` → `0x8005AAC4`).** SLOT 1 / SLOT 2, Up / Down, ✕ → port byte
+task +0xA8 (0 = slot 1, 1 = slot 2; `bu00:` / `bu10:`). **`0x80074840(port)` = card state**: 0 ready,
+1 → "Check failed." (asked again up to 3 times first), 2 → "No Memory card present.", 3 → "Memory
+Card was changed.", 4 → "Memory card is not formatted." (on a save: a yes / no to format,
+`0x8005D464` … `0x8005D928` "Formatting completed."; on a load: just the message). Ready →
+`0x8005B250` → "Searching for saved data." → the list.
+
+**The card list (`0x80070120(port)`)**, one 2,208-byte record per port at **`0x801F9DB8` + port ×
+0x8A0**. It is filled by four directory scans (BIOS firstfile / nextfile `0x8002B6D4` /
+`0x8002B534`):
+
+| Offset | Holds |
+|---|---|
+| +0x00 | blocks used by all files on the card (from the `bu00:*` scan) |
+| +0x04 | number of files on the card |
+| +0x08 | number of entries in the save list (all three games) |
+| +0x0C | number of Master of Arena saves |
+| +0x10 + 68n | all-files scan: blocks, then the name from +0x14 |
+| **+0x450 + 68n** | **save list entry n**: blocks (u32), then the file name from +0x454 |
+| **+0x890 + n** | **its type letter**: **'N'** = Master of Arena save (`BASLUS-01030` + one letter **A … O**, so 15 saves at most), **'S'** = Project Phantasma (`BASLUS-00670` + any letter but Z), **'O'** = original Armored Core (`BASCUS-94182` + any letter but Z). Each game's 'Z' file is not a scenario save (Master of Arena's is the emblem file) |
+
+So **DATA LOAD offers Phantasma and original AC saves next to the game's own** (they are the
+imports, `README.md` "Hub chat → launch chat"); DATA SAVE only writes 'N' files.
+
+**List (`0x8005B7C0` → `0x8005BF38`)**: header "NO. AC NAME SORTIES CREDITS", 5 rows on screen
+(scroll arrows are the sprites `0x800CB7A8` / `0x800CB7B4`); each row = number, AC name, sorties and
+credits from the save's summary (as `moa_card.c` writes it: +0x184 names, +0x1A8 sorties, +0x1AC
+credits). ✕ asks "… overwrite?" / "… create new data?" (save) or "Load … saved data?" (load);
+yes → save `0x8005C820` / load `0x8005CD34` (`boot-loads.md` §4a). "No saved data on the Memory
+card." when a load finds none. A card pulled out at any step gives "Memory Card was pulled out.".
+
+**EMBLEM SAVE / LOAD (`0x8005DD48` …)**: windows (16, 40, 120, 24) + (16, 64, 288, 148), a list of
+**7 emblem slots** (" Save Emblem?"). The emblem file is **`BASLUS-01030Z`**, 14,976 bytes (2
+blocks), title "ACMA EMBLEM DATA" in full-width letters (`0x800D5CF0`):
+
+| Offset | Holds |
+|---|---|
+| +0 | the usual card header ("SC", icon flag 0x11, 2 blocks, title; "CRD0" at +82 `?`), icon at +96 / +128 / +256 (from `0x800D5D70`, `0x800D5E30`, `0x800D6130`) |
+| +384 | checksum of the rest (`0x800C2070(buf + 388)`) |
+| **+388 + 2,080 × k** | emblem slot k (k = 0 … 6): 32 bytes of colours, then 2,048 bytes of pixels (64 × 64, 4 bits) |
+
+While the screen is open the 7 slots sit in VRAM: pixels at **(896 + 16k, 0)** for k = 0 … 3 and
+(896 + 16(k − 4), 64) for k = 4 … 6, 16 × 64 each; colours at **(896, 128 + k)**. Saving reads the
+old file first, copies all 7 slots back out of VRAM (StoreImage `0x8002C7BC`), puts **the current
+emblem ((544, 384) and (256, 510), §2m) into the chosen slot**, and writes the file (`0x800C209C`,
+3 tries). Loading (`0x800C276C`) reads the file, checks the sum and LoadImages the chosen slot to
+(544, 384) / (256, 510). It also reads emblems from the original AC and Phantasma files
+(`BASCUS-94182…` / `BASLUS-00670…`, 15,104 bytes, their own checksum `0x800C2048`). The slot area
+x 896 … 959 overlaps the emblem editor's working copy at (922, 0) (§2m), so the two screens must
+never be open together (they aren't in the game).
+
+**ARENA SAVE / LOAD (`0x8005F140` …, from the Arena Maker)**: "NO. ARENA NAME RANKER", a
+20,480-byte file (3 blocks; same header layout) holding the Arena Maker data from `0x80045958`
+(`0x800C413C` save, `0x800C4970` load). Its file name letter was not read `?`.
+
+**EXIT GAME (`0x8005A6C0`)**: TIM queue MENU_TIM 5, delete every task (`0x800579A0`), menu setup
+again (`0x80058178` …), PICTURE MENU_TIM 0, then the title `0x800AAE94`. No disc check.
+
+### 2o. Options in depth (2026-11-19)
+
+**The settings record `0x8004B568`** (56 bytes; save +3276; the data chat's `stat-block.md`
+"Options and button masks" says where the fight reads it):
+
+| Offset | Address | Setting | Values | New game (`0x800B69F8`) |
+|---|---|---|---|---|
+| +0x00 … +0x2C | `0x8004B568` … | KEY ASSIGN: 12 u32 button masks, in the menu's order: GO FORWARD, GO BACK, TURN LEFT, TURN RIGHT, MOVE LEFT, MOVE RIGHT, LOOK UP, LOOK DOWN, EVENT/BLADE, BOOST, CHANGE WEAPON, FIRE WEAPON | one pad bit each (§1b) | from `0x800D5860`: Up, Down, Left, Right, L1, R1, L2, R2, ○, ✕, △, □ |
+| +0x30 | `0x8004B598` | TEXT MESSAGE (mission messages, copied to `0x8003EA93`) | 1 ON, 0 OFF | 1 |
+| +0x31 | `0x8004B599` | MASTER VOLUME | 0 … 63 | 63 |
+| +0x32 | `0x8004B59A` | BGM VOLUME | 0 … 63 | 31 |
+| +0x33 | `0x8004B59B` | VS STAGE | 0 SELECT, 1 RANDOM, 2 TURN | 0 |
+| +0x34 | `0x8004B59C` | VS TIME LIMIT | 0 = 120 s, 1 = 300 s, 2 = none (stat block +0x00) | **0 (120 s)** |
+| +0x35 | `0x8004B59D` | VIBRATION | 1 ON, 0 OFF (bit 0 → compiled +0x02 bit 5) | **1** |
+
+The defaults routine also sets the sound flags `0x80044200` = 126 and `0x80044202` = 62.
+
+**Rows (`0x800B6F4C`)**: the 7 names above, a help line for each in the bottom window (texts
+`0x800D595C`: "Adjust master volume.", "Adjust music volume.", "Mission message display.", "Change
+map selection method.", "Change control configuration.", "Change VS battle time limit.",
+"Controls the vibration function."). The list window shows 5 rows and scrolls (`0x800B7290` /
+`0x800B730C`). ✕ by the jump table `0x80053D2C`:
+
+| Row | Opens |
+|---|---|
+| MASTER VOLUME / BGM VOLUME | slider `0x800B8298(task 'M' / 'B')`, window (168, y, 80, 16). Left / Right ±1 within 0 … 63 and **you hear it at once**: master → `SsSetMVol` (`0x8001FDB4`, value × 2 both sides); BGM → `0x800216B4` on the playing song (value × 2). ✕ stores it and applies all settings; ○ doesn't store it, and the close step `0x800B8684` sets both volumes from the stored bytes again, so the old volume comes back |
+| TEXT MESSAGE | ON / OFF picker (168, 64, 136, 48), **only when Options was opened from the System screen** (the opener's +0x74 is `0x80059554`); from the VS menu's SYSTEM the row just plays tone 7 |
+| VS STAGE | SELECT / RANDOM / TURN (168, 64, 136, 72); the cursor is the value |
+| KEY ASSIGN | closes the Options windows, then `0x800B8880` (below) |
+| VS TIME LIMIT | three choices (168, 112, 136, 72), drawn as sprites; the cursor is the value |
+| VIBRATION | ON / OFF picker (168, 136, 136, 48) |
+
+In both ON / OFF pickers the top line is ON: value = 1 when the cursor is on ON. ○ on the list →
+`0x800B6A80` (apply) → close.
+
+**Apply (`0x800B6A80`)**: copies the 12 masks into player 1's compiled block (`0x800453E8` + 0x3E
+…), puts VIBRATION into its flags word (bit 21 of +0x00, i.e. +0x02 bit 5), sets the sound flags
+`0x80044200` / `0x80044202` = MASTER × 2 / BGM × 2, copies TEXT MESSAGE to `0x8003EA93`, calls
+`SsSetMVol` and, if a song is playing (`0x801D0AFC` ≠ 0), sets its volume. LOAD runs it too.
+
+**KEY ASSIGN (`0x800B8880` → `0x800B8960` → `0x800B9074`)**: window (12, 48, 296, 160), the 12
+actions in a grid of two cursor bytes (task +0x80, +0x81; action = 8 × first + second), then DEFAULT
+and EXIT. ✕ on an action →
+`0x800B97E8`, which **waits for any one of the 12 buttons** (the d-pad, L1 / L2 / R1 / R2, △ ○ ✕
+□; START and SELECT can't be used) and stores that single bit as the action's mask, with its icon
+from the 12-byte sprite records at `0x800D58CC`. DEFAULT copies `0x800D5860` back (48 bytes).
+EXIT checks every pair of actions: if two have the same button, "Overlapping key assignments."
+and you stay; otherwise apply (`0x800B9CB0` → `0x800B6A80`) and back to Options.
+
 ## 3. What this means for overlays and the launcher
 
 - **Replacing a screen:** hook the hub's pick (`menus-hub.md` §5), run your own screen, and call
@@ -813,6 +951,13 @@ is open would clash with it.
   A preview drawn outside the game should use the game's ramp (§2l) to match.
 - **Emblem** (§2m): two VRAM blocks, (544, 384) and (256, 510). A launcher import that writes them
   (as LOAD does) gives the game the new emblem; the next save keeps it.
+- **The System screen's numbers** (§2n): the reports are plain counters (`0x8004AC58` …,
+  `0x8004B5A0` …) and bit counts, so a launcher or overlay can show the same MISSION and ARENA
+  REPORT pages from a save without the game. A launcher card manager should treat names ending
+  A … O as saves, Z as the emblem file (7 emblems, 2,080 bytes each from +388).
+- **Settings in the launcher** (§2o): the 56-byte record at `0x8004B568` (save +3276) is the whole
+  Options screen. Writing it and calling `0x800B6A80` applies it in game; KEY ASSIGN only needs
+  "one button per action, no two the same".
 
 ## 4. Open
 
@@ -833,3 +978,9 @@ is open would clash with it.
   SHIFT wraps around, what `0x80011F94` changes on entry, and the SELECT + L1 + R1 copy.
 - CHANGE COLOR (§2l): which parts of a texture use each of the four colours (the palette order is
   BASE, OPTIONAL, DETAIL, JOINT; what is painted with which is up to each texture).
+- System (§2n): whether all 20 mission slots can be completed (the MISSION REPORT Overall can pass
+  100 %); the ARENA REPORT 2 divisor 109 against 117 counted bytes (likely 8 unused bytes); the
+  emblem file's "CRD0" bytes; the arena file's name letter; how a sortie is booked as Success or
+  Failure (missions lane).
+- Options (§2o): what else reads the sound flags `0x80044200` / `0x80044202`; which cursor byte of
+  KEY ASSIGN is the column (check in game).

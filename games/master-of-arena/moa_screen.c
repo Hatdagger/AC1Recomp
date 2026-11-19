@@ -1641,8 +1641,8 @@ const uint32_t *moa_screen_render_vs(int win_w, int win_h, const struct moa_scre
         for (int i = 0; i < W * H; i++) base[i] = vs_scale(base[i], 0.42f);
         fill(base, 0, 0, W, 58, rgb(0, 0, 0));
         fill(base, 0, 58, W, 61, band);
-        text_left(base, "ROGUE ARENA", cx - 640 + 30, 18 + 16, 2, grey);
-        text(base, NULL, "NEXT BATTLE", cx, 6 + 24, 3, white);
+        text_left(base, v->mode ? v->mode : "ROGUE ARENA", cx - 640 + 30, 18 + 16, 2, grey);
+        text(base, NULL, v->title ? v->title : "NEXT BATTLE", cx, 6 + 24, 3, white);
         if (v->belt) text_left(base, v->belt, cx + 640 - 30 - text_width(v->belt, 2), 18 + 16, 2, band);
         uint32_t *pl = vs_panel(&v->you, -1, blue), *op = vs_panel(&v->foe, 1, red);
         if (pl) { vs_blit_opaque(base, W, pl, VS_PW, VS_PH, lx, VS_PY); free(pl); }
@@ -1663,7 +1663,10 @@ const uint32_t *moa_screen_render_vs(int win_w, int win_h, const struct moa_scre
         if (v->you.ac) text_left(base, v->you.ac, lx + 4, VS_PY + VS_PH + 62 + 16, 2, blue);
         if (v->foe.pilot) text_left(base, v->foe.pilot, rx + VS_PW - 2 - text_width(v->foe.pilot, 3), VS_PY + VS_PH + 12 + 24, 3, white);
         if (v->foe.ac) text_left(base, v->foe.ac, rx + VS_PW - 4 - text_width(v->foe.ac, 2), VS_PY + VS_PH + 62 + 16, 2, red);
-        if (v->foe.rank > 0) {
+        if (v->center_small || v->center_big) {
+            if (v->center_small) text(base, NULL, v->center_small, cx, 96 + 16, 2, grey);
+            if (v->center_big) text(base, NULL, v->center_big, cx, 124 + 40, 5, gold);
+        } else if (v->foe.rank > 0) {
             text(base, NULL, "FOR RANK", cx, 96 + 16, 2, grey);
             snprintf(s, sizeof s, "%d", v->foe.rank);
             text(base, NULL, s, cx, 124 + 40, 5, gold);
@@ -1671,6 +1674,7 @@ const uint32_t *moa_screen_render_vs(int win_w, int win_h, const struct moa_scre
         text(base, NULL, "VS", cx, 204 + 56, 7, red);
         fill(base, 0, 488, W, H, rgb(0, 0, 0));
         fill(base, 0, 485, W, 488, band);
+        if (n == 0 && v->footer) text(base, NULL, v->footer, cx, 560 + 16, 2, grey);
         /* the strip's boxes: in colour, and greyed for the beaten */
         for (int i = 0; i < MAXM; i++) { free(mcol[i]); free(mgrey[i]); mcol[i] = mgrey[i] = NULL; }
         for (int i = 0; i < n; i++) {

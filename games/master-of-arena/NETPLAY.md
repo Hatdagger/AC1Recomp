@@ -8,19 +8,23 @@ emulated over the network except the two controllers.
 
 Both players need the same build and the same disc.
 
-1. Open the NETPLAY page in the launcher. One player hosts a room (LAN or
-   online), the other joins, and the host presses Play.
-2. The host is player 1. The guest is player 2, and the guest's own memory
-   card (their slot 1) is the match's slot 2.
-3. The game starts the match by itself: no logos, title or menu. Player 1's
-   AC is the first Master of Arena save on the host's card (match slot 1),
-   player 2's the first save on the guest's card (match slot 2). A player
-   without a save gets the default AC; with no save on either card the title
-   opens and both players use VS Mode as before.
-   After the match the versus menu opens: load other ACs there (SLOT 1 is the
-   host's saves, SLOT 2 the guest's), pick the stage and time limit, and press
-   VS START for a rematch.
-4. Each player sees and hears their own side. Start pauses for both.
+1. Open MULTIPLAYER in the launcher. One player hosts a room, the other
+   joins. The host is player 1, the guest player 2.
+2. In the VERSUS ROOM each pilot sets an AC in GARAGE: loaded from a Master
+   of Arena save on one of their memory cards, or from an AI card. When the
+   host turns FULL GARAGE on, every part is unlocked and ASSEMBLY, OPTIONAL
+   PARTS, PAINT and EMBLEM work on it, and the EXTRA GARAGE AC can be loaded.
+   Neither pilot sees the other's AC before the match.
+3. The host sets MATCH SETTINGS: stage (Green Silo by default, or RANDOM),
+   time limit (the game's 2:00 / 5:00 / none), rounds (single, best of 3,
+   best of 5), FULL GARAGE, and loading (FAST: both PCs read the disc at the
+   fast speed for the whole set). The guest sees them as they change.
+4. Both pilots press READY. After a three-second count the match starts by
+   itself: no logos, title or menus; a VS screen shows both ACs while both
+   PCs load. Between rounds the game's CONTINUE? goes on (X: next round, O:
+   end the set). When a pilot has won the set, both go back to the room,
+   which shows the result; READY again for another set.
+5. Each player sees and hears their own side. Start pauses for both.
 
 Memory cards are match-only copies on both sides: nothing done in a netplay
 session is written back to a player's own save file.
@@ -38,6 +42,16 @@ Offline, VS Mode is the stock split-screen versus on controllers 1 and 2.
   still tied to player 1 and are heard by both players.
 
 ## How it works
+
+`moa_netplay_room.c` brings the room's choices into the match: the time
+limit before VS START, the stage when the link engine starts (both are guest
+memory, written by hooks the game's own code runs, so rollback replays them),
+the set's rounds (the versus win table in the exe's data), the VS screen
+(host-side only) and the return to the room. The room's options travel in
+PSX_NET_GAME_OPTS, which the host settles into the START message
+(`room=1;stage;time;rounds;garage;fastdisc`); `fastdisc` sets both drives'
+speed for the session (main.cpp). Each pilot's AC is the only save on a
+match-only card (PSX_MEMCARD1_NETPLAY); READY is that card's share bit.
 
 `moa_vs_direct.c` (netplay section) starts the first match without menus:
 the boot's title is replaced by the versus menu, both cards' first saves are

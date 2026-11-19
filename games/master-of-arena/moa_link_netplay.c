@@ -33,6 +33,7 @@
 #include "cpu_state.h"
 #include "psx_netplay.h"
 #include "spu.h"
+#include "moa_netplay_room.h"
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -80,6 +81,9 @@ static void moa_menu_versus_entry(struct CPUState *cpu, uint32_t address)
     if (!moa_code_is(MOA_MENU_VERSUS, 0x27BDFFC0u, 0x00002021u)) return;
     psx_mod_write_byte(MOA_MODE_BYTE, 1);
     psx_mod_counter_add("moa.link.menu_launch", 1);
+    /* Back on the versus menu after a fight: a versus room's set ends here
+     * (the room's start never shows this menu). */
+    moa_np_room_menu_back();
 }
 
 /* First link code of a match. The role negotiation itself still runs (its
@@ -99,6 +103,8 @@ static void moa_link_roles_entry(struct CPUState *cpu, uint32_t address)
     psx_mod_write_word(MOA_LINK + 924u, MOA_CLOSED_FD);
     psx_mod_write_word(MOA_LINK + 928u, MOA_CLOSED_FD);
     psx_mod_counter_add("moa.link.roles", 1);
+    /* The versus room's stage, over the menu's map in both player blocks. */
+    moa_np_room_link_start();
 }
 
 /* AC data exchange: both blocks are already filled by the menu. */
@@ -107,6 +113,8 @@ static int moa_link_exchange_filter(struct CPUState *cpu, uint32_t address)
     (void)cpu; (void)address;
     if (!moa_link_engine_loaded()) return 0;
     psx_mod_counter_add("moa.link.exchange_skipped", 1);
+    /* Where the cable traded the master's setup: the versus room's stage. */
+    moa_np_room_link_start();
     return 1;
 }
 
@@ -129,6 +137,8 @@ static void moa_link_wait_entry(struct CPUState *cpu, uint32_t address)
         /* Each peer hears its own player's channel (see "Sound for two
          * listeners"); renewed every frame, lapses after the match. */
         spu_output_mono_request(psx_netplay_local_slot() == 1 ? 1 : 0, 30);
+        /* The versus room: the VS screen shuts, the set is followed. */
+        moa_np_room_fight_frame();
     } else if (ra == MOA_RA_ROLE_WAIT) {
         /* Role negotiation: we offered 'M'aster, the other side 'S'lave. The
          * local player is then the player-1 block, the remote the player-2

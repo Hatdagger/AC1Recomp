@@ -880,6 +880,17 @@ typedef struct RecompLauncherCNetplayCallbacks {
      * Servers that predate it simply keep the legacy path. */
     int  (*relay_via_ice_get)(void* ctx);
     int  (*relay_via_ice_set)(void* ctx, int on);
+    /* Optional (append-only): title room options. The host publishes one
+     * short "key=value;..." line (charset [A-Za-z0-9=;,_.:-], under 96
+     * characters) that every seated peer can read while the room waits, so a
+     * title can show the host's match choices (stage, rules) before START.
+     * The same line is the title's match options settled at START
+     * (PSX_NET_GAME_OPTS on every peer). set is host-only (a guest gets -1);
+     * get answers 1 with the line (the host's own on the host, the host's as
+     * last received on a guest) or 0 while a guest has not heard it yet.
+     * LAN / Direct rooms only; NULL or 0 elsewhere. */
+    int  (*room_opts_set)(void* ctx, const char* opts);
+    int  (*room_opts_get)(void* ctx, char* out, size_t out_cap);
 } RecompLauncherCNetplayCallbacks;
 
 /* recomp_launcher_run_window honours RECOMP_NETPLAY_LAUNCH through

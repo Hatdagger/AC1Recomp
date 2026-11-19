@@ -147,6 +147,8 @@ if(TARGET psx-master-of-arena)
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_vs_ai.c"
         # Versus without the menu (boot, units, graphics): AI Battle, netplay.
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_vs_direct.c"
+        # The launcher's versus room in the match: stage, time, rounds, VS screen.
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_netplay_room.c"
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_screen.c"
         # AI Battle cards (Raven Card Builder images) -> builds.
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_card.c"

@@ -238,6 +238,13 @@ struct moa_screen_vs {
     int standby;                     /* no count yet: STANDBY where the count goes */
     float shutter;                   /* seconds since the shutters started closing, < 0 none */
     float black;                     /* 0..1 fade to black over everything */
+    /* Optional texts for other modes (all NULL: Rogue Arena's own). The
+     * netplay versus room's VS screen (moa_netplay_room.c) sets them. */
+    const char *mode;                /* top left, in place of "ROGUE ARENA" */
+    const char *title;               /* top centre, in place of "NEXT BATTLE" */
+    const char *center_small;        /* above VS, in place of "FOR RANK" */
+    const char *center_big;          /* above VS, in place of the rank number */
+    const char *footer;              /* the bottom strip's line when there are no boxes */
 };
 const uint32_t *moa_screen_render_vs(int win_w, int win_h, const struct moa_screen_vs *v, int *out_w, int *out_h);
 /* A 4-bit 64x64 TIM (the game's emblems) to 0xAARRGGBB; colour 0 is

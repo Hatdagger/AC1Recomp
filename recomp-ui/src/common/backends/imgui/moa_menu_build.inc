@@ -367,8 +367,23 @@ enum { B_AC = 0, B_PILOT, B_SLOT0, B_OPTS = B_SLOT0 + 11, B_PAINT, B_EMBLEM, B_P
  * then returns to the main menu. */
 static bool g_build_standalone = false;
 
+/* The versus room (moa_menu_net.inc) lends the room's AC to these screens
+ * when the host allows the full garage: back then hands the AC to the room
+ * instead of EXTRA GARAGE. */
+static bool g_room_garage = false;
+static void room_take_edit();
+
 /* Back to EXTRA GARAGE: the AC goes into the garage, kept for next time. */
 static void leave_to_garage() {
+    if (g_room_garage) {
+        room_take_edit();
+        g_room_garage = false;
+        g_build_standalone = false;
+        g_from_garage = false;
+        g_ai_sub = AI_SUB_SETUP;
+        g_state.ai_page = false;
+        return;
+    }
     g_garage = g_edit;
     save_garage();
     g_build_standalone = false;

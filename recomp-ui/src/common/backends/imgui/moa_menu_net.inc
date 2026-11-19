@@ -5,7 +5,8 @@
  *
  *   LNG_VIEW_NETPLAY_MODE   LAN or online, and the callsign
  *   LNG_VIEW_NETPLAY        the room list: host, join, join by address
- *   LNG_VIEW_LOBBY          the room: pilots, start, leave
+ *   LNG_VIEW_LOBBY          the versus room: pilots, garage, match settings,
+ *                           READY (the match starts when both are ready)
  *
  * Every page works from the D-pad and two buttons. Nothing here asks for a
  * keyboard: the callsign is picked from the arena roster, a room is hosted
@@ -765,7 +766,7 @@ static void draw_net_rooms(LauncherModel* m, const Gfx& g, const Input& in) {
         text(g, 394.0f, y + 10.0f, 11.0f, kText,
              r.player_count >= r.max_slots
                  ? "This room is full."
-                 : "Join as player 2. Your own memory card comes with you.",
+                 : "Join as player 2. You bring an AC from the room's garage.",
              208.0f);
     } else {
         const int ex = extras[cur - nl];
@@ -841,27 +842,709 @@ static void draw_net_rooms(LauncherModel* m, const Gfx& g, const Input& in) {
     }
 }
 
-/* ---- the room ---------------------------------------------------------------------- */
+/* ---- the room ----------------------------------------------------------------------
+ *
+ * The versus room. Each pilot brings an AC, the host sets the match, and the
+ * match starts by itself once both pilots are ready.
+ *
+ *  - Your AC: loaded from a Master of Arena save on one of your memory cards,
+ *    or from an AI card. When the host turns FULL GARAGE on, the garage's
+ *    ASSEMBLY, OPTIONAL PARTS, PAINT and EMBLEM screens work on it too (every
+ *    part), and the EXTRA GARAGE AC can be brought in. It is kept between
+ *    runs (RecompData/garage/versus-ac.png, where it came from beside it).
+ *  - READY puts your AC alone on a match-only memory card
+ *    (PSX_MEMCARD1_NETPLAY; your own cards are never touched): the host's is
+ *    the match's slot 1, the guest's is uploaded as slot 2. The room keeps
+ *    the guest card offer on, and each pilot's card "share" bit is that
+ *    pilot's READY, which the seat table carries to the other side. The
+ *    other pilot's AC is never shown here: the game's VS screen introduces
+ *    both (games/master-of-arena/moa_netplay_room.c).
+ *  - MATCH SETTINGS (host): stage, time limit, rounds, full garage, loading.
+ *    Sent to the guest while the room waits (room_opts_set) and settled at
+ *    START as the match options (PSX_NET_GAME_OPTS) that the game reads.
+ *  - Both ready: a three-second count, then the host starts the match. Either
+ *    pilot leaving READY stops it; the host can't change the settings while
+ *    ready, and a guest who readied is un-readied when they change.
+ *  - After the set both pilots are back here (the game ends the session);
+ *    READY again for the next one.
+ */
 
-enum LobbyRow { LOBBY_START = 0, LOBBY_CARD, LOBBY_SETTINGS, LOBBY_MODS, LOBBY_LEAVE };
+struct RoomStage { int id; const char* name; };
+/* Green Silo first (the room's default); the arena's main stages in the
+ * order the user picked for Rogue Arena. The link engine (netplay) loads
+ * every stage 20..39 (claude/netplay-room-rework-handover.md); these are the
+ * named ones. RANDOM is settled to one of them when the match starts. */
+static const RoomStage kRoomStages[] = {
+    { 27, "GREEN SILO" }, { 39, "OCEAN PLATFORM" }, { 29, "SEABED" }, { 36, "NIGHT CITY" },
+    { 25, "GARDEN PLAZA" }, { 20, "LUNAR BASE" }, { 22, "PILLAR HALL" }, { 24, "SCAFFOLD YARD" },
+    { 33, "FOREST" }, { 0, "RANDOM" },
+};
+static const int kRoomStageCount = (int)(sizeof kRoomStages / sizeof kRoomStages[0]);
+/* The game's own VS TIME LIMIT choices: options byte 0 = 2:00, 1 = 5:00, 2 = none. */
+static const char* const kRoomTimes[3] = { "2:00", "5:00", "NO LIMIT" };
+static const int kRoomRounds[3] = { 1, 3, 5 };
+
+struct RoomOpts {
+    int  stage = 27;       /* stage id, 0 = RANDOM */
+    int  time = 0;         /* VS TIME LIMIT option: 0 2:00, 1 5:00, 2 none */
+    int  rounds = 1;       /* 1, 3 or 5: first to (rounds + 1) / 2 wins */
+    bool garage = false;   /* FULL GARAGE: every part, the builder screens */
+    bool fast = true;      /* both PCs load at the fast drive speed */
+};
+
+static std::string room_opts_text(const RoomOpts& o, int stage) {
+    char b[96];
+    std::snprintf(b, sizeof b, "room=1;stage=%d;time=%d;rounds=%d;garage=%d;fastdisc=%d",
+                  stage, o.time, o.rounds, o.garage ? 1 : 0, o.fast ? 16 : 0);
+    return b;
+}
+
+static bool room_opts_parse(const char* s, RoomOpts* o) {
+    if (!s || std::strncmp(s, "room=1", 6) != 0) return false;
+    RoomOpts r;
+    for (const char* p = s; p && *p;) {
+        const char* eq = std::strchr(p, '=');
+        const char* semi = std::strchr(p, ';');
+        if (eq && (!semi || eq < semi)) {
+            const std::string k(p, (size_t)(eq - p));
+            const int v = std::atoi(eq + 1);
+            if (k == "stage") r.stage = v;
+            else if (k == "time") r.time = v < 0 || v > 2 ? 0 : v;
+            else if (k == "rounds") r.rounds = v == 3 || v == 5 ? v : 1;
+            else if (k == "garage") r.garage = v != 0;
+            else if (k == "fastdisc") r.fast = v > 0;
+        }
+        p = semi ? semi + 1 : nullptr;
+    }
+    *o = r;
+    return true;
+}
+
+/* Same match as readied: a RANDOM stage settled to one is still the same. */
+static bool room_opts_same(const RoomOpts& readied, const RoomOpts& now) {
+    return (readied.stage == now.stage || readied.stage == 0) && readied.time == now.time &&
+           readied.rounds == now.rounds && readied.garage == now.garage && readied.fast == now.fast;
+}
+
+static const char* room_stage_name(int id) {
+    for (int i = 0; i < kRoomStageCount; ++i)
+        if (kRoomStages[i].id == id) return kRoomStages[i].name;
+    return "STAGE";
+}
+
+static const char* room_rounds_label(int rounds) {
+    return rounds == 5 ? "BEST OF 5" : rounds == 3 ? "BEST OF 3" : "SINGLE";
+}
+
+enum RoomView { RV_MAIN = 0, RV_GARAGE, RV_SAVES, RV_CARDS, RV_SETTINGS, RV_BUILDER };
+
+static RoomOpts g_room;                 /* host: its choices; guest: the host's as heard */
+static RoomOpts g_room_ready_opts;      /* the options when this pilot readied */
+static bool   g_room_heard = false;     /* guest: the host's options have arrived */
+static int    g_room_view = RV_MAIN;
+static bool   g_room_ready = false;
+static double g_room_count_at = 0.0;    /* both ready since (ImGui time); 0 = no count */
+static bool   g_room_started = false;   /* host: START sent for this count */
+static bool   g_room_launched = false;  /* a match was launched from here */
+static std::chrono::steady_clock::time_point g_room_launch_at;
+static std::string g_room_result;       /* the last set, as the game reported it */
+
+/* ---- the room's AC ---- */
+
+static moa_card    g_room_ac;
+static bool        g_room_ac_read = false;
+static bool        g_room_has_ac = false;
+static std::string g_room_ac_from;       /* "SAVE ...", "AI CARD", "EXTRA GARAGE" */
+static bool        g_room_ac_edited = false;   /* changed in the full garage */
+
+static std::string room_ac_path() { return asset("garage/versus-ac.png"); }
+static std::string room_ac_note_path() { return asset("garage/versus-ac.txt"); }
+static std::string room_card_path() { return asset("saves/netplay/versus-card.mcd"); }
+static std::string room_result_path() { return asset("saves/netplay/versus-result.txt"); }
+
+static void room_ac_read() {
+    if (g_room_ac_read) return;
+    g_room_ac_read = true;
+    std::vector<uint8_t> data;
+    if (FILE* f = std::fopen(room_ac_path().c_str(), "rb")) {
+        if (std::fseek(f, 0, SEEK_END) == 0) {
+            const long n = std::ftell(f);
+            if (n > 0 && n < 32L * 1024 * 1024 && std::fseek(f, 0, SEEK_SET) == 0) {
+                data.resize((size_t)n);
+                if (std::fread(data.data(), 1, data.size(), f) != data.size()) data.clear();
+            }
+        }
+        std::fclose(f);
+    }
+    g_room_has_ac = !data.empty() && moa_card_decode(data.data(), data.size(), &g_room_ac);
+    if (!g_room_has_ac) return;
+    if (FILE* f = std::fopen(room_ac_note_path().c_str(), "rb")) {
+        char line[160] = {0};
+        if (std::fgets(line, sizeof line, f)) {
+            std::string s(line);
+            while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
+            g_room_ac_from = s;
+        }
+        if (std::fgets(line, sizeof line, f)) g_room_ac_edited = std::atoi(line) != 0;
+        std::fclose(f);
+    }
+}
+
+static void room_ac_save() {
+    std::error_code ec;
+    std::filesystem::create_directories(std::filesystem::u8path(room_ac_path()).parent_path(), ec);
+    if (!g_room_ac.ac[0]) std::strcpy(g_room_ac.ac, "AC");
+    if (!moa_card_write_png(&g_room_ac, room_ac_path().c_str())) {
+        note("YOUR AC COULD NOT BE KEPT");
+        return;
+    }
+    if (FILE* f = std::fopen(room_ac_note_path().c_str(), "wb")) {
+        std::fprintf(f, "%s\n%d\n", g_room_ac_from.c_str(), g_room_ac_edited ? 1 : 0);
+        std::fclose(f);
+    }
+}
+
+static void room_ac_set(const moa_card& c, const std::string& from) {
+    g_room_ac = c;
+    moa_build_normalise(g_room_ac.rec);
+    g_room_has_ac = true;
+    g_room_ac_from = from;
+    g_room_ac_edited = false;
+    room_ac_save();
+}
+
+static bool room_ac_differs(const moa_card& a, const moa_card& b) {
+    return std::memcmp(a.rec, b.rec, sizeof a.rec) != 0 || a.plus != b.plus ||
+           std::memcmp(a.paint, b.paint, sizeof a.paint) != 0 ||
+           std::memcmp(a.palette, b.palette, sizeof a.palette) != 0 ||
+           std::memcmp(a.emblem, b.emblem, sizeof a.emblem) != 0 ||
+           std::strcmp(a.ac, b.ac) != 0 || std::strcmp(a.pilot, b.pilot) != 0;
+}
+
+/* Back from a full-garage screen (moa_menu_build.inc, leave_to_garage). */
+static void room_take_edit() {
+    if (!g_room_has_ac || room_ac_differs(g_room_ac, g_edit)) {
+        g_room_ac = g_edit;
+        g_room_has_ac = true;
+        g_room_ac_edited = true;
+        room_ac_save();
+    }
+    g_room_view = RV_GARAGE;
+}
+
+/* ---- loading an AC ---- */
+
+struct RoomSave { std::string label, where; moa_card card; };
+static std::vector<RoomSave> g_room_saves;
+
+/* Every Master of Arena save on the .mcd files in the memory card folder. */
+static void room_scan_saves(LauncherModel* m) {
+    namespace fs = std::filesystem;
+    g_room_saves.clear();
+    std::vector<std::string> files;
+    const std::string folder = ai_card_folder(m);
+    std::error_code ec;
+    if (!folder.empty())
+        for (fs::directory_iterator it(fs::u8path(folder), ec), end; !ec && it != end; it.increment(ec)) {
+            std::error_code fec;
+            if (!it->is_regular_file(fec)) continue;
+            if (upper(it->path().extension().u8string().c_str()) == ".MCD")
+                files.push_back(it->path().u8string());
+        }
+    std::sort(files.begin(), files.end());
+    const char* card1 = m->s.memcard_path[0];
+    if (card1 && card1[0] && std::find(files.begin(), files.end(), card1) == files.end())
+        files.insert(files.begin(), card1);
+    const std::string mine = room_card_path();
+    std::vector<uint8_t> img(131072);
+    for (const std::string& path : files) {
+        if (fs::u8path(path) == fs::u8path(mine)) continue;   /* the room's own match card */
+        FILE* f = std::fopen(path.c_str(), "rb");
+        if (!f) continue;
+        const size_t got = std::fread(img.data(), 1, img.size(), f);
+        std::fclose(f);
+        if (got != img.size() || img[0] != 'M' || img[1] != 'C') continue;
+        const std::string stem = upper(fs::u8path(path).stem().u8string().c_str());
+        for (int i = 1; i < 16; ++i) {
+            const uint8_t* fr = img.data() + i * 128;
+            if (fr[0] != 0x51) continue;                       /* first block of a save */
+            if (std::strncmp((const char*)fr + 10, "BASLUS-0103", 11) != 0) continue;
+            RoomSave s;
+            if (!moa_card_from_save(img.data() + i * 8192, 8192, &s.card)) continue;
+            s.label = upper(s.card.ac[0] ? s.card.ac : "AC");
+            char where[96];
+            std::snprintf(where, sizeof where, "%s  BLOCK %d", stem.c_str(), i);
+            s.where = where;
+            g_room_saves.push_back(s);
+        }
+    }
+}
+
+/* ---- checks ---- */
+
+static void room_check(const moa_card& c, struct moa_build_check* out) {
+    std::memset(out, 0, sizeof *out);
+    if (g_parts_state > 0) moa_build_check(&g_parts, c.rec, c.plus, out);
+}
+
+/* Why this pilot can't be READY now, or nullptr. */
+static const char* room_ready_problem(const LauncherModel* m, bool is_host) {
+    if (!launcher_model_netplay_disc_ok(m)) return "The game disc is needed for network play.";
+    if (!is_host && !g_room_heard) return "Waiting for the host's match settings.";
+    if (!g_room_has_ac) return "Load an AC in the GARAGE first.";
+    if (!g_room.garage && (g_room_ac_edited || g_room_ac_from == "EXTRA GARAGE"))
+        return "FULL GARAGE is off: load an AC from a memory card or an AI card.";
+    if (parts_ready(m)) {
+        struct moa_build_check chk;
+        room_check(g_room_ac, &chk);
+        if (chk.blocked) return "The game will not field this AC: fix the build.";
+    }
+    return nullptr;
+}
+
+/* READY: the match card and what the game reads at launch. False (and a
+ * note) when the card could not be written. */
+static bool room_arm(LauncherModel* m) {
+    (void)m;
+    std::error_code ec;
+    std::filesystem::create_directories(std::filesystem::u8path(room_card_path()).parent_path(), ec);
+    const moa_card* units[1] = { &g_room_ac };
+    if (!moa_memcard_write_units(room_card_path().c_str(), units, 1)) {
+        note("THE MATCH CARD COULD NOT BE WRITTEN");
+        return false;
+    }
+    /* No offline mode's choices in a match. */
+    set_ai_battle(false);
+    set_arena_run(false, "");
+    set_env("PSX_MOA_START", "");
+    set_env("PSX_MEMCARD1_NETPLAY", room_card_path().c_str());
+    set_env("PSX_MOA_MODELS_DIR", models_installed() ? models_dir().c_str() : "");
+    set_env("PSX_MOA_ROOM_RESULT", room_result_path().c_str());
+    std::remove(room_result_path().c_str());
+    return true;
+}
+
+/* Not READY any more: an offline game started later must not find the card. */
+static void room_disarm() {
+    set_env("PSX_MEMCARD1_NETPLAY", "");
+}
+
+/* Back from a match: the set's result (games/master-of-arena/moa_netplay_room.c
+ * writes "p1=W;p2=W;rounds=N;done=1"). */
+static bool room_read_result(const LobbySnapshot& s) {
+    g_room_result.clear();
+    FILE* f = std::fopen(room_result_path().c_str(), "rb");
+    if (!f) return false;
+    char line[128] = {0};
+    const bool got = std::fgets(line, sizeof line, f) != nullptr;
+    std::fclose(f);
+    if (!got) return false;
+    int p1 = -1, p2 = -1, done = 0;
+    for (const char* p = line; p && *p;) {
+        if (std::strncmp(p, "p1=", 3) == 0) p1 = std::atoi(p + 3);
+        else if (std::strncmp(p, "p2=", 3) == 0) p2 = std::atoi(p + 3);
+        else if (std::strncmp(p, "done=", 5) == 0) done = std::atoi(p + 5);
+        const char* semi = std::strchr(p, ';');
+        p = semi ? semi + 1 : nullptr;
+    }
+    if (p1 < 0 || p2 < 0) return false;
+    std::string n1 = s.max_slots > 0 && s.occupied[0] ? upper(s.slots[0].display_name) : std::string("P1");
+    std::string n2 = s.max_slots > 1 && s.occupied[1] ? upper(s.slots[1].display_name) : std::string("P2");
+    if (n1.size() > 12) n1 = n1.substr(0, 12);
+    if (n2.size() > 12) n2 = n2.substr(0, 12);
+    char b[96];
+    std::snprintf(b, sizeof b, "%s %d - %d %s%s", n1.c_str(), p1, p2, n2.c_str(),
+                  done ? "" : "  (NOT FINISHED)");
+    g_room_result = b;
+    return done != 0;
+}
+
+/* ---- drawing helpers ---- */
+
+static void draw_room_stage(const LauncherModel* m, const Gfx& g, float x, float y,
+                            float w, float h, int id) {
+    if (g_maps_state == 0) {
+        g_maps = new moa_map_previews;
+        const char* p = launcher_model_effective_rom_path(m);
+        if (!p || !p[0]) p = launcher_model_rom_path(m);
+        g_maps_state = (p && p[0] && moa_map_previews_load(p, g_maps)) ? 1 : -1;
+    }
+    if (id < MOA_STAGE_FIRST || id >= MOA_STAGE_FIRST + MOA_STAGES || g_maps_state < 0) {
+        g.dl->AddRect(at(g, x, y), at(g, x + w, y + h), kLine);
+        const char* label = id == 0 ? "?" : room_stage_name(id);
+        const float size = id == 0 ? 20.0f : 11.0f;
+        text(g, x + (w - text_width(g, size, label)) * 0.5f, y + h * 0.5f - size * 0.6f, size, kDim, label);
+        return;
+    }
+    const uint32_t* px = g_maps->rgba[id - MOA_STAGE_FIRST];
+    const float cw = w / 52.0f, ch = h / 50.0f;
+    for (int yy = 0; yy < 50; ++yy)
+        for (int xx = 0; xx < 52; ++xx) {
+            const uint32_t c = px[(yy * 2) * MOA_MAP_W + xx * 2];
+            g.dl->AddRectFilled(at(g, x + xx * cw, y + yy * ch), at(g, x + (xx + 1) * cw, y + (yy + 1) * ch),
+                                IM_COL32(c & 255, (c >> 8) & 255, (c >> 16) & 255, 255));
+        }
+    g.dl->AddRect(at(g, x, y), at(g, x + w, y + h), kLine);
+}
+
+/* The AC on the right of the garage and load screens. */
+static void draw_room_ac_box(const Gfx& g, float x, float y, float w, float h,
+                             const moa_card* c, const char* from) {
+    panel(g, x, y, w, h, "YOUR AC");
+    if (!c) {
+        text(g, x + 14.0f, y + 20.0f, 11.0f, kDim, "NO AC YET. LOAD ONE FROM A MEMORY CARD OR AN AI CARD.", w - 28.0f);
+        return;
+    }
+    draw_acv(g, x + 2.0f, y + 2.0f, w - 4.0f, h - 92.0f, *c);
+    draw_emblem(g, x + 10.0f, y + 10.0f, 32.0f, *c);
+    text_right(g, x + w - 10.0f, y + 10.0f, 12.0f, kBright, upper(c->ac[0] ? c->ac : "AC").c_str());
+    text_right(g, x + w - 10.0f, y + 26.0f, 10.0f, kDim, upper(c->pilot).c_str());
+    float ty = y + h - 84.0f;
+    if (from && from[0]) {
+        text(g, x + 12.0f, ty, 10.0f, kDim, "FROM");
+        text(g, x + 70.0f, ty, 10.0f, kText, from);
+        ty += 16.0f;
+    }
+    if (g_parts_state > 0) {
+        struct moa_build_check chk;
+        room_check(*c, &chk);
+        char b[96];
+        std::snprintf(b, sizeof b, "AP %d   WEIGHT %d", chk.ap, chk.weight);
+        text(g, x + 12.0f, ty, 10.0f, kText, b);
+        ty += 16.0f;
+        text(g, x + 12.0f, ty, 10.0f, chk.blocked ? kWarn : kOn,
+             chk.blocked ? "THE GAME WILL NOT FIELD THIS BUILD" : "READY TO FIELD");
+        ty += 16.0f;
+    }
+    if (c->plus) text(g, x + 12.0f, ty, 10.0f, kHi, "HUMAN PLUS");
+}
+
+/* ---- GARAGE ---- */
+
+static void room_open_builder(LauncherModel* m, int sub) {
+    if (!parts_ready(m)) { note("THE PART LIST COULD NOT BE READ FROM THE DISC"); return; }
+    AiCard c;
+    c.card = g_room_ac;
+    c.path = room_ac_path();
+    open_build(c);
+    g_edit_dirty = false;
+    g_room_garage = true;
+    g_room_view = RV_BUILDER;
+    if (sub == AI_SUB_ASM) {
+        g_build_standalone = true;
+        g_from_garage = false;
+        open_asm(0, false);
+        return;
+    }
+    g_build_standalone = false;
+    g_from_garage = true;
+    g_ai_sub = sub;
+    if (sub == AI_SUB_OPTS) g_state.cursor[PAGE_AI_OPTS] = 0;
+    if (sub == AI_SUB_PAINT) {
+        g_split_paint = !paint_uniform();
+        g_paint_section = 0;
+        g_state.cursor[PAGE_AI_PAINT] = 0; g_state.top[PAGE_AI_PAINT] = 0;
+    }
+    if (sub == AI_SUB_EMBLEM) {
+        g_state.cursor[PAGE_AI_EMBLEM] = 0; g_state.top[PAGE_AI_EMBLEM] = 0;
+        g_emblem_files.clear();
+    }
+}
+
+enum RoomGarageRow { RG_SAVE = 0, RG_CARD, RG_EXTRA, RG_ASM, RG_OPTS, RG_PAINT, RG_EMBLEM, RG_BACK };
+
+static void draw_room_garage(LauncherModel* m, const Gfx& g, const Input& in) {
+    room_ac_read();
+    (void)parts_ready(m);
+    const bool full = g_room.garage;
+    RoomGarageRow rows[8];
+    int count = 0;
+    rows[count++] = RG_SAVE;
+    rows[count++] = RG_CARD;
+    if (full) {
+        rows[count++] = RG_EXTRA;
+        rows[count++] = RG_ASM;
+        rows[count++] = RG_OPTS;
+        rows[count++] = RG_PAINT;
+        rows[count++] = RG_EMBLEM;
+    }
+    rows[count++] = RG_BACK;
+    move_cursor(PAGE_LOBBY, count, in, count);
+    int& cur = g_state.cursor[PAGE_LOBBY];
+
+    header(g, "GARAGE", full ? "VERSUS ROOM  ·  FULL GARAGE" : "VERSUS ROOM");
+    panel(g, 24.0f, 76.0f, 270.0f, 340.0f, full ? "FULL GARAGE" : "LOAD AN AC");
+    static const char* const labels[] = { "LOAD FROM MEMORY CARD", "LOAD AI CARD", "LOAD EXTRA GARAGE AC",
+                                          "ASSEMBLY", "OPTIONAL PARTS", "PAINT", "EMBLEM", "BACK" };
+    int clicked = -1;
+    for (int i = 0; i < count; ++i) {
+        bool hovered = false;
+        const bool sub = rows[i] != RG_EXTRA && rows[i] != RG_BACK;
+        if (row(g, 25.0f, 90.0f + kRowH * i, 268.0f, i == cur, true, labels[rows[i]],
+                sub ? ">" : nullptr, false, false, &hovered))
+            clicked = i;
+        if (hover_moved(hovered)) cur = i;
+    }
+    static const char* const info[] = {
+        "Bring the AC of a Master of Arena save on one of your memory cards.",
+        "Bring the AC of an AI card from your memory card folder.",
+        "Bring the AC kept in EXTRA GARAGE.",
+        "Change parts, with every part unlocked.",
+        "Fit optional parts and set HUMAN PLUS.",
+        "Change the AC's colours.",
+        "Change the AC's emblem.",
+        "Back to the room.",
+    };
+    text(g, 38.0f, 300.0f, 10.0f, kText, info[rows[cur]], 244.0f);
+    if (!full)
+        text(g, 38.0f, 350.0f, 10.0f, kDim,
+             "The host's FULL GARAGE is off: the AC comes as it is from a memory card or an AI card.",
+             244.0f);
+
+    draw_room_ac_box(g, 310.0f, 76.0f, 306.0f, 340.0f, g_room_has_ac ? &g_room_ac : nullptr,
+                     g_room_ac_from.c_str());
+    footer(g, "A / ENTER  SELECT      B / ESC  BACK");
+
+    int activate = -1;
+    if (clicked >= 0) activate = cur = clicked;
+    else if (in.confirm) activate = cur;
+    else if (in.back) { g_room_view = RV_MAIN; g_state.cursor[PAGE_LOBBY] = 1; return; }
+    if (activate < 0) return;
+    switch (rows[activate]) {
+        case RG_SAVE:
+            room_scan_saves(m);
+            g_state.cursor[PAGE_AI_PICK] = 0; g_state.top[PAGE_AI_PICK] = 0;
+            g_room_view = RV_SAVES;
+            break;
+        case RG_CARD:
+            scan_ai_cards(m);
+            g_state.cursor[PAGE_AI_PICK] = 0; g_state.top[PAGE_AI_PICK] = 0;
+            g_room_view = RV_CARDS;
+            break;
+        case RG_EXTRA:
+            load_garage();
+            room_ac_set(g_garage, "EXTRA GARAGE");
+            note("EXTRA GARAGE AC LOADED");
+            break;
+        case RG_ASM:    room_open_builder(m, AI_SUB_ASM); break;
+        case RG_OPTS:   room_open_builder(m, AI_SUB_OPTS); break;
+        case RG_PAINT:  room_open_builder(m, AI_SUB_PAINT); break;
+        case RG_EMBLEM: room_open_builder(m, AI_SUB_EMBLEM); break;
+        default:        g_room_view = RV_MAIN; g_state.cursor[PAGE_LOBBY] = 1; break;
+    }
+}
+
+/* LOAD FROM MEMORY CARD / LOAD AI CARD: a list, the highlighted AC on the right. */
+static void draw_room_load(LauncherModel* m, const Gfx& g, const Input& in, bool saves) {
+    (void)parts_ready(m);
+    const int n = saves ? (int)g_room_saves.size() : (int)g_ai_cards.size();
+    const int visible = 10;
+    move_cursor(PAGE_AI_PICK, n, in, visible);
+    int& cur = g_state.cursor[PAGE_AI_PICK];
+    const int top = g_state.top[PAGE_AI_PICK];
+
+    header(g, saves ? "LOAD FROM MEMORY CARD" : "LOAD AI CARD", "VERSUS ROOM  ·  GARAGE");
+    panel(g, 24.0f, 76.0f, 270.0f, 340.0f, saves ? "SAVES" : "AI CARDS");
+    int clicked = -1;
+    for (int i = top; i < n && i < top + visible; ++i) {
+        bool hovered = false;
+        const std::string label = saves ? g_room_saves[(size_t)i].label : g_ai_cards[(size_t)i].label;
+        if (row(g, 25.0f, 86.0f + kRowH * (i - top), 268.0f, i == cur, true, label.c_str(), nullptr,
+                false, false, &hovered))
+            clicked = i;
+        if (hover_moved(hovered)) cur = i;
+    }
+    if (n == 0)
+        text(g, 40.0f, 96.0f, 11.0f, kDim,
+             saves ? "NO MASTER OF ARENA SAVES ON YOUR MEMORY CARDS"
+                   : "NO AI CARDS IN YOUR MEMORY CARD FOLDER", 240.0f);
+    if (n > top + visible) text(g, 55.0f, 352.0f, 9.0f, kDim, "MORE BELOW");
+    if (top > 0) text_right(g, 280.0f, 352.0f, 9.0f, kDim, "MORE ABOVE");
+    if (saves && n > 0 && cur < n)
+        text(g, 38.0f, 372.0f, 10.0f, kDim, g_room_saves[(size_t)cur].where.c_str(), 244.0f);
+
+    const moa_card* c = nullptr;
+    if (n > 0 && cur < n) c = saves ? &g_room_saves[(size_t)cur].card : &g_ai_cards[(size_t)cur].card;
+    draw_room_ac_box(g, 310.0f, 76.0f, 306.0f, 340.0f, c, nullptr);
+    footer(g, "A / ENTER  BRING THIS AC      B / ESC  BACK");
+
+    if (in.back) { g_room_view = RV_GARAGE; return; }
+    if (clicked >= 0) cur = clicked;
+    if ((in.confirm || clicked >= 0) && c) {
+        room_ac_set(*c, saves ? "MEMORY CARD" : "AI CARD");
+        note("AC LOADED");
+        g_room_view = RV_GARAGE;
+    }
+}
+
+/* ---- MATCH SETTINGS ---- */
+
+enum RoomSetRow { RS_STAGE = 0, RS_TIME, RS_ROUNDS, RS_GARAGE, RS_LOADING, RS_BACK, RS__COUNT };
+
+static int room_stage_index(int id) {
+    for (int i = 0; i < kRoomStageCount; ++i)
+        if (kRoomStages[i].id == id) return i;
+    return 0;
+}
+
+static void draw_room_settings(LauncherModel* m, const Gfx& g, const Input& in, bool is_host) {
+    const bool editable = is_host && !g_room_ready;
+    move_cursor(PAGE_NET_MODE, RS__COUNT, in, RS__COUNT);
+    int& cur = g_state.cursor[PAGE_NET_MODE];
+
+    header(g, "MATCH SETTINGS", is_host ? "VERSUS ROOM  ·  HOST" : "VERSUS ROOM  ·  SET BY THE HOST");
+    panel(g, 24.0f, 76.0f, 340.0f, 214.0f, "MATCH");
+    static const char* const labels[RS__COUNT] = { "STAGE", "TIME LIMIT", "ROUNDS", "FULL GARAGE",
+                                                   "LOADING", "BACK" };
+    int clicked = -1;
+    for (int i = 0; i < RS__COUNT; ++i) {
+        bool hovered = false;
+        std::string value;
+        bool toggle = false, on = false;
+        switch (i) {
+            case RS_STAGE:   value = std::string("< ") + room_stage_name(g_room.stage) + " >"; break;
+            case RS_TIME:    value = std::string("< ") + kRoomTimes[g_room.time] + " >"; break;
+            case RS_ROUNDS:  value = std::string("< ") + room_rounds_label(g_room.rounds) + " >"; break;
+            case RS_GARAGE:  toggle = true; on = g_room.garage; break;
+            case RS_LOADING: value = g_room.fast ? "< FAST >" : "< ORIGINAL >"; break;
+            default: break;
+        }
+        const bool enabled = i == RS_BACK || editable;
+        if (row(g, 25.0f, 90.0f + kRowH * i, 338.0f, i == cur, enabled, labels[i],
+                value.empty() ? nullptr : value.c_str(), toggle, on, &hovered))
+            clicked = i;
+        if (hover_moved(hovered)) cur = i;
+    }
+
+    panel(g, 380.0f, 76.0f, 236.0f, 214.0f, "STAGE");
+    draw_room_stage(m, g, 394.0f, 92.0f, 208.0f, 172.0f, g_room.stage);
+    text(g, 394.0f, 270.0f, 10.0f, kBright, room_stage_name(g_room.stage));
+
+    static const char* const info[RS__COUNT] = {
+        "Where the match is fought. RANDOM picks one when the match starts.",
+        "The game's own VS TIME LIMIT. When time runs out, the AC with more AP wins.",
+        "SINGLE: one fight. BEST OF 3 / 5: the first pilot to win 2 / 3 fights takes the set.",
+        "OFF: each pilot brings an AC as it is, from a memory card save or an AI card. "
+        "ON: every part is unlocked and the garage's ASSEMBLY, OPTIONAL PARTS, PAINT and EMBLEM can be used.",
+        "FAST: both PCs read the disc at the fast speed, from the start of the match to the end of the set. "
+        "ORIGINAL: the drive's real speed.",
+        "Back to the room.",
+    };
+    panel(g, 24.0f, 306.0f, 592.0f, 110.0f, "INFO");
+    text(g, 38.0f, 322.0f, 11.0f, kText, info[cur], 564.0f);
+    if (is_host && g_room_ready)
+        text(g, 38.0f, 390.0f, 10.0f, kHi, "Leave READY to change the settings.", 564.0f);
+    else if (!is_host)
+        text(g, 38.0f, 390.0f, 10.0f, kDim, "The host sets these. You see them as they change.", 564.0f);
+    footer(g, editable ? "LEFT / RIGHT  CHANGE      A / ENTER  SELECT      B / ESC  BACK"
+                       : "B / ESC  BACK");
+
+    if (in.back) { g_room_view = RV_MAIN; return; }
+    if (clicked >= 0) cur = clicked;
+    const bool confirm = in.confirm || clicked >= 0;
+    if (cur == RS_BACK) { if (confirm) g_room_view = RV_MAIN; return; }
+    if (!editable) return;
+    const int dir = in.left ? -1 : (in.right || confirm) ? 1 : 0;
+    if (!dir) return;
+    switch (cur) {
+        case RS_STAGE: {
+            const int i = (room_stage_index(g_room.stage) + dir + kRoomStageCount) % kRoomStageCount;
+            g_room.stage = kRoomStages[i].id;
+            break;
+        }
+        case RS_TIME:    g_room.time = (g_room.time + dir + 3) % 3; break;
+        case RS_ROUNDS: {
+            int i = g_room.rounds == 5 ? 2 : g_room.rounds == 3 ? 1 : 0;
+            i = (i + dir + 3) % 3;
+            g_room.rounds = kRoomRounds[i];
+            break;
+        }
+        case RS_GARAGE:  g_room.garage = !g_room.garage; break;
+        case RS_LOADING: g_room.fast = !g_room.fast; break;
+        default: break;
+    }
+}
+
+/* ---- the room itself ---- */
+
+enum LobbyRow { LOBBY_READY = 0, LOBBY_GARAGE, LOBBY_SETTINGS, LOBBY_CONNECTION, LOBBY_LEAVE };
+
+static void draw_pilot(const Gfx& g, float x, float y, const LobbySnapshot& s, int seat,
+                       bool remote_ready) {
+    const float w = 288.0f, h = 148.0f;
+    char buf[96];
+    std::snprintf(buf, sizeof buf, "P%d", seat + 1);
+    panel(g, x, y, w, h, buf);
+    if (seat >= s.max_slots || !s.occupied[seat]) {
+        text(g, x + 14.0f, y + 20.0f, 13.0f, kOff, "- OPEN -");
+        return;
+    }
+    const RecompLauncherCNetplayMember& mem = s.slots[seat];
+    std::string name = upper(mem.display_name);
+    if (name.size() > 16) name = name.substr(0, 15) + ".";
+    if (mem.is_local)
+        g.dl->AddRectFilledMultiColor(at(g, x + 1.0f, y + 1.0f), at(g, x + w - 1.0f, y + 30.0f),
+                                      IM_COL32(95, 224, 138, 40), IM_COL32(95, 224, 138, 0),
+                                      IM_COL32(95, 224, 138, 0), IM_COL32(95, 224, 138, 40));
+    text(g, x + 14.0f, y + 12.0f, 13.0f, mem.is_local ? kBright : kText, name.c_str());
+    if (mem.is_host) lamp(g, x + w - 12.0f, y + 10.0f, true, "HOST");
+    else if (mem.latency_ms >= 0 && !mem.is_local) {
+        std::snprintf(buf, sizeof buf, "%d MS", mem.latency_ms);
+        text_right(g, x + w - 12.0f, y + 13.0f, 10.0f, kDim, buf);
+    }
+    const float ey = y + 40.0f;
+    bool ready = remote_ready;
+    if (mem.is_local) {
+        ready = g_room_ready;
+        if (g_room_has_ac) {
+            draw_emblem(g, x + 14.0f, ey, 56.0f, g_room_ac);
+            text(g, x + 84.0f, ey + 2.0f, 12.0f, kBright, upper(g_room_ac.ac[0] ? g_room_ac.ac : "AC").c_str());
+            text(g, x + 84.0f, ey + 20.0f, 10.0f, kDim, upper(g_room_ac.pilot).c_str());
+            if (g_parts_state > 0) {
+                struct moa_build_check chk;
+                room_check(g_room_ac, &chk);
+                std::snprintf(buf, sizeof buf, "AP %d   WEIGHT %d", chk.ap, chk.weight);
+                text(g, x + 84.0f, ey + 38.0f, 10.0f, kText, buf);
+            }
+        } else {
+            g.dl->AddRect(at(g, x + 14.0f, ey), at(g, x + 70.0f, ey + 56.0f), kLine);
+            text(g, x + 84.0f, ey + 2.0f, 11.0f, kDim, "NO AC YET", w - 98.0f);
+        }
+    } else {
+        g.dl->AddRect(at(g, x + 14.0f, ey), at(g, x + 70.0f, ey + 56.0f), kLine);
+        text(g, x + 36.0f, ey + 14.0f, 22.0f, kDim, "?");
+        text(g, x + 84.0f, ey + 2.0f, 11.0f, kDim, "AC SHOWN AT LAUNCH", w - 98.0f);
+    }
+    const ImU32 col = ready ? kOn : kOff;
+    const char* what = ready ? "READY" : "NOT READY";
+    g.dl->AddRectFilled(at(g, x + 14.0f, y + h - 24.0f), at(g, x + 23.0f, y + h - 15.0f), col);
+    text(g, x + 32.0f, y + h - 27.0f, 12.0f, col, what);
+}
 
 static void draw_lobby_page(LauncherModel* m, const LauncherTheme& th,
                             const Gfx& g, const Input& in) {
     const auto* np = np_cb(m);
     if (!np) { launcher_model_set_view(m, LNG_VIEW_DASHBOARD); return; }
-    /* The stock room page's upkeep, in its order. */
+    /* The stock room page's upkeep, in its order. It runs whatever the room
+     * shows (the garage and its screens included), so the seat never lapses. */
     if (np->pump) np->pump(np->ctx);
     np_ingest_last_error(m, np);
-    const int has_card = np_local_memcard_has_card(m);
-    if (np->memcard_offer_set && has_card >= 0)
-        (void)np->memcard_offer_set(np->ctx, has_card, -1);
     if (np->local_launch_gate_set)
         np->local_launch_gate_set(np->ctx, launcher_model_can_launch(m) ? 1 : 0);
-    if (np->launch_pending && np->launch_pending(np->ctx))
+    if (np->launch_pending && np->launch_pending(np->ctx)) {
+        if (!g_room_launched) g_room_launch_at = std::chrono::steady_clock::now();
+        g_room_launched = true;
         np_try_launch(m);
+    }
     if (!np_lobby_seated(m, np)) {
         header(g, "VERSUS ROOM", "LINK SYSTEM");
         text(g, 38.0f, 92.0f, 12.0f, kDim, "LEAVING THE ROOM");
+        if (!g_room_launched) {
+            g_room_ready = false;
+            g_room_heard = false;
+            g_room_view = RV_MAIN;
+            g_room_garage = false;
+        }
         return;
     }
     /* Two seats, nothing to trade: an ask to swap is answered no. */
@@ -874,170 +1557,209 @@ static void draw_lobby_page(LauncherModel* m, const LauncherTheme& th,
 
     LobbySnapshot s;
     np_lobby_snapshot(m, np, &s);
+    room_ac_read();
 
-    int local_slot = -1;
-    for (int i = 0; i < s.max_slots; ++i)
-        if (s.occupied[i] && s.slots[i].is_local) local_slot = i;
+    /* Back from a match: everyone readies again. The launcher is not drawn
+     * while a match runs, so a long gap between two frames of this page means
+     * one ran (a launch that never happened leaves no gap). */
+    static std::chrono::steady_clock::time_point last_draw;
+    const auto now_clock = std::chrono::steady_clock::now();
+    const bool gap = last_draw.time_since_epoch().count() != 0 &&
+                     now_clock - last_draw > std::chrono::seconds(3);
+    last_draw = now_clock;
+    /* A launch that never left the launcher (refused, or START failed). */
+    if (g_room_launched && !gap && now_clock - g_room_launch_at > std::chrono::seconds(10))
+        g_room_launched = false;
+    if (g_room_launched && gap) {
+        g_room_launched = false;
+        g_room_ready = false;
+        g_room_count_at = 0.0;
+        g_room_started = false;
+        g_room_view = RV_MAIN;
+        room_disarm();
+        if (room_read_result(s)) {
+            /* The set ended as planned: the session's "the other player left"
+             * is just the peer ending it a moment earlier. */
+            m->netplay_status[0] = '\0';
+            if (np->clear_last_error) np->clear_last_error(np->ctx);
+        }
+    }
 
-    /* The guest's own memory card: the guest offers it, the host allows it. */
-    const bool card_known = np->memcard_offer_set && has_card >= 0 &&
-                            s.max_slots > 1 && s.occupied[1] &&
-                            s.slots[1].memcard_offer_valid;
-    const bool card_allowed = !np->guest_memcard_get || np->guest_memcard_get(np->ctx) != 0;
-    const bool card_offered = card_known && s.slots[1].memcard_has_card != 0;
-    const bool card_shared = card_offered && s.slots[1].memcard_share != 0;
-    const bool card_row = card_known && (s.is_host ? np->guest_memcard_set != nullptr
-                                                   : local_slot == 1 && card_offered);
+    int local_slot = -1, remote_slot = -1;
+    for (int i = 0; i < s.max_slots; ++i) {
+        if (!s.occupied[i] || s.slots[i].is_spectator) continue;
+        if (s.slots[i].is_local) local_slot = i;
+        else if (remote_slot < 0) remote_slot = i;
+    }
 
-    const bool can_start = s.seated_players >= 2 && !s.local_rom_missing &&
-                           s.peers_not_ready == 0 && s.peers_missing_files == 0 &&
-                           s.local_missing_files == 0;
-    const char* waiting =
-        s.seated_players < 2 ? "Waiting for another pilot to join."
-        : s.local_rom_missing ? "The game disc was not found on this machine."
-        : s.local_missing_files > 0 ? "This room's mods need files you have not selected."
-        : s.peers_not_ready > 0 ? "Waiting for the other pilot to be ready."
-        : s.peers_missing_files > 0 ? "The other pilot is missing files this room's mods need."
-        : nullptr;
+    /* The match options: the host publishes its own, a guest reads the host's. */
+    /* From START on, the options the host settled stand (the game reads them
+     * as this session starts): nothing here may touch them. */
+    const bool launching = g_room_launched;
+    if (s.is_host) {
+        g_room_heard = true;
+        if (np->room_opts_set && !launching)
+            (void)np->room_opts_set(np->ctx, room_opts_text(g_room, g_room.stage).c_str());
+        /* The guest's card is the match's slot 2: always allowed here. */
+        if (np->guest_memcard_get && np->guest_memcard_set && !np->guest_memcard_get(np->ctx))
+            (void)np->guest_memcard_set(np->ctx, 1);
+    } else {
+        char line[128] = {0};
+        RoomOpts heard;
+        if (np->room_opts_get && np->room_opts_get(np->ctx, line, sizeof line) &&
+            room_opts_parse(line, &heard)) {
+            g_room = heard;
+            g_room_heard = true;
+        } else if (!launching) {
+            g_room_heard = false;
+        }
+        if (g_room_ready && !launching && !room_opts_same(g_room_ready_opts, g_room)) {
+            g_room_ready = false;
+            room_disarm();
+            note("THE HOST CHANGED THE MATCH SETTINGS: READY AGAIN");
+        }
+    }
+    /* A READY that no longer holds (the AC or the rules changed). */
+    if (g_room_ready && !launching && room_ready_problem(m, s.is_host)) {
+        g_room_ready = false;
+        room_disarm();
+    }
+    /* READY rides on the card offer: has_card always (the room's match card),
+     * share = READY. The seat table shows it to the other pilot. */
+    if (np->memcard_offer_set && !launching)
+        (void)np->memcard_offer_set(np->ctx, 1, g_room_ready ? 1 : 0);
 
-    struct Entry { LobbyRow id; const char* label; bool toggle; bool on; };
-    Entry entries[5];
-    int count = 0;
-    if (s.is_host)
-        entries[count++] = { LOBBY_START, "START MATCH", false, false };
-    if (card_row)
-        entries[count++] = { LOBBY_CARD, s.is_host ? "GUEST MEMORY CARD"
-                                                   : "BRING MY MEMORY CARD",
-                             true, s.is_host ? card_allowed : card_shared };
-    entries[count++] = { LOBBY_SETTINGS, s.is_host ? "ROOM SETTINGS" : "ROOM INFO",
-                         false, false };
-    if (m->mods)
-        entries[count++] = { LOBBY_MODS, s.is_host ? "ROOM MODS" : "VIEW ROOM MODS",
-                             false, false };
-    entries[count++] = { LOBBY_LEAVE, "LEAVE ROOM", false, false };
+    const bool remote_ready = remote_slot >= 0 && s.slots[remote_slot].memcard_offer_valid &&
+                              s.slots[remote_slot].memcard_has_card && s.slots[remote_slot].memcard_share;
+    const bool room_ok = s.seated_players >= 2 && !s.local_rom_missing &&
+                         s.peers_missing_files == 0 && s.local_missing_files == 0;
+    const bool both = g_room_ready && remote_ready && room_ok;
+    const double now = ImGui::GetTime();
+    if (!both) {
+        g_room_count_at = 0.0;
+        g_room_started = false;
+    } else if (g_room_count_at <= 0.0) {
+        g_room_count_at = now;
+    }
+    const int count_left = both ? 3 - (int)(now - g_room_count_at) : 0;
+    if (both && s.is_host && !g_room_started && !launching && now - g_room_count_at >= 3.0) {
+        /* RANDOM becomes one stage now, the same on both PCs. */
+        int stage = g_room.stage;
+        if (stage == 0) {
+            static bool seeded = false;
+            if (!seeded) { std::srand((unsigned)std::time(nullptr)); seeded = true; }
+            stage = kRoomStages[std::rand() % (kRoomStageCount - 1)].id;
+        }
+        if (np->room_opts_set) (void)np->room_opts_set(np->ctx, room_opts_text(g_room, stage).c_str());
+        g_room_started = true;
+        g_room_launched = true;
+        g_room_launch_at = std::chrono::steady_clock::now();
+        np_lobby_start(m, np);
+    }
 
+    /* The garage's full screens draw in place of the room. */
+    if (g_room_view == RV_BUILDER) {
+        if (!g_room_garage || g_ai_sub == AI_SUB_SETUP || g_ai_sub == AI_SUB_CARDS) {
+            g_room_garage = false;
+            g_room_view = RV_GARAGE;
+        } else {
+            draw_ai_page(m, g, in);
+            return;
+        }
+    }
+    if (g_room_view == RV_GARAGE) { draw_room_garage(m, g, in); return; }
+    if (g_room_view == RV_SAVES)  { draw_room_load(m, g, in, true); return; }
+    if (g_room_view == RV_CARDS)  { draw_room_load(m, g, in, false); return; }
+    if (g_room_view == RV_SETTINGS) { draw_room_settings(m, g, in, s.is_host); return; }
+
+    const char* problem = room_ready_problem(m, s.is_host);
+    struct Entry { LobbyRow id; const char* label; };
+    const Entry entries[5] = {
+        { LOBBY_READY, "READY" },
+        { LOBBY_GARAGE, "GARAGE" },
+        { LOBBY_SETTINGS, "MATCH SETTINGS" },
+        { LOBBY_CONNECTION, s.is_host ? "CONNECTION" : "CONNECTION INFO" },
+        { LOBBY_LEAVE, "LEAVE ROOM" },
+    };
+    const int count = 5;
     move_cursor(PAGE_LOBBY, count, in, count);
     int& cur = g_state.cursor[PAGE_LOBBY];
 
     header(g, "VERSUS ROOM", s.is_host ? "YOU ARE THE HOST" : "YOU ARE THE GUEST");
+    draw_pilot(g, 24.0f, 66.0f, s, 0, local_slot != 0 && remote_ready);
+    draw_pilot(g, 328.0f, 66.0f, s, 1, local_slot != 1 && remote_ready);
 
-    const int seats = s.max_slots > 4 ? 4 : s.max_slots;
-    panel(g, 24.0f, 76.0f, 340.0f, 150.0f, "PILOTS");
-    for (int i = 0; i < seats; ++i) {
-        const float y = 90.0f + 32.0f * i;
-        char buf[96];
-        std::snprintf(buf, sizeof buf, "P%d", i + 1);
-        text(g, 40.0f, y + 6.0f, 13.0f, kDim, buf);
-        if (!s.occupied[i]) {
-            text(g, 76.0f, y + 6.0f, 13.0f, kOff, "- OPEN -");
-            continue;
-        }
-        const RecompLauncherCNetplayMember& mem = s.slots[i];
-        if (mem.is_local)
-            g.dl->AddRectFilledMultiColor(at(g, 25.0f, y), at(g, 363.0f, y + kRowH),
-                                          IM_COL32(95, 224, 138, 40),
-                                          IM_COL32(95, 224, 138, 0),
-                                          IM_COL32(95, 224, 138, 0),
-                                          IM_COL32(95, 224, 138, 40));
-        std::string name = upper(mem.display_name);
-        if (name.size() > 18) name = name.substr(0, 17) + ".";
-        text(g, 76.0f, y + 6.0f, 13.0f, mem.is_local ? kBright : kText, name.c_str());
-        if (mem.is_host) {
-            lamp(g, 350.0f, y + 5.0f, true, "HOST");
-        } else {
-            const bool ready = mem.ready &&
-                               !(mem.mod_readiness_valid && mem.mods_missing > 0);
-            lamp(g, 350.0f, y + 5.0f, ready, ready ? "RDY" : "WAIT");
-            if (mem.latency_ms >= 0 && !mem.is_local) {
-                std::snprintf(buf, sizeof buf, "%d MS", mem.latency_ms);
-                text_right(g, 302.0f, y + 8.0f, 10.0f, kDim, buf);
-            }
-        }
-    }
-
-    panel(g, 24.0f, 242.0f, 340.0f, 174.0f, "COMMAND");
+    panel(g, 24.0f, 228.0f, 288.0f, 188.0f, "COMMAND");
     int clicked = -1;
     for (int i = 0; i < count; ++i) {
         bool hovered = false;
-        const bool enabled = entries[i].id != LOBBY_START || can_start;
-        if (row(g, 25.0f, 252.0f + kRowH * i, 338.0f, i == cur, enabled,
-                entries[i].label, entries[i].toggle ? nullptr : ">",
-                entries[i].toggle, entries[i].on, &hovered))
+        const bool is_ready = entries[i].id == LOBBY_READY;
+        const bool enabled = !is_ready || g_room_ready || !problem;
+        const bool locked = entries[i].id == LOBBY_GARAGE && g_room_ready;
+        if (row(g, 25.0f, 240.0f + kRowH * i, 286.0f, i == cur, enabled && !locked, entries[i].label,
+                is_ready ? nullptr : ">", is_ready, g_room_ready, &hovered))
             clicked = i;
-        /* A greyed START still takes the cursor, so its reason can be read. */
         if (hover_moved(hovered)) cur = i;
     }
+    if (problem && !g_room_ready && cur == 0)
+        text(g, 38.0f, 376.0f, 10.0f, kWarn, problem, 262.0f);
+    else if (g_room_ready && cur == 1)
+        text(g, 38.0f, 376.0f, 10.0f, kDim, "Leave READY to change your AC.", 262.0f);
 
-    panel(g, 380.0f, 76.0f, 236.0f, 340.0f, "ROOM");
+    panel(g, 328.0f, 228.0f, 288.0f, 188.0f, s.is_host ? "MATCH" : "MATCH  ·  SET BY HOST");
     {
-        float y = 92.0f;
-        char buf[128];
-        text(g, 394.0f, y, 10.0f, kDim, "MATCH");
-        text(g, 474.0f, y, 10.0f, kText, "LINK VERSUS");
-        y += 17.0f;
-        text(g, 394.0f, y, 10.0f, kDim, "PILOTS");
-        std::snprintf(buf, sizeof buf, "%d OF %d", s.seated_players, s.max_slots);
-        text(g, 474.0f, y, 10.0f, kText, buf);
-        y += 17.0f;
-        bool show_public = false;
-        if (m->netplay_local_room && m->netplay_host_endpoint[0]) {
-            text(g, 394.0f, y, 10.0f, kDim, "ADDRESS");
-            text(g, 474.0f, y, 10.0f, kBright, m->netplay_host_endpoint);
-            y += 17.0f;
-            /* The public address (STUN, resolved once and cached, as on the
-             * Lobby Settings page) with the room's port. */
-            if (s.is_host) {
-                np_ensure_public_ip(m);
-                const char* port = std::strrchr(m->netplay_host_endpoint, ':');
-                if (m->netplay_public_ip[0] &&
-                    std::strcmp(m->netplay_public_ip, "Unavailable") != 0) {
-                    std::snprintf(buf, sizeof buf, "%s%s", m->netplay_public_ip,
-                                  port ? port : "");
-                    text(g, 394.0f, y, 10.0f, kDim, "PUBLIC");
-                    text(g, 474.0f, y, 10.0f, kBright, buf);
-                    y += 17.0f;
-                    show_public = true;
-                }
-            }
-        }
-        if (card_known) {
-            text(g, 394.0f, y, 10.0f, kDim, "P2 CARD");
-            text(g, 474.0f, y, 10.0f, kText,
-                 card_shared && card_allowed ? "GUEST'S OWN" : "HOST'S SLOT 2");
-            y += 17.0f;
-        }
-        y += 12.0f;
-        if (waiting) {
-            text(g, 394.0f, y, 11.0f, kHi, "STANDING BY");
-            text(g, 394.0f, y + 20.0f, 11.0f, kText, waiting, 208.0f);
-        } else if (s.is_host) {
-            text(g, 394.0f, y, 11.0f, kOn, "READY");
-            text(g, 394.0f, y + 20.0f, 11.0f, kText,
-                 "Both pilots are in. Start the match when you are ready.", 208.0f);
+        draw_room_stage(m, g, 340.0f, 240.0f, 104.0f, 86.0f, g_room_heard ? g_room.stage : 0);
+        float y = 240.0f;
+        const float lx = 456.0f;
+        if (!g_room_heard) {
+            text(g, lx, y, 10.0f, kDim, "WAITING FOR THE HOST", 150.0f);
         } else {
-            text(g, 394.0f, y, 11.0f, kOn, "READY");
-            text(g, 394.0f, y + 20.0f, 11.0f, kText,
-                 "Waiting for the host to start the match.", 208.0f);
+            text(g, lx, y, 10.0f, kDim, "STAGE");
+            text(g, lx, y + 13.0f, 11.0f, kBright, room_stage_name(g_room.stage));
+            text(g, lx, y + 32.0f, 10.0f, kDim, "TIME LIMIT");
+            text(g, lx, y + 45.0f, 11.0f, kBright, kRoomTimes[g_room.time]);
+            text(g, lx, y + 64.0f, 10.0f, kDim, "ROUNDS");
+            text(g, lx, y + 77.0f, 11.0f, kBright, room_rounds_label(g_room.rounds));
+            text(g, 340.0f, y + 96.0f, 10.0f, kDim, "GARAGE");
+            text(g, 400.0f, y + 96.0f, 10.0f, g_room.garage ? kHi : kText,
+                 g_room.garage ? "FULL (EVERY PART)" : "LOAD ONLY");
         }
-        if (s.is_host && s.seated_players < 2 && m->netplay_local_room)
-            text(g, 394.0f, y + 64.0f, 10.0f, kDim,
-                 show_public
-                     ? "Pilots on this network see the room in their list. Others "
-                       "join by the public address (UDP port forwarded to this PC)."
-                     : "Pilots on this network see the room in their list. Anyone "
-                       "else can join by the address above.", 208.0f);
-        if (m->netplay_status[0])
-            text(g, 394.0f, 330.0f, 10.0f, kWarn, m->netplay_status, 208.0f);
+        y = 352.0f;
+        if (s.seated_players < 2) {
+            text(g, 340.0f, y, 11.0f, kHi, "STANDING BY");
+            text(g, 340.0f, y + 16.0f, 10.0f, kText, "Waiting for another pilot to join.", 264.0f);
+        } else if (s.local_rom_missing) {
+            text(g, 340.0f, y, 10.0f, kWarn, "The game disc was not found on this machine.", 264.0f);
+        } else if (both) {
+            char b[48];
+            std::snprintf(b, sizeof b, "LAUNCHING IN %d", count_left > 0 ? count_left : 0);
+            text(g, 340.0f, y, 13.0f, kOn, b);
+            text(g, 340.0f, y + 18.0f, 10.0f, kText, "Leave READY to stop.", 264.0f);
+        } else if (g_room_ready) {
+            text(g, 340.0f, y, 11.0f, kHi, "READY");
+            text(g, 340.0f, y + 16.0f, 10.0f, kText, "Waiting for the other pilot.", 264.0f);
+        } else {
+            text(g, 340.0f, y, 11.0f, kHi, remote_ready ? "THE OTHER PILOT IS READY" : "STANDING BY");
+            text(g, 340.0f, y + 16.0f, 10.0f, kText, "Set your AC in the GARAGE, then press READY.", 264.0f);
+        }
+        if (!g_room_result.empty())
+            text(g, 340.0f, 398.0f, 10.0f, kDim, (std::string("LAST SET  ") + g_room_result).c_str(), 264.0f);
     }
-    footer(g, s.is_host ? "A / ENTER  SELECT      START  START MATCH      B / ESC  LEAVE"
-                        : "A / ENTER  SELECT      B / ESC  LEAVE");
+    if (m->netplay_status[0] && !both)
+        text(g, 38.0f, 396.0f, 10.0f, kWarn, m->netplay_status, 262.0f);
+    if (s.is_host && s.seated_players < 2 && m->netplay_local_room && m->netplay_host_endpoint[0]) {
+        char b[96];
+        std::snprintf(b, sizeof b, "ADDRESS  %s", m->netplay_host_endpoint);
+        text(g, 340.0f, 384.0f, 10.0f, kDim, b);
+    }
+    footer(g, "A / ENTER  SELECT      START  READY      B / ESC  LEAVE");
 
     moa_menu_lobby_popups(m, th, np, s);
 
     int activate = -1;
     if (clicked >= 0) activate = cur = clicked;
     else if (in.confirm) activate = cur;
-    else if (in.start && s.is_host) activate = 0;
+    else if (in.start) activate = 0;
     else if (in.back && entries[cur].id != LOBBY_LEAVE) {
         /* Back does not drop a seat by accident: it goes to LEAVE ROOM, and
          * a second press there leaves. */
@@ -1048,28 +1770,36 @@ static void draw_lobby_page(LauncherModel* m, const LauncherTheme& th,
     }
     if (activate < 0) return;
     switch (entries[activate].id) {
-        case LOBBY_START:
-            if (can_start) np_lobby_start(m, np);
-            else note("NOT READY TO START YET");
-            break;
-        case LOBBY_CARD:
-            if (s.is_host) {
-                if (np->guest_memcard_set)
-                    (void)np->guest_memcard_set(np->ctx, card_allowed ? 0 : 1);
-            } else {
-                (void)np->memcard_offer_set(np->ctx, has_card > 0 ? 1 : 0,
-                                            card_shared ? 0 : 1);
+        case LOBBY_READY:
+            if (launching) break;
+            if (g_room_ready) {
+                g_room_ready = false;
+                room_disarm();
+            } else if (problem) {
+                note("NOT READY YET");
+            } else if (room_arm(m)) {
+                g_room_ready = true;
+                g_room_ready_opts = g_room;
             }
             break;
+        case LOBBY_GARAGE:
+            if (g_room_ready) { note("LEAVE READY TO CHANGE YOUR AC"); break; }
+            g_state.cursor[PAGE_LOBBY] = 0;
+            g_room_view = RV_GARAGE;
+            break;
         case LOBBY_SETTINGS:
+            g_state.cursor[PAGE_NET_MODE] = 0;
+            g_room_view = RV_SETTINGS;
+            break;
+        case LOBBY_CONNECTION:
             g_lobby_settings_synced = false;
             m->netplay_lobby_settings_open = true;
             break;
-        case LOBBY_MODS:
-            m->netplay_lobby_mods_open = true;
-            break;
         case LOBBY_LEAVE:
             g_state.cursor[PAGE_LOBBY] = 0;
+            g_room_ready = false;
+            g_room_launched = false;
+            room_disarm();
             np_lobby_leave(m, np);
             break;
     }

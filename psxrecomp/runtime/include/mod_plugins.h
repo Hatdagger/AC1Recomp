@@ -108,6 +108,11 @@ int psx_mod_fast_forward_requested(void);
  * for percent 0..100, a progress bar (percent < 0: no bar). NULL or "" ends
  * it. Cleared when a session ends. */
 void psx_mod_set_loading_screen(const char *text, int percent);
+/* The same loading screen for trusted game code during a netplay session
+ * (presentation only: host state the guest never sees, so each peer may show
+ * its own). Its picture is psx_mod_set_loading_image, as offline. While it is
+ * up in netplay the screen is redrawn about 30 times a second at most. */
+void psx_game_netplay_loading_screen(const char *text, int percent);
 /* Offline only. A picture for the loading screen, 0xAARRGGBB, stretched over
  * the whole window instead of the black screen and OSD text (the text passed
  * above is then only logged). Copied; NULL clears it. Render it at the

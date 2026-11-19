@@ -53,6 +53,7 @@
 
 #include <map>
 #include <atomic>
+#include <chrono>
 #include <mutex>
 #include <thread>
 #if defined(_MSC_VER)

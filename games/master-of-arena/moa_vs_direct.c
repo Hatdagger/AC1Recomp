@@ -8,6 +8,7 @@
  */
 #include "moa_vs_direct.h"
 #include "moa_card.h"
+#include "moa_netplay_room.h"
 
 #include "mod_plugins.h"
 #include "cpu_state.h"
@@ -395,6 +396,9 @@ static int vsd_np_title_filter(struct CPUState *cpu, uint32_t address)
         psx_mod_read_word(VSD_FADE) != VSD_SIG_FADE ||
         psx_mod_read_word(VSD_MENU_VS_START) != VSD_SIG_VS_START)
         return 0;
+    /* A new session: the versus room forgets the last match (before the
+     * versus menu's setup below runs its hooks). */
+    moa_np_room_session_start();
     static struct moa_vs_unit unit[2];
     int have[2];
     for (unsigned p = 0; p < 2; p++) have[p] = vsd_np_card_unit(p, &unit[p]);
@@ -414,6 +418,9 @@ static int vsd_np_title_filter(struct CPUState *cpu, uint32_t address)
      * players' staging, which the cards' units now replace. */
     for (unsigned p = 0; p < 2; p++)
         if (have[p]) moa_vs_direct_set_unit(p, &unit[p]);
+    /* The launcher's versus room: its time limit (guest memory, before VS
+     * START compiles the players) and the VS screen (moa_netplay_room.c). */
+    moa_np_room_title();
     const struct vsd_np n = { NP_PHASE_DOWN, 0, 0, 0 };
     vsd_np_put(&n);
     psx_mod_counter_add(have[0] && have[1] ? "moa.vsd.net_boot" : "moa.vsd.net_boot_one_card", 1);
@@ -435,6 +442,7 @@ static void vsd_np_input_entry(struct CPUState *cpu, uint32_t address)
         vsd_np_end("moa.vsd.net_left_menu");
         return;
     }
+    moa_np_room_tick();
     uint16_t press = 0;
     const uint32_t t = n.t;
     switch (n.phase) {
@@ -481,6 +489,7 @@ static int vsd_np_vs_start_filter(struct CPUState *cpu, uint32_t address)
         psx_mod_read_word(address) != VSD_SIG_VS_START)
         return 0;
     if (n.phase == NP_PHASE_PRESS) n.phase = NP_PHASE_LOADING;
+    moa_np_room_tick();
     unsigned step = n.step;
     uint32_t frames = n.frames;
     int timed_out = 0;

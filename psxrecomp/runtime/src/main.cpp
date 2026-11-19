@@ -713,8 +713,19 @@ static int g_mod_loading = 0;
 static int mod_loading_image_ready(void);
 static uint64_t s_mod_loading_last_ms = 0;
 static char s_mod_loading_text[200];
+static void mod_loading_screen_set(const char *text, int percent, int allow_netplay);
 extern "C" void psx_mod_set_loading_screen(const char *text, int percent) {
-    if (!text || !text[0] || psx_netplay_active()) {
+    mod_loading_screen_set(text, percent, 0);
+}
+/* The same for trusted game code during a netplay session (MoA versus room:
+ * the VS screen over the boot and the loads). Presentation only: host state
+ * the guest never sees, so each peer may show its own. The picture comes from
+ * psx_mod_set_loading_image as offline. */
+extern "C" void psx_game_netplay_loading_screen(const char *text, int percent) {
+    mod_loading_screen_set(text, percent, 1);
+}
+static void mod_loading_screen_set(const char *text, int percent, int allow_netplay) {
+    if (!text || !text[0] || (psx_netplay_active() && !allow_netplay)) {
         if (g_mod_loading) {
             g_mod_loading = 0;
             s_mod_loading_text[0] = '\0';
@@ -2105,6 +2116,22 @@ extern "C" int psx_mod_set_load_acceleration(
     g_mod_load_wall_multiplier = (int)wall_clock_multiplier;
     g_mod_load_release_frames = (int)release_frames;
     return 1;
+}
+
+/* One integer from the netplay match options the host settled at START
+ * (PSX_NET_GAME_OPTS, "key=value;key=value", identical on every peer). */
+static int netplay_game_opt_int(const char *key, int fallback) {
+    const char *opts = std::getenv("PSX_NET_GAME_OPTS");
+    const size_t klen = key ? std::strlen(key) : 0;
+    if (!opts || !klen) return fallback;
+    for (const char *p = opts; *p;) {
+        if (std::strncmp(p, key, klen) == 0 && p[klen] == '=')
+            return std::atoi(p + klen + 1);
+        const char *semi = std::strchr(p, ';');
+        if (!semi) break;
+        p = semi + 1;
+    }
+    return fallback;
 }
 
 extern "C" int psx_mod_set_disc_speed(
@@ -9930,6 +9957,16 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
 
     refresh_host_display_cadence(0, 0);
 
+    /* Netplay with a game's loading screen up (MoA's VS screen): the game
+     * picture is hidden, so the screen is redrawn about 30 times a second at
+     * most. Pacing and the netplay epilogue still run (skip_pace stays 0):
+     * only host presentation work is saved. */
+    if (g_mod_loading && psx_netplay_active()) {
+        const uint64_t now = (uint64_t)SDL_GetTicks();
+        if (now - s_mod_loading_last_ms < 33u) return ep;
+        s_mod_loading_last_ms = now;
+    }
+
     /* TCP turbo is for automated validation and trace capture. It keeps the
      * simulation advancing and the debug server polling, but removes frontend
      * presentation and wall-clock pacing. */
@@ -12712,6 +12749,26 @@ namespace {
         return (bool)f;
     }
 
+    /* Title room options (MoA versus room): the host's short "key=value;..."
+     * line, published to every seat while the room waits (MOTK7 OPTS, sent
+     * with every UPDATE) so guests can show the host's choices, and settled
+     * into the START caps as the title's match options (PSX_NET_GAME_OPTS).
+     * Older guests ignore the message. */
+    std::string g_lnch_room_opts;               /* host: its own line */
+    std::string g_lnch_remote_room_opts;        /* guest: the host's line */
+    bool g_lnch_remote_room_opts_known = false;
+    uint32_t g_lnch_lan_room_pulse_ms = 0;
+    static void ae_np_lan_send_room_opts_to_peers(const AeLanLobbyState& state) {
+        char msg[256];
+        std::snprintf(msg, sizeof(msg), "MOTK7 OPTS\n%u\n%s\n",
+                      (unsigned)(state.session_id ? state.session_id : 1u),
+                      g_lnch_room_opts.c_str());
+        for (int i = 0; i < kAeLanMaxSlots; ++i) {
+            if (!g_lnch_lan_peer_ok[i]) continue;
+            ae_np_lan_udp_sendto(g_lnch_lan_peers[i], msg);
+        }
+    }
+
     static void ae_np_lan_send_update_to_peers(const AeLanLobbyState& state_in) {
         AeLanLobbyState state = state_in;
         ae_np_lan_sync_legacy_names(state);
@@ -12778,6 +12835,8 @@ namespace {
             if (off4 > 0) ae_np_lan_udp_sendto(g_lnch_lan_peers[i], msg4);
             if (off5 > 0) ae_np_lan_udp_sendto(g_lnch_lan_peers[i], msg5);
         }
+        if (g_lnch_hosting_lan && !g_lnch_room_opts.empty())
+            ae_np_lan_send_room_opts_to_peers(state);
     }
 
     static void ae_np_lan_atexit_cleanup(void) {
@@ -13965,6 +14024,24 @@ namespace {
         return 1;
     }
 
+    /* Title match options (PSX_NET_GAME_OPTS): the host's value is settled
+     * into the START caps, and every peer exports the settled value before
+     * the match so the title's netplay hooks all read the same text. */
+    static void ae_np_host_game_opts(char* out, size_t cap) {
+        const char* e = std::getenv("PSX_NET_GAME_OPTS");
+        psx_lobby_clean_game_opts(out, cap, e ? e : "");
+    }
+    static void ae_np_export_game_opts(const char* settled) {
+        char v[96];
+        psx_lobby_clean_game_opts(v, sizeof(v), settled ? settled : "");
+#ifdef _WIN32
+        _putenv_s("PSX_NET_GAME_OPTS", v);
+#else
+        setenv("PSX_NET_GAME_OPTS", v, 1);
+#endif
+        std::fprintf(stdout, "psxrecomp: match game options = \"%s\"\n", v);
+    }
+
     PsxLobbyMatchCaps ae_netplay_caps_from_settings(const RecompLauncherCSettings* s) {
         PsxLobbyMatchCaps caps{};
         caps.valid = 1;
@@ -14089,6 +14166,36 @@ namespace {
             (void)psx_lobby_set_ready(1);
         }
         return 0;
+    }
+    /* Title room options (see g_lnch_room_opts). The host's line is also
+     * the match options it settles at START, so set exports it at once. */
+    int ae_np_room_opts_set(void*, const char* opts) {
+        if (g_lnch_joined_lan && !g_lnch_hosting_lan) return -1;   /* host only */
+        char clean[96];
+        psx_lobby_clean_game_opts(clean, sizeof(clean), opts ? opts : "");
+#ifdef _WIN32
+        _putenv_s("PSX_NET_GAME_OPTS", clean);
+#else
+        setenv("PSX_NET_GAME_OPTS", clean, 1);
+#endif
+        if (g_lnch_room_opts == clean) return 0;
+        g_lnch_room_opts = clean;
+        if (g_lnch_hosting_lan) {
+            AeLanLobbyState st;
+            if (ae_np_read_lan_state(&st)) ae_np_lan_send_room_opts_to_peers(st);
+        }
+        return 0;
+    }
+    int ae_np_room_opts_get(void*, char* out, size_t out_cap) {
+        if (!out || out_cap == 0) return 0;
+        out[0] = '\0';
+        if (g_lnch_joined_lan && !g_lnch_hosting_lan) {
+            if (!g_lnch_remote_room_opts_known) return 0;
+            std::snprintf(out, out_cap, "%s", g_lnch_remote_room_opts.c_str());
+            return 1;
+        }
+        std::snprintf(out, out_cap, "%s", g_lnch_room_opts.c_str());
+        return 1;
     }
     int ae_np_guest_memcard_get(void*) {
         if (g_lnch_joined_lan) return g_lnch_lan_guest_memcard_allow ? 1 : 0;
@@ -14781,6 +14888,18 @@ namespace {
             const int lobby_port = ae_np_lan_endpoint_port(st.endpoint);
             if (g_lnch_lan_udp == kAeLanSockInvalid)
                 (void)ae_np_lan_udp_ensure(true, lobby_port);
+            /* While a guest waits in the room: re-send the seat table (and
+             * the room options with it) every 1.5 s. A guest whose memory
+             * card offer was lost (UDP) sees the wrong echo and sends it
+             * again, so a READY that rides on that offer cannot stay lost. */
+            if (g_lnch_lan_udp != kAeLanSockInvalid && !st.started &&
+                ae_np_lan_occupied(st) > 1) {
+                const uint32_t now = SDL_GetTicks();
+                if (now - g_lnch_lan_room_pulse_ms >= 1500u) {
+                    g_lnch_lan_room_pulse_ms = now;
+                    ae_np_lan_send_update_to_peers(st);
+                }
+            }
             /* Periodic broadcast BEACON so Refresh can find us without a
              * unicast target (and for guests that listen between browses). */
             if (g_lnch_lan_udp != kAeLanSockInvalid && !st.started) {
@@ -15152,6 +15271,20 @@ namespace {
                 continue;
             }
 
+            if (std::strncmp(buf, "MOTK7 OPTS\n", 11) == 0 && g_lnch_remote_lan) {
+                /* MOTK7 OPTS\n<session>\n<room options>\n from the host. */
+                char* p = std::strchr(buf + 11, '\n');
+                if (!p) continue;
+                ++p;
+                char* nl = std::strchr(p, '\n');
+                if (nl) *nl = '\0';
+                char clean[96];
+                psx_lobby_clean_game_opts(clean, sizeof(clean), p);
+                g_lnch_remote_room_opts = clean;
+                g_lnch_remote_room_opts_known = true;
+                continue;
+            }
+
             if (std::strncmp(buf, "MOTK5 UPDATE\n", 13) == 0) {
                 AeLanLobbyState st = g_lnch_remote_lan_state;
                 if (ae_np_lan_parse_motk5_update(buf + 13, &st) != 0) continue;
@@ -15302,7 +15435,7 @@ namespace {
                 (g_lnch_remote_lan || !g_netplay_content_negotiation)) {
                 g_lnch_remote_lan_state.started = true;
                 /* MOTK1 START\n<session>\n[<delay>\n<prediction>\n<rollback>\n
-                 * [<session_bios>\n[<guest_memcard>\n[<session_bios_crc>\n]]]]
+                 * [<session_bios>\n[<guest_memcard>\n[<session_bios_crc>\n[<game_opts>\n]]]]]
                  * Trailing caps are host-authoritative (incl. settled BIOS). */
                 char* p = buf + 12;
                 char* nl = std::strchr(p, '\n');
@@ -15317,10 +15450,11 @@ namespace {
                 /* Default off: a legacy host never uploads a guest card, and
                  * a guest that waited for one would stall the match. */
                 g_lnch_lan_guest_memcard_active = 0;
+                ae_np_export_game_opts("");   /* an older host sends none */
                 if (nl) {
                     p = nl + 1;
-                    char* lines[6] = {};
-                    for (int i = 0; i < 6; ++i) {
+                    char* lines[7] = {};
+                    for (int i = 0; i < 7; ++i) {
                         if (!p || !*p) break;
                         lines[i] = p;
                         char* n2 = std::strchr(p, '\n');
@@ -15331,6 +15465,9 @@ namespace {
                             p = nullptr;
                         }
                     }
+                    /* Line 7: the title's match options (absent from an
+                     * older host: none). */
+                    if (lines[6]) ae_np_export_game_opts(lines[6]);
                     if (lines[4] && lines[4][0])
                         g_lnch_lan_guest_memcard_active =
                             (std::atoi(lines[4]) != 0) ? 1 : 0;
@@ -15361,9 +15498,12 @@ namespace {
                 if (g_lnch_lan_start_plan_session == g_lnch_remote_lan_state.session_id &&
                     !g_lnch_remote_lan_state.mod_caps_json.empty()) {
                     PsxLobbyMatchCaps caps{};
-                    if (psx_lobby_decode_match_caps(g_lnch_remote_lan_state.mod_caps_json.c_str(), &caps) &&
-                        caps.session_bios[0])
-                        ae_np_set_session_bios_token(caps.session_bios, caps.session_bios_crc);
+                    if (psx_lobby_decode_match_caps(g_lnch_remote_lan_state.mod_caps_json.c_str(), &caps)) {
+                        /* MOTK6: the options travel in the plan's caps. */
+                        ae_np_export_game_opts(caps.game_opts);
+                        if (caps.session_bios[0])
+                            ae_np_set_session_bios_token(caps.session_bios, caps.session_bios_crc);
+                    }
                 }
                 continue;
             }
@@ -15833,6 +15973,9 @@ namespace {
      * (prefer 7778); never advertise :0 to the lobby. */
     int ae_np_join(void*, const char* lobby_id, const char* password,
                    char* guest_bind) {
+        /* A new room: its host's options are unknown until it sends them. */
+        g_lnch_remote_room_opts.clear();
+        g_lnch_remote_room_opts_known = false;
         char bind_buf[64];
         const char* bind = guest_bind;
         const char* colon = (bind && bind[0]) ? std::strrchr(bind, ':') : nullptr;
@@ -15936,6 +16079,8 @@ namespace {
     }
 
     int ae_np_leave(void*) {
+        g_lnch_remote_room_opts.clear();
+        g_lnch_remote_room_opts_known = false;
         if (g_netplay_content_negotiation && (g_lnch_hosting_lan || g_lnch_joined_lan))
             psx_lobby_set_local_match_caps(nullptr);
         if (g_lnch_hosting_lan) {
@@ -16263,6 +16408,7 @@ namespace {
                                        size_t why_cap) {
         *caps = ae_netplay_caps_from_settings(settings);
         caps->guest_memcard_active = ae_np_ws_guest_memcard_effective();
+        ae_np_host_game_opts(caps->game_opts, sizeof(caps->game_opts));
         std::fprintf(stdout, "psxrecomp: lobby guest memcard (P2 card as slot 2) = %s\n",
                      caps->guest_memcard_active ? "on" : "off");
         return psx_lobby_settle_session_bios(caps->session_bios, sizeof(caps->session_bios),
@@ -16396,6 +16542,7 @@ namespace {
                               "%s", g_lnch_session_bios);
                 caps.session_bios_crc = session_crc;
                 caps.guest_memcard_active = g_lnch_lan_guest_memcard_active;
+                ae_np_host_game_opts(caps.game_opts, sizeof(caps.game_opts));
                 char caps_wire[8192];
                 if (!g_lnch_mod_plan_error.empty() ||
                     !psx_lobby_encode_match_caps(caps_wire, sizeof(caps_wire), &caps)) return -1;
@@ -16420,6 +16567,9 @@ namespace {
             char session_crc_text[16];
             netplay_bios_format_crc(g_lnch_session_bios_crc, session_crc_text,
                                     sizeof(session_crc_text));
+            char lan_game_opts[96];
+            ae_np_host_game_opts(lan_game_opts, sizeof(lan_game_opts));
+            ae_np_export_game_opts(lan_game_opts);
             if (g_netplay_content_negotiation)
                 std::snprintf(start_msg, sizeof(start_msg),
                               "MOTK6 START\n%u\n%d\n%d\n%d\n%s\n%d\n%s",
@@ -16431,13 +16581,13 @@ namespace {
                               state.mod_caps_json.c_str());
             else
                 std::snprintf(start_msg, sizeof(start_msg),
-                              "MOTK1 START\n%u\n%d\n%d\n%d\n%s\n%d\n%s\n",
+                              "MOTK1 START\n%u\n%d\n%d\n%d\n%s\n%d\n%s\n%s\n",
                               (unsigned)state.session_id, delay, pred,
                               g_lnch_rollback ? 1 : 0,
                               g_lnch_session_bios[0] ? g_lnch_session_bios
                                                     : "openbios",
                               g_lnch_lan_guest_memcard_active ? 1 : 0,
-                              session_crc_text);
+                              session_crc_text, lan_game_opts);
             for (int i = 0; i < kAeLanMaxSlots; ++i) {
                 if (g_lnch_lan_peer_ok[i])
                     ae_np_lan_udp_sendto(g_lnch_lan_peers[i], start_msg);
@@ -16819,6 +16969,7 @@ namespace {
         /* From the START caps, not this peer's seat table: the host settled
          * it once, so a toggle racing the start cannot split the room. */
         out->guest_memcard = caps->guest_memcard_active ? 1 : 0;
+        ae_np_export_game_opts(caps->game_opts);
         if (caps->session_bios[0])
             ae_np_set_session_bios_token(caps->session_bios,
                                          caps->session_bios_crc);
@@ -17077,6 +17228,8 @@ namespace {
         g_lnch_netplay_callbacks.relay_via_ice_set = ae_np_relay_via_ice_set;
 #endif
         g_lnch_netplay_callbacks.memcard_offer_set = ae_np_memcard_offer_set;
+        g_lnch_netplay_callbacks.room_opts_set = ae_np_room_opts_set;
+        g_lnch_netplay_callbacks.room_opts_get = ae_np_room_opts_get;
         g_lnch_netplay_callbacks.guest_memcard_get = ae_np_guest_memcard_get;
         g_lnch_netplay_callbacks.guest_memcard_set = ae_np_guest_memcard_set;
         g_lnch_netplay_callbacks.chat_send = ae_np_chat_send;
@@ -20541,10 +20694,24 @@ session_reboot:
         else if (disc_speed == "2x") divisor = 2;
         if (g_mod_disc_speed_divisor >= 0)
             divisor = g_mod_disc_speed_divisor;
+        /* Netplay: mod plans are cleared for a match, but the host may settle
+         * a faster drive in the match options ("fastdisc=N": N data sectors a
+         * frame, the bounded instant mode). Every peer reads the same settled
+         * value before its session starts, so all drives keep identical
+         * timing (and the drive's speed is part of every snapshot, so
+         * rollback replays it). XA music, voice and movies keep real timing. */
+        int netplay_fast_rate = 0;
+        if (net_cfg.enabled) {
+            netplay_fast_rate = netplay_game_opt_int("fastdisc", 0);
+            if (netplay_fast_rate >= 1 && netplay_fast_rate <= 256) divisor = 0;
+            else netplay_fast_rate = 0;
+        }
         /* Store for post-BIOS application; boot always runs at 1x so the
          * BIOS disc-init sequence sees correct timing. */
         cdrom_set_game_speed(divisor);
-        if (g_mod_disc_instant_rate > 0)
+        if (netplay_fast_rate > 0)
+            cdrom_set_instant_rate(netplay_fast_rate);
+        else if (g_mod_disc_instant_rate > 0)
             cdrom_set_instant_rate(g_mod_disc_instant_rate);
         else if (instant_rate > 0)
             cdrom_set_instant_rate(instant_rate);
@@ -20566,20 +20733,29 @@ session_reboot:
         std::string mc2 = memcard2_path.string();
         /* A session card in slot 1 (MoA Arena Run: the run's own card,
          * kept beside the player's), never written into the settings. The
-         * folder for files kept beside the card stays the player's own. */
+         * folder for files kept beside the card stays the player's own.
+         * The netplay session does not exist yet at this point
+         * (psx_netplay_active() is still 0), so the launch config decides:
+         * offline sessions take PSX_MEMCARD1_SESSION, netplay matches
+         * PSX_MEMCARD1_NETPLAY (MoA versus room: this player's AC alone on a
+         * match-only card; the host's becomes the match's slot 1, a guest
+         * bringing its card uploads it as slot 2). An offline mode's leftover
+         * session card never reaches a match. */
+        const bool netplay_launch = net_cfg.enabled != 0;
         std::string card_home_mc1 = mc1;
         {
-            const char *session_card1 = std::getenv("PSX_MEMCARD1_SESSION");
-            if (session_card1 && session_card1[0] && !psx_netplay_active()) {
+            const char *session_card1 = std::getenv(
+                netplay_launch ? "PSX_MEMCARD1_NETPLAY" : "PSX_MEMCARD1_SESSION");
+            if (session_card1 && session_card1[0]) {
                 mc1 = session_card1;
                 memcard1_enabled = true;
             }
         }
         /* A session-only card in slot 2 (MoA AI Battle: the two units' saves),
-         * never written into the player's settings. */
+         * never written into the player's settings. Offline only. */
         {
             const char *session_card2 = std::getenv("PSX_MEMCARD2_SESSION");
-            if (session_card2 && session_card2[0] && !psx_netplay_active()) {
+            if (session_card2 && session_card2[0] && !netplay_launch) {
                 mc2 = session_card2;
                 memcard2_enabled = true;
             }

@@ -9432,6 +9432,7 @@ static void headless_present_image_ring_capture(void) {
 static int debug_toggles_on(void);
 static int debug_toggle_key(int key, char *out, int cap);
 #endif
+static void practice_room_pump(void);
 static bool drain_host_events() {
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
@@ -9749,6 +9750,8 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     /* Direct-shortcut claims are settled before any shortcut poll or pad
      * sample this frame (no-op unless a title allowed a direct shortcut). */
     direct_shortcut_claim_update();
+    /* Practice while waiting: the room's seat lives on (no-op otherwise). */
+    practice_room_pump();
     if (!g_headless) {
         /* Pump SDL events to prevent window freeze. */
         psx_local_mouse_begin(sdl_window, local_mouse_live(override));
@@ -16332,6 +16335,27 @@ namespace {
         return 1;
     }
 
+    /* Practice while waiting (MoA versus room): an offline game started from
+     * a room keeps the room's upkeep going from the frame loop, as the room
+     * page does, and reads the seat table: 1 = seated with another pilot,
+     * 0 = seated alone, -1 = the seat is gone. *other_ready: the other
+     * pilot's READY (the card offer's share bit, as the room shows it). */
+    int ae_np_practice_tick(int* other_ready) {
+        if (other_ready) *other_ready = 0;
+        ae_np_pump(nullptr);
+        if (!ae_np_in_lobby(nullptr)) return -1;
+        int others = 0;
+        for (int i = 0; i < 16; ++i) {
+            RecompLauncherCNetplayMember mem{};
+            if (!ae_np_member_get(nullptr, i, &mem)) break;
+            if (mem.is_local || mem.is_spectator) continue;
+            ++others;
+            if (other_ready && mem.memcard_offer_valid && mem.memcard_has_card && mem.memcard_share)
+                *other_ready = 1;
+        }
+        return others > 0 ? 1 : 0;
+    }
+
     /* The lobby seat the host currently holds (player or gallery), or -1. */
     static int ae_np_ws_host_seat(void) {
         const char* host_id = psx_lobby_host_player_id();
@@ -17348,6 +17372,27 @@ namespace {
     }
 }  // namespace
 #endif
+
+/* Practice while waiting (MoA versus room, games/master-of-arena): the
+ * launcher sets PSX_MOA_PRACTICE=1 for an offline game started from a room.
+ * Every frame of it pumps the room (lobby or LAN room), so the seat lives on
+ * and the other pilot's READY is heard; psx_mod_room_practice_status gives the
+ * game the last reading. */
+static int s_practice_status = -1, s_practice_other_ready = 0;
+static int practice_session(void) {
+    const char* e = std::getenv("PSX_MOA_PRACTICE");
+    return e && e[0] == '1' && !psx_netplay_active();
+}
+static void practice_room_pump(void) {
+#if defined(RECOMP_LAUNCHER)
+    if (!practice_session()) return;
+    s_practice_status = ae_np_practice_tick(&s_practice_other_ready);
+#endif
+}
+extern "C" int psx_mod_room_practice_status(int* other_ready) {
+    if (other_ready) *other_ready = practice_session() ? s_practice_other_ready : 0;
+    return practice_session() ? s_practice_status : -1;
+}
 
 /* [timing] guest_cycle_scale_gate reader: main RAM only, side-effect free
  * (aligned little-endian word of the given size). */
@@ -21878,7 +21923,10 @@ soft_return_lobby:
         /* A human-hosted room survives the match and is where a rematch
          * happens; an automatch room is the server's and cannot. Leave it
          * here, and reopen the launcher on the browser instead. */
-        const int rui_resume_room = offline_return ? 0 :
+        /* Practice while waiting: back to the room it was started from,
+         * while the seat is still there. */
+        const int rui_resume_room = offline_return ?
+            ((practice_session() && ae_np_in_lobby(nullptr)) ? 1 : 0) :
             (ae_np_leave_automatch_room_after_match() ? 0 : 1);
 
         ae_rui_set_sidecar_paths(argv[0]);

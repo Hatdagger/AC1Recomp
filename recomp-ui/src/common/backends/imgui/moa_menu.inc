@@ -1658,6 +1658,8 @@ static void draw(LauncherModel* m, const LauncherTheme& th) {
         g_state.last_view = (int)m->view;
         g_state.note[0] = '\0';
     }
+    /* Back from practice while waiting (moa_menu_net.inc): READY again, or not. */
+    room_practice_settle(m, m->view == LNG_VIEW_LOBBY);
     switch (m->view) {
         case LNG_VIEW_SETTINGS: draw_settings_page(m, g, in); break;
         case LNG_VIEW_MODS:     draw_mods_page(m, g, in); break;

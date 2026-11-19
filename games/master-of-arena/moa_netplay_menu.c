@@ -153,6 +153,7 @@ static void nm_seen(int port, int c)
     M.last_other = c;
     M.last_other_ms = now;
     if (is_req(c)) {
+        if (M.open && M.page == 0 && !M.incoming) M.cursor += 2;  /* ACCEPT / DECLINE go on top */
         M.incoming = c;
         M.incoming_ms = now;
     } else if (c == C_DECLINE) {

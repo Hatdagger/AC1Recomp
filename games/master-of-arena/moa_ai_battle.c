@@ -208,6 +208,51 @@ static int moa_ai_init_filter(struct CPUState *cpu, uint32_t address)
     return 1;
 }
 
+/* ---- practice while waiting (the versus room, PSX_MOA_PRACTICE=1) ----------
+ *
+ * The launcher starts Player vs AI from a versus room while the other pilot
+ * isn't ready (recomp-ui moa_menu_net.inc): the room's AC as unit 1, flown by
+ * the player, against the game's new-game AC as a target dummy, unit 2. The
+ * dummy gets no AI input (it stands still) and its AP is held at the maximum
+ * every frame (one hit can't take a whole AC's AP), so it never goes down; the
+ * arena engine has no time limit, so a practice fight ends only when the
+ * player leaves it. The runtime keeps the room's seat alive meanwhile and
+ * says when the other pilot readies (psx_mod_room_practice_status): a notice
+ * shows over the fight for 3 seconds, then the game goes back to the room,
+ * which readies this pilot again (PSX_MOA_PRACTICE_END=ready). Leaving the
+ * fight by choice: =left (back to the room, not ready). The room lost: =lost. */
+static int moa_practice(void)
+{
+    const char *e = getenv("PSX_MOA_PRACTICE");
+    return e && e[0] == '1';
+}
+
+static void moa_practice_end(const char *how)
+{
+    const char *e = getenv("PSX_MOA_PRACTICE_END");
+    if (e && e[0]) return;                            /* the first reason stands */
+#ifdef _WIN32
+    _putenv_s("PSX_MOA_PRACTICE_END", how);
+#else
+    setenv("PSX_MOA_PRACTICE_END", how, 1);
+#endif
+}
+
+/* Unit 2 as a target dummy, after the AI's frame: no buttons, AP full. */
+static void moa_practice_dummy(void)
+{
+    const uint32_t slot2 = MOA_SLOT1 + MOA_SLOT_BYTES;
+    psx_mod_write_half(slot2 + MOA_SLOT_PAD, 0);
+    psx_mod_write_half(slot2 + MOA_SLOT_PAD_PREV, 0);
+    psx_mod_write_half(slot2, 0);                     /* the raw word as well */
+    psx_mod_write_half(slot2 + 2u, 0);
+    const uint32_t o1 = psx_mod_read_word(MOA_SLOT1 + MOA_SLOT_OBJECT);
+    const uint32_t o2 = psx_mod_read_word(slot2 + MOA_SLOT_OBJECT);
+    if (o1 < 0x80100000u || o1 >= 0x80200000u || o2 != o1 + MOA_OBJECT_BYTES) return;
+    const uint16_t max = psx_mod_read_half(o2 + 0x16Au);  /* AP x 4: +0x168 now, +0x16A max */
+    if (max) psx_mod_write_half(o2 + 0x168u, max);
+}
+
 /* The launcher's "Unit 1: You": player 1's controller flies unit 1 and the AI
  * flies unit 2 alone, as in the arena itself. Read once per match. */
 static int moa_manual_unit1(void)
@@ -230,6 +275,7 @@ static int moa_ai_frame_filter(struct CPUState *cpu, uint32_t address)
         moa_ai_nested = 1;
         (void)psx_mod_call_guest(cpu, address, ra, a0, a1, a2, a3);
         moa_ai_nested = 0;
+        if (moa_practice()) moa_practice_dummy();
         psx_mod_counter_add("moa.ai.frame", 1);
         moa_ai_frames_seen++;
         moa_count_bits(psx_mod_read_half(MOA_SLOT1 + MOA_SLOT_BYTES + MOA_SLOT_PAD), moa_bits2);
@@ -739,6 +785,7 @@ static void moa_set_ff(int on)
 static void moa_return_to_launcher(const char *why)
 {
     psx_mod_counter_add(why, 1);
+    if (moa_practice()) moa_practice_end("left");     /* unless a reason is set already */
     moa_outro_ms = 0;
     moa_set_ff(0);
     moa_lock = moa_live_lock = 0;
@@ -1106,9 +1153,68 @@ static void moa_battle_frame(void)
     }
 }
 
+/* Every frame of a practice game (the game's own pause included): the
+ * other pilot readied, or the room was lost: a notice over the fight, then
+ * back to the launcher. */
+static void moa_practice_frame(void)
+{
+    static char session[40];
+    static uint64_t start_ms, notice_ms;
+    static int seen_room, ready_frames, left;
+    const char *t = getenv("PSX_MOA_AI_SESSION");
+    if (!t) t = "";
+    if (strncmp(session, t, sizeof session - 1) != 0) {   /* a new practice game */
+        snprintf(session, sizeof session, "%s", t);
+        start_ms = moa_now_ms();
+        notice_ms = 0;
+        seen_room = ready_frames = left = 0;
+    }
+    if (left) return;
+    const uint64_t now = moa_now_ms();
+    if (notice_ms) {
+        if (now - notice_ms < 3000u) return;
+        left = 1;
+        psx_mod_set_overlay_image(NULL, 0, 0);
+        psx_mod_set_loading_screen(NULL, 0);
+        moa_return_to_launcher("moa.ai.practice_return");
+        return;
+    }
+    int other_ready = 0;
+    const int st = psx_mod_room_practice_status(&other_ready);
+    if (st >= 0) seen_room = 1;
+    ready_frames = (st >= 0 && other_ready) ? ready_frames + 1 : 0;
+    const char *title = NULL, *line = NULL;
+    if (ready_frames >= 3 && now - start_ms > 1000u) {
+        title = "THE OTHER PILOT IS READY";
+        line = "RETURNING TO THE ROOM";
+        moa_practice_end("ready");
+    } else if (seen_room && st < 0) {
+        title = "THE ROOM WAS LOST";
+        line = "RETURNING TO THE LAUNCHER";
+        moa_practice_end("lost");
+    }
+    if (!title) return;
+    notice_ms = now ? now : 1;
+    psx_mod_counter_add(st < 0 ? "moa.ai.practice_room_lost" : "moa.ai.practice_other_ready", 1);
+    if (!moa_screen_ready()) {
+        uint32_t bytes = 0;
+        (void)moa_menu_tim_entry(0, &bytes);            /* reads MENU_TIM.T */
+        if (moa_menu_tim) (void)moa_screen_load_font(moa_menu_tim, moa_menu_tim_bytes);
+    }
+    int ww = 0, wh = 0, w = 0, h = 0;
+    psx_mod_window_size(&ww, &wh);
+    const uint32_t *px = moa_screen_render_choice(ww, wh, title, line, NULL, 0, -1, NULL, 1, &w, &h);
+    if (!px || !psx_mod_set_overlay_image(px, w, h)) {
+        char text[80];
+        snprintf(text, sizeof text, "%s - %s", title, line);
+        psx_mod_set_loading_screen(text, -1);
+    }
+}
+
 static void moa_frame_hook(void)
 {
     if (!moa_ai_battle_on()) return;
+    if (moa_practice()) moa_practice_frame();
     moa_cancel_check();
     moa_loading_frame();
     if (moa_ff_want && !psx_mod_fast_forward_requested()) {

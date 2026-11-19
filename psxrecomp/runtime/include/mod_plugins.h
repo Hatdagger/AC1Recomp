@@ -127,6 +127,12 @@ typedef struct PSXGameNetPad {
 } PSXGameNetPad;
 typedef void (*PSXGameNetplayPadFilter)(PSXGameNetPad *pad);
 void psx_game_set_netplay_local_pad_filter(PSXGameNetplayPadFilter filter);
+/* Practice while waiting (MoA versus room): an offline game the launcher
+ * started from a room with PSX_MOA_PRACTICE=1. The runtime keeps the room's
+ * seat alive from every frame of it; this is the last reading: 1 = seated
+ * with another pilot, 0 = seated alone, -1 = no seat (the room was lost, or
+ * not a practice game). *other_ready: the other pilot pressed READY. */
+int psx_mod_room_practice_status(int *other_ready);
 /* Offline only. A picture for the loading screen, 0xAARRGGBB, stretched over
  * the whole window instead of the black screen and OSD text (the text passed
  * above is then only logged). Copied; NULL clears it. Render it at the

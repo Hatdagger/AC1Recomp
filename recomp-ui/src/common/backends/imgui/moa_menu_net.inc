@@ -952,6 +952,18 @@ static bool   g_room_launched = false;  /* a match was launched from here */
 static std::chrono::steady_clock::time_point g_room_launch_at;
 static std::string g_room_result;       /* the last set, as the game reported it */
 
+/* Practice while waiting (games/master-of-arena/moa_ai_battle.c): READY with
+ * the other pilot not ready offers a quick offline fight against a target
+ * dummy. While it runs the seat table shows this pilot PRACTISING (the card
+ * offer's has_card clear) and this pilot's READY is held but not shown, so
+ * no count starts. The runtime keeps the seat alive (PSX_MOA_PRACTICE); the
+ * game comes back when the other pilot readies, and this pilot is READY
+ * again (PSX_MOA_PRACTICE_END=ready), or not (left: the player quit it). */
+static bool g_room_practising = false;        /* a practice game was started from here */
+static bool g_room_practice_ask = false;      /* the prompt is up */
+static bool g_room_practice_asked = false;    /* asked once for this READY */
+static bool g_room_remote_practising = false; /* the other pilot is in a practice game */
+
 /* ---- the room's AC ---- */
 
 static moa_card    g_room_ac;
@@ -1261,6 +1273,84 @@ static bool room_arm(LauncherModel* m) {
 /* Not READY any more: an offline game started later must not find the card. */
 static void room_disarm() {
     set_env("PSX_MEMCARD1_NETPLAY", "");
+}
+
+/* ---- practice while waiting ---- */
+
+static std::string room_dummy_path() { return asset("garage/practice-dummy.png"); }
+
+/* Player vs AI: the room's AC (unit 1, flown by this pilot) against the
+ * game's new-game AC (unit 2, as load_garage() makes it) on the room's
+ * stage, no time limit. The game holds the dummy still with its AP full. */
+static bool room_practice_start(LauncherModel* m) {
+    moa_card dummy;
+    moa_card_new(&dummy);
+    static const uint8_t kStartRec[13] = { 0, 5, 1, 3, 1, 0, 0, 40, 0, 0, 0, 0, 0 };
+    static const uint8_t kStartPaint[12] = { 32, 36, 28, 16, 20, 12, 18, 24, 12, 12, 18, 12 };
+    std::memcpy(dummy.rec, kStartRec, sizeof kStartRec);
+    for (int sec = 0; sec < 4; ++sec) std::memcpy(dummy.paint + sec * 12, kStartPaint, 12);
+    dummy.plus = 0;
+    std::memset(dummy.palette, 0, sizeof dummy.palette);
+    std::memset(dummy.emblem, 0, sizeof dummy.emblem);
+    std::snprintf(dummy.ac, sizeof dummy.ac, "%s", "TARGET");
+    std::snprintf(dummy.pilot, sizeof dummy.pilot, "%s", "DUMMY");
+    moa_card_set_preset(&dummy, MOA_AI_PRESET_BALANCED);
+    std::error_code ec;
+    std::filesystem::create_directories(std::filesystem::u8path(room_dummy_path()).parent_path(), ec);
+    const std::filesystem::path tmp = std::filesystem::temp_directory_path(ec);
+    const std::string session_card = ec ? std::string() : (tmp / "moa-practice-card2.mcd").string();
+    const moa_card* units[2] = { &g_room_ac, &dummy };
+    if (!g_room_has_ac || !moa_card_write_png(&g_room_ac, room_ac_path().c_str()) ||
+        !moa_card_write_png(&dummy, room_dummy_path().c_str()) || session_card.empty() ||
+        !moa_memcard_write_units(session_card.c_str(), units, 2)) {
+        note("PRACTICE COULD NOT BE SET UP");
+        return false;
+    }
+    set_env("PSX_MOA_AI_UNIT1", room_ac_path().c_str());
+    set_env("PSX_MOA_AI_UNIT2", room_dummy_path().c_str());
+    set_env("PSX_MOA_AI_P1", "1");
+    set_env("PSX_MOA_AI_LOADMENU", "1");
+    set_env("PSX_MEMCARD2_SESSION", session_card.c_str());
+    char b[32];
+    if (g_room.stage == 0) std::snprintf(b, sizeof b, "random");
+    else std::snprintf(b, sizeof b, "%d", g_room.stage);
+    set_env("PSX_MOA_AI_STAGE", b);
+    set_env("PSX_MOA_AI_TIME", "0");
+    static unsigned s_practice = 0;
+    std::snprintf(b, sizeof b, "practice-%u-%ld", ++s_practice, (long)std::time(nullptr));
+    set_env("PSX_MOA_AI_SESSION", b);
+    set_ai_battle(true);
+    set_env("PSX_MOA_PRACTICE", "1");
+    set_env("PSX_MOA_PRACTICE_END", "");
+    g_room_practising = true;
+    start_game(m);
+    return true;
+}
+
+/* Back from a practice game (called every launcher frame; a long gap between
+ * two frames means a game ran). `in_room`: the launcher reopened on the room.
+ * READY again only when the game came back because the other pilot readied. */
+static void room_practice_settle(LauncherModel* m, bool in_room) {
+    static std::chrono::steady_clock::time_point last;
+    const auto now = std::chrono::steady_clock::now();
+    const bool gap = last.time_since_epoch().count() != 0 && now - last > std::chrono::seconds(3);
+    last = now;
+    if (!g_room_practising || !gap) return;
+    g_room_practising = false;
+    const char* e = std::getenv("PSX_MOA_PRACTICE_END");
+    const bool ready = in_room && e && std::strcmp(e, "ready") == 0;
+    set_env("PSX_MOA_PRACTICE", "");
+    set_env("PSX_MOA_PRACTICE_END", "");
+    set_ai_battle(false);
+    set_env("PSX_MOA_AI_P1", "0");
+    if (ready && g_room_ready && room_arm(m)) {
+        g_room_practice_asked = true;          /* the count runs: no new prompt */
+        return;
+    }
+    g_room_ready = false;
+    g_room_practice_asked = false;
+    room_disarm();
+    if (e && std::strcmp(e, "lost") == 0) note("THE ROOM WAS LOST DURING PRACTICE");
 }
 
 /* Back from a match: the set's result (games/master-of-arena/moa_netplay_room.c
@@ -1945,8 +2035,9 @@ static void draw_pilot(const Gfx& g, float x, float y, const LobbySnapshot& s, i
         text(g, x + 36.0f, ey + 14.0f, 22.0f, kDim, "?");
         text(g, x + 84.0f, ey + 2.0f, 11.0f, kDim, "AC SHOWN AT LAUNCH", w - 98.0f);
     }
-    const ImU32 col = ready ? kOn : kOff;
-    const char* what = ready ? "READY" : "NOT READY";
+    const bool practising = !mem.is_local && g_room_remote_practising;
+    const ImU32 col = ready ? kOn : practising ? kHi : kOff;
+    const char* what = ready ? "READY" : practising ? "PRACTISING" : "NOT READY";
     g.dl->AddRectFilled(at(g, x + 14.0f, y + h - 24.0f), at(g, x + 23.0f, y + h - 15.0f), col);
     text(g, x + 32.0f, y + h - 27.0f, 12.0f, col, what);
 }
@@ -2057,13 +2148,24 @@ static void draw_lobby_page(LauncherModel* m, const LauncherTheme& th,
     /* READY rides on the card offer: has_card always (the room's match card),
      * share = READY. The seat table shows it to the other pilot. */
     if (np->memcard_offer_set && !launching)
-        (void)np->memcard_offer_set(np->ctx, 1, g_room_ready ? 1 : 0);
+        (void)np->memcard_offer_set(np->ctx, g_room_practising ? 0 : 1,
+                                    (g_room_ready && !g_room_practising) ? 1 : 0);
 
     const bool remote_ready = remote_slot >= 0 && s.slots[remote_slot].memcard_offer_valid &&
                               s.slots[remote_slot].memcard_has_card && s.slots[remote_slot].memcard_share;
     const bool room_ok = s.seated_players >= 2 && !s.local_rom_missing &&
                          s.peers_missing_files == 0 && s.local_missing_files == 0;
-    const bool both = g_room_ready && remote_ready && room_ok;
+    const bool both = g_room_ready && remote_ready && room_ok && !g_room_practising;
+    g_room_remote_practising = remote_slot >= 0 && s.slots[remote_slot].memcard_offer_valid &&
+                               !s.slots[remote_slot].memcard_has_card;
+    /* READY with the other pilot not ready: offer practice, once per READY. */
+    if (!g_room_ready || remote_ready || launching || g_room_practising) {
+        g_room_practice_ask = false;
+        if (!g_room_ready) g_room_practice_asked = false;
+    } else if (!g_room_practice_asked) {
+        g_room_practice_ask = true;
+        g_room_practice_asked = true;
+    }
     const double now = ImGui::GetTime();
     if (!both) {
         g_room_count_at = 0.0;
@@ -2166,6 +2268,10 @@ static void draw_lobby_page(LauncherModel* m, const LauncherTheme& th,
             std::snprintf(b, sizeof b, "LAUNCHING IN %d", count_left > 0 ? count_left : 0);
             text(g, 340.0f, y, 13.0f, kOn, b);
             text(g, 340.0f, y + 18.0f, 10.0f, kText, "Leave READY to stop.", 264.0f);
+        } else if (g_room_remote_practising) {
+            text(g, 340.0f, y, 11.0f, kHi, "THE OTHER PILOT IS PRACTISING");
+            text(g, 340.0f, y + 16.0f, 10.0f, kText,
+                 g_room_ready ? "Calling them back to the room." : "Press READY to call them back.", 264.0f);
         } else if (g_room_ready) {
             text(g, 340.0f, y, 11.0f, kHi, "READY");
             text(g, 340.0f, y + 16.0f, 10.0f, kText, "Waiting for the other pilot.", 264.0f);
@@ -2186,6 +2292,23 @@ static void draw_lobby_page(LauncherModel* m, const LauncherTheme& th,
     footer(g, "A / ENTER  SELECT      START  READY      B / ESC  LEAVE");
 
     moa_menu_lobby_popups(m, th, np, s);
+
+    if (g_room_practice_ask) {
+        g.dl->AddRectFilled(at(g, 0.0f, 0.0f), at(g, kW, kH), IM_COL32(0, 0, 0, 150));
+        panel(g, 170.0f, 168.0f, 300.0f, 104.0f, "PRACTICE");
+        text(g, 186.0f, 182.0f, 13.0f, kBright, "PRACTICE WHILE YOU WAIT?");
+        text(g, 186.0f, 204.0f, 10.0f, kText,
+             "A quick fight against a target dummy. You come back READY when the other pilot is.",
+             268.0f);
+        text(g, 186.0f, 246.0f, 11.0f, kHi, "A  PRACTICE        B  WAIT");
+        if (in.confirm) {
+            g_room_practice_ask = false;
+            (void)room_practice_start(m);
+        } else if (in.back) {
+            g_room_practice_ask = false;
+        }
+        return;
+    }
 
     int activate = -1;
     if (clicked >= 0) activate = cur = clicked;

@@ -993,7 +993,8 @@ masks → **p's key layout** `0x8004B4A8 + 48p`, VIBRATION → `0x8003EAD0 + p`.
 VIBRATION in VS are per player**; the other Options rows change the shared copy, and TEXT MESSAGE
 can't be changed here (§2o). A DATA LOAD unpacks a whole scenario save, settings included
 (`boot-loads.md` §4e), so the save's key layout and vibration become p's, and its volumes, VS STAGE
-and time limit replace the shared ones (from the code; not tried).
+and time limit replace the shared ones (**user-tested 2026-11-19: the most recent DATA LOAD sets
+the volumes and the VS time limit for both players**).
 
 ○ on the AC SETUP menu → **`0x800B4408`**: the garage goes back to p's staging (owned → `0x8004A7E0
 + 256p`, paint → `0x8004B730 + 48p`, parts → `0x80045940 + 12p`, file table and sizes back, options
@@ -1077,7 +1078,12 @@ and time limit replace the shared ones (from the code; not tried).
   Failure (missions lane).
 - Options (§2o): what else reads the sound flags `0x80044200` / `0x80044202`; which cursor byte of
   KEY ASSIGN is the column (check in game).
-- VS menu (§2p): whether the SELECT MAP page really ignores player 2's pad (only the low half is
-  read); the VS-only checks before AC SETUP's ASSEMBLY (a core is always there in VS?); whether a
-  DATA LOAD in VS really replaces the shared volumes / time limit (from the code, not tried);
-  the sprite `0x801FBEB8` +22 toggle on the VS START row (blink `?`).
+- VS menu (§2p): **user test 2026-11-19: after 2P AC SETUP, "player 2 has full control until
+  player 1's setup screen is selected".** The code clears the pad swap `0x801B1CD8` when AC SETUP
+  closes with ○ (`0x800B47D4`) and the main menu reads both pads anyway, so either the swap stays
+  on by another road (SYSTEM → DATA LOAD / OPTION and back?) or the main menu, SELECT MAP and VS
+  START simply answer pad 2 as well; to check: after 2P AC SETUP, can player 1 still move the main
+  cursor, and does the way out of 2P AC SETUP matter? SELECT MAP only reads the low half of the
+  pad word, so with the swap on it follows player 2. Also open: the VS-only checks before AC
+  SETUP's ASSEMBLY (a core is always there in VS?); the sprite `0x801FBEB8` +22 toggle on the VS
+  START row (blink `?`).

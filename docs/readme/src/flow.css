@@ -1,0 +1,13 @@
+.flow{display:flex;align-items:stretch;gap:0}
+.box{flex:1;border:1px solid #34474f;background:#0f171c;padding:14px 12px 16px;text-align:center;display:flex;flex-direction:column;justify-content:center}
+.box .k{font-size:20px;font-weight:700;color:#fff}
+.box .v{margin-top:8px;font-size:14px;color:#aeb9c0;text-transform:none;letter-spacing:.02em;line-height:1.4}
+.box.go{border-color:#8a6427;background:linear-gradient(180deg,rgba(242,168,60,.16),rgba(242,168,60,.03))}
+.box.go .k{color:#f2a83c}
+.box.win{border-color:#2f6e48;background:rgba(100,214,142,.08)}.box.win .k{color:#64d68e}
+.box.lose{border-color:#7a3434;background:rgba(230,107,107,.08)}.box.lose .k{color:#e66b6b}
+.ar{width:34px;display:flex;align-items:center;justify-content:center;color:#f2a83c;font-size:22px;flex:none}
+.loop{margin:10px 0 0;border:1px dashed #5b4a2a;border-top:none;height:22px;position:relative;margin-left:8%;margin-right:8%}
+.loop span{position:absolute;left:50%;top:10px;transform:translateX(-50%);background:#0e161b;padding:0 12px;font-size:14px;color:#f2a83c;white-space:nowrap}
+.sect{margin-top:30px}
+.lbl{font-size:13px;color:#7f8d97;margin-bottom:10px}

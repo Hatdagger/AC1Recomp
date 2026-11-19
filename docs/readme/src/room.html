@@ -1,0 +1,32 @@
+<!doctype html><html><head><link rel="stylesheet" href="base.css"><link rel="stylesheet" href="flow.css"><style>
+.n{font-size:13px;color:#f2a83c;margin-bottom:4px}
+.side{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:30px}
+.side .panel .k{font-size:19px;font-weight:700;color:#fff;margin-bottom:8px}
+.side .panel .v{font-size:15px;color:#cfd6db;text-transform:none;letter-spacing:.02em;line-height:1.45}
+.keys{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.keys span{border:1px solid #4a6170;padding:5px 9px;font-size:13px}
+.screens{display:flex;gap:26px;justify-content:center;align-items:center;margin:0 0 26px}
+.pc{width:250px;border:1px solid #4a6170;background:#0b1216;padding:10px;text-align:center}
+.pc .scr{height:96px;border:1px solid #2b3942;display:flex;align-items:center;justify-content:center;font-size:13px;color:#7f8d97;background-size:48px 48px;image-rendering:pixelated;position:relative}
+.pc .scr b{background:rgba(10,15,18,.85);padding:6px 10px;color:#fff;font-size:15px}
+.pc .who{margin-top:8px;font-size:14px}
+.vs{font-size:30px;font-weight:700;color:#f2a83c}
+.net{font-size:12px;color:#7f8d97;text-align:center;margin-top:4px}
+</style></head><body><div class="bg">
+<div class="head"><h1>VERSUS ROOM: PLAY A FRIEND</h1><div class="sub">2 PCS &middot; LAN OR DIRECT IP</div></div>
+<div class="screens">
+ <div class="pc"><div class="scr" style="background-image:url(tiles/tile04.png)"><b>YOUR VIEW</b></div><div class="who">HOST <span class="dim">&middot; PLAYER 1</span></div></div>
+ <div><div class="vs">VS</div><div class="net">NETWORK</div></div>
+ <div class="pc"><div class="scr" style="background-image:url(tiles/tile06.png)"><b>THEIR VIEW</b></div><div class="who">GUEST <span class="dim">&middot; PLAYER 2</span></div></div>
+</div>
+<div class="flow">
+ <div class="box"><div class="n">1</div><div class="k">HOST OR JOIN</div><div class="v">Rooms on your network show up by themselves</div></div><div class="ar">&#9654;</div>
+ <div class="box"><div class="n">2</div><div class="k">START MATCH</div><div class="v">The host presses it when you're both in</div></div><div class="ar">&#9654;</div>
+ <div class="box"><div class="n">3</div><div class="k">VS MODE</div><div class="v">At the title: pick your ACs, stage and time, then VS START</div></div><div class="ar">&#9654;</div>
+ <div class="box go"><div class="n">4</div><div class="k">FIGHT</div><div class="v">Each on your own screen</div></div>
+</div>
+<div class="side">
+ <div class="panel"><div class="tab">YOUR ACS</div><div class="k">BRING YOUR CARD</div><div class="v">The host's saves are SLOT 1. The guest brings their own memory card as SLOT 2. Nothing is saved back to your real card.</div></div>
+ <div class="panel"><div class="tab">IN A FIGHT</div><div class="k">START PAUSES</div><div class="v">The pause works for both of you, just like the original link cable.</div></div>
+</div>
+</div><script>document.fonts.ready.then(()=>document.body.setAttribute("data-h",Math.ceil(document.querySelector(".bg").getBoundingClientRect().height)))</script></body></html>

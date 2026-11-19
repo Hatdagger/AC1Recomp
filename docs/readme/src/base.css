@@ -1,0 +1,19 @@
+@font-face{font-family:Lato;font-weight:400;src:url(../../../recomp-ui/assets/common/fonts/LatoLatin-Regular.ttf)}
+@font-face{font-family:Lato;font-weight:700;src:url(../../../recomp-ui/assets/common/fonts/LatoLatin-Bold.ttf)}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:#0a0f12}
+body{width:1100px;font-family:Lato,sans-serif;color:#dfe4e8;letter-spacing:.05em;text-transform:uppercase}
+.bg{position:relative;padding:30px 44px 26px;
+ background:
+  linear-gradient(rgba(255,255,255,.03) 1px,transparent 1px) 0 0/44px 44px,
+  linear-gradient(90deg,rgba(255,255,255,.03) 1px,transparent 1px) 0 0/44px 44px,
+  radial-gradient(ellipse at 50% 35%,#17242c 0%,#0a0f12 78%)}
+.head{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:1px solid #2b3942;padding-bottom:12px;margin-bottom:26px}
+.head h1{font-weight:400;font-size:30px;letter-spacing:.04em}
+.head .sub{font-size:13px;color:#7f8d97;padding-bottom:4px}
+.panel{position:relative;border:1px solid #34474f;background:#0f171c;padding:28px 20px 20px}
+.panel>.tab{position:absolute;top:-9px;left:14px;padding:0 8px;background:#0f171c;font-size:12px;color:#7f8d97}
+.hi{color:#f2a83c}.ok{color:#64d68e}.bad{color:#e66b6b}.dim{color:#7f8d97}
+.foot{border-top:1px solid #2b3942;margin-top:26px;padding-top:11px;font-size:13px;color:#7f8d97;display:flex;gap:34px}
+.sel{background:linear-gradient(90deg,rgba(242,168,60,.32),rgba(242,168,60,.05) 85%,transparent);color:#fff}
+.tile{image-rendering:pixelated;background-size:64px 64px}

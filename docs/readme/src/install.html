@@ -1,0 +1,43 @@
+<!doctype html><html><head><link rel="stylesheet" href="base.css"><style>
+.steps{display:grid;grid-template-columns:1fr 1.25fr 1fr;gap:18px;align-items:stretch}
+.panel{display:flex;flex-direction:column}
+.num{font-size:64px;font-weight:700;color:#f2a83c;line-height:1}
+.st{font-size:22px;font-weight:700;margin:4px 0 16px}
+.say{margin-top:auto;padding-top:16px;font-size:15px;color:#cfd6db;text-transform:none;letter-spacing:.02em;line-height:1.45}
+.pill{border:1px solid #4a6170;padding:10px 12px;margin-bottom:10px;font-size:15px;white-space:nowrap}.pill span{display:block;font-size:12px;margin-top:3px}
+.pill b{color:#fff}
+.files{border:1px solid #2b3942;background:#0b1216;font-size:14px;text-transform:none;letter-spacing:.02em}
+.files div{padding:6px 12px;color:#aab5bc}
+.files .dir{color:#7f8d97}
+.files .exe{color:#fff}
+.files .sel{color:#fff;font-weight:700}
+.files .sel:before{content:"\25B6  ";color:#f2a83c}
+.stat{display:grid;grid-template-columns:140px 1fr;row-gap:9px;font-size:15px;margin-bottom:18px}
+.row{padding:9px 12px;font-size:17px}
+.row.sel:before{content:"\25B6  ";color:#f2a83c}
+.arrow{position:absolute;top:50%;right:-17px;width:16px;text-align:center;color:#f2a83c;font-size:20px;transform:translateY(-50%)}
+</style></head><body><div class="bg">
+<div class="head"><h1>INSTALL IN 3 STEPS</h1><div class="sub">ABOUT 2 MINUTES</div></div>
+<div class="steps">
+ <div class="panel"><div class="tab">STEP</div><div class="num">1</div><div class="st">DOWNLOAD</div>
+  <div class="pill"><b>WINDOWS</b><span class="dim">.ZIP</span></div>
+  <div class="pill"><b>LINUX / STEAM DECK</b><span class="dim">.APPIMAGE</span></div>
+  <div class="say">Get it from <b class="hi">Releases</b> on this page. Unzip it anywhere.</div></div>
+ <div class="panel"><div class="tab">STEP</div><div class="num">2</div><div class="st">ADD YOUR DISC</div>
+  <div class="files">
+   <div class="dir">&#128193; Armored Core Moa</div>
+   <div class="exe">&nbsp;&nbsp;&nbsp;Armored Core Moa.exe</div>
+   <div class="sel">your disc .cue</div>
+   <div class="sel">your disc .bin</div>
+   <div>&nbsp;&nbsp;&nbsp;Memory Card</div>
+   <div>&nbsp;&nbsp;&nbsp;Mods</div>
+   <div>&nbsp;&nbsp;&nbsp;RecompData</div>
+  </div>
+  <div class="say">Copy your disc's <b class="hi">.cue and .bin</b> into the <b>same folder</b> as the .exe.</div></div>
+ <div class="panel"><div class="tab">STEP</div><div class="num">3</div><div class="st">PRESS START</div>
+  <div class="stat"><span class="dim">DISC</span><span class="ok">READY</span><span class="dim">CONTROLLER</span><span>FOUND</span></div>
+  <div class="row sel">START GAME</div>
+  <div class="row">ROGUE ARENA</div>
+  <div class="say">Open <b class="hi">Armored Core Moa.exe</b>. See <span class="ok">READY</span>? You're set.</div></div>
+</div>
+</div><script>document.fonts.ready.then(()=>document.body.setAttribute("data-h",Math.ceil(document.querySelector(".bg").getBoundingClientRect().height)))</script></body></html>

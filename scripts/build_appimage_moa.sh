@@ -58,6 +58,19 @@ printf 'Put your legally owned disc image here, or next to the AppImage file.\n\
 cp psxrecomp/LICENSE "${PAYLOAD}/licenses/psxrecomp-LICENSE.txt"
 cp psxrecomp/THIRD_PARTY_ATTRIBUTION.md "${PAYLOAD}/licenses/THIRD_PARTY_ATTRIBUTION.md"
 cp recomp-ui/LICENSE "${PAYLOAD}/licenses/recomp-ui-LICENSE.txt"
+# Every notice a player binary needs (THIRD_PARTY_ATTRIBUTION.md: "release
+# packagers copy runtime/licenses/ wholesale"), the libraries vendored outside
+# it, and this fork's own credits page.
+cp psxrecomp/runtime/licenses/* "${PAYLOAD}/licenses/"
+cp psxrecomp/bios/OpenBIOS.LICENSE "${PAYLOAD}/licenses/OpenBIOS-LICENSE.txt"
+cp psxrecomp/lib/recomp-net/LICENSE "${PAYLOAD}/licenses/recomp-net-LICENSE.txt"
+cp psxrecomp/lib/retcomm-rbengine/LICENSE "${PAYLOAD}/licenses/retcomm-rbengine-LICENSE.txt"
+cp recomp-ui/src/third_party/imgui/LICENSE.txt "${PAYLOAD}/licenses/imgui-LICENSE.txt"
+cp recomp-ui/assets/common/fonts/NOTICE.md "${PAYLOAD}/licenses/fonts-NOTICE.md"
+cp recomp-ui/assets/common/img/NOTICE.md "${PAYLOAD}/licenses/images-NOTICE.md"
+cp games/master-of-arena/third_party/README.md "${PAYLOAD}/licenses/music-decoders-NOTICE.md"
+cp CREDITS.md "${PAYLOAD}/licenses/CREDITS.md"
+cp LICENSE "${PAYLOAD}/licenses/LICENSE.txt"
 
 # The compiler bundle: lets the game turn the code it loads from the disc into
 # native code on the player's machine, in the background, as areas are visited.

@@ -1,0 +1,33 @@
+<!doctype html><html><head><link rel="stylesheet" href="base.css"><style>
+.two{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.panel .k{font-size:22px;font-weight:700;margin-bottom:4px}
+.panel .s{font-size:14px;color:#aeb9c0;text-transform:none;letter-spacing:.02em;margin-bottom:18px}
+.match{display:flex;align-items:center;justify-content:center;gap:22px}
+.vs{font-size:28px;font-weight:700;color:#f2a83c}
+.card{width:150px;text-align:center}
+.card .sq{width:150px;height:150px;border:1px solid #4a6170;background:#0b1216;position:relative;display:flex;align-items:center;justify-content:center}
+.card .sq .em{width:84px;height:84px;background-size:42px 42px;image-rendering:pixelated;border:1px solid #2b3942}
+.card .sq .strip{position:absolute;left:0;top:0;bottom:0;width:14px;display:flex;flex-direction:column}
+.card .sq .strip i{flex:1}
+.card .who{margin-top:10px;font-size:15px;font-weight:700}
+.card .what{font-size:12px;color:#7f8d97}
+.you .sq{border-color:#8a6427;box-shadow:0 0 0 1px rgba(242,168,60,.25) inset}
+.you .who{color:#f2a83c}
+</style></head><body><div class="bg">
+<div class="head"><h1>AI BATTLES</h1><div class="sub">EXTRA GARAGE &#9654; AI ARENA SETUP</div></div>
+<div class="two">
+ <div class="panel"><div class="tab">MODE 1</div><div class="k">PLAYER VS AI</div><div class="s">You fly. The AI fights back.</div>
+  <div class="match">
+   <div class="card you"><div class="sq"><div class="em" style="background-image:url(tiles/tile04.png)"></div></div><div class="who">YOU</div><div class="what">YOUR GARAGE AC</div></div>
+   <div class="vs">VS</div>
+   <div class="card"><div class="sq"><div class="strip"><i style="background:#6c7f8c"></i><i style="background:#8c6a4a"></i><i style="background:#4a6f5a"></i><i style="background:#7b5a7d"></i><i style="background:#8a8251"></i><i style="background:#4f6488"></i><i style="background:#7d4f4f"></i><i style="background:#5c7f7a"></i></div><div class="em" style="background-image:url(tiles/tile06.png)"></div></div><div class="who">AI</div><div class="what">AN AI CARD</div></div>
+  </div></div>
+ <div class="panel"><div class="tab">MODE 2</div><div class="k">AI VS AI</div><div class="s">Sit back and watch two AIs fight.</div>
+  <div class="match">
+   <div class="card"><div class="sq"><div class="strip"><i style="background:#5c7f7a"></i><i style="background:#7d4f4f"></i><i style="background:#8a8251"></i><i style="background:#4a6f5a"></i><i style="background:#6c7f8c"></i><i style="background:#7b5a7d"></i><i style="background:#8c6a4a"></i><i style="background:#4f6488"></i></div><div class="em" style="background-image:url(tiles/tile03.png)"></div></div><div class="who">AI</div><div class="what">AN AI CARD</div></div>
+   <div class="vs">VS</div>
+   <div class="card"><div class="sq"><div class="strip"><i style="background:#8a8251"></i><i style="background:#4f6488"></i><i style="background:#7d4f4f"></i><i style="background:#6c7f8c"></i><i style="background:#5c7f7a"></i><i style="background:#8c6a4a"></i><i style="background:#7b5a7d"></i><i style="background:#4a6f5a"></i></div><div class="em" style="background-image:url(tiles/tile05.png)"></div></div><div class="who">AI</div><div class="what">AN AI CARD</div></div>
+  </div></div>
+</div>
+<div class="foot"><span><span class="hi">AI CARD</span> &nbsp;A PICTURE WITH A WHOLE AC INSIDE (THE COLOUR STRIP). SHARE IT LIKE ANY IMAGE.</span></div>
+</div><script>document.fonts.ready.then(()=>document.body.setAttribute("data-h",Math.ceil(document.querySelector(".bg").getBoundingClientRect().height)))</script></body></html>

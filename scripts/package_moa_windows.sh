@@ -122,6 +122,19 @@ mkdir -p "${DATA}/licenses"
 cp "${ROOT}/psxrecomp/LICENSE" "${DATA}/licenses/psxrecomp-LICENSE.txt"
 cp "${ROOT}/psxrecomp/THIRD_PARTY_ATTRIBUTION.md" "${DATA}/licenses/THIRD_PARTY_ATTRIBUTION.md"
 cp "${ROOT}/recomp-ui/LICENSE" "${DATA}/licenses/recomp-ui-LICENSE.txt"
+# Every notice a player binary needs (THIRD_PARTY_ATTRIBUTION.md: "release
+# packagers copy runtime/licenses/ wholesale"), the libraries vendored outside
+# it, and this fork's own credits page.
+cp "${ROOT}"/psxrecomp/runtime/licenses/* "${DATA}/licenses/"
+cp "${ROOT}/psxrecomp/bios/OpenBIOS.LICENSE" "${DATA}/licenses/OpenBIOS-LICENSE.txt"
+cp "${ROOT}/psxrecomp/lib/recomp-net/LICENSE" "${DATA}/licenses/recomp-net-LICENSE.txt"
+cp "${ROOT}/psxrecomp/lib/retcomm-rbengine/LICENSE" "${DATA}/licenses/retcomm-rbengine-LICENSE.txt"
+cp "${ROOT}/recomp-ui/src/third_party/imgui/LICENSE.txt" "${DATA}/licenses/imgui-LICENSE.txt"
+cp "${ROOT}/recomp-ui/assets/common/fonts/NOTICE.md" "${DATA}/licenses/fonts-NOTICE.md"
+cp "${ROOT}/recomp-ui/assets/common/img/NOTICE.md" "${DATA}/licenses/images-NOTICE.md"
+cp "${ROOT}/games/master-of-arena/third_party/README.md" "${DATA}/licenses/music-decoders-NOTICE.md"
+cp "${ROOT}/CREDITS.md" "${DATA}/licenses/CREDITS.md"
+cp "${ROOT}/LICENSE" "${DATA}/licenses/LICENSE.txt"
 cat >"${DATA}/README.txt" <<'EOF'
 Armored Core: Master of Arena
 

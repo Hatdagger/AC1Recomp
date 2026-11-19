@@ -1,0 +1,22 @@
+<!doctype html><html><head><link rel="stylesheet" href="base.css"><style>
+.cols{display:grid;grid-template-columns:1.6fr 1fr;gap:18px}
+.chips{display:flex;flex-wrap:wrap;gap:12px}
+.chip{border:1px solid;padding:12px 16px;font-size:20px;font-weight:700;display:flex;gap:10px;align-items:center}
+.chip.y{border-color:#2f6e48;background:rgba(100,214,142,.08)}
+.chip.y:before{content:"\2714";color:#64d68e}
+.chip.n{border-color:#7a3434;background:rgba(230,107,107,.07);color:#c9b4b4}
+.chip.n:before{content:"\2716";color:#e66b6b}
+.note{margin-top:18px;font-size:15px;color:#cfd6db;text-transform:none;letter-spacing:.02em;line-height:1.5}
+.note b{color:#fff}
+</style></head><body><div class="bg">
+<div class="head"><h1>WHICH DISC DO I NEED?</h1><div class="sub">ARMORED CORE: MASTER OF ARENA</div></div>
+<div class="cols">
+ <div class="panel"><div class="tab">YES</div>
+  <div class="chips"><div class="chip y">USA</div><div class="chip y">DISC 1</div><div class="chip y">V1.0</div><div class="chip y">SLUS-01030</div><div class="chip y">.CUE + .BIN</div></div>
+  <div class="note"><b>File names don't matter.</b> The game reads the disc itself.<br>The .bin is 700,507,920 bytes (one track).</div></div>
+ <div class="panel"><div class="tab">NO</div>
+  <div class="chips"><div class="chip n">DISC 2</div><div class="chip n">NTSC-J</div><div class="chip n">.CHD</div></div>
+  <div class="note">Disc 2 isn't needed: Disc 1 plays <b>everything</b>.</div></div>
+</div>
+<div class="foot"><span><span class="hi">OPTIONAL</span> &nbsp;PROJECT PHANTASMA (USA, SLUS-00670), .CUE + .BIN, IN THE SAME FOLDER</span></div>
+</div><script>document.fonts.ready.then(()=>document.body.setAttribute("data-h",Math.ceil(document.querySelector(".bg").getBoundingClientRect().height)))</script></body></html>

@@ -51,6 +51,7 @@
 #define MOA_VS_GFX_CURRENT  0x801A27E4u  /* current buffer record */
 #define MOA_VS_FRAME_START  0x801A8C28u  /* Timer 1 count at the last flip */
 #define MOA_VS_TICK         0x80097EB2u  /* match struct +0x12: steps */
+#define MOA_VS_TICK_CAP     0x4000u      /* the count stops here (0x800526AC) */
 #define MOA_FRAME_LINES     715u         /* the frame-end wait (slti 0x2CB) */
 
 /* A camera is an eye point and a look-at point, 8 halves: x, y, z, unused,
@@ -198,7 +199,12 @@ static void moa_render_entry(struct CPUState *cpu, uint32_t address)
         moa_cam_now[i] = (int16_t)psx_mod_read_half(cpu->gpr[4] + 2u * i);
         moa_cam_now[8u + i] = (int16_t)psx_mod_read_half(cpu->gpr[5] + 2u * i);
     }
-    if (moa_prev_valid && tick == (uint16_t)(moa_prev_tick + 1u) && index <= 1u) {
+    /* One step since the last call. The main loop stops counting at 0x4000
+     * steps (about 12 minutes, reachable with unlimited time); from then on
+     * the count stays put while the steps go on. */
+    const int stepped = tick == (uint16_t)(moa_prev_tick + 1u) ||
+                        (tick == MOA_VS_TICK_CAP && moa_prev_tick == MOA_VS_TICK_CAP);
+    if (moa_prev_valid && stepped && index <= 1u) {
         for (unsigned p = 0; p < 2u; p++) {
             int32_t moved = 0;
             for (unsigned i = 0; i < 8u; i++) {
@@ -220,8 +226,19 @@ static void moa_render_entry(struct CPUState *cpu, uint32_t address)
         frame.y = psx_mod_read_half(record + 0xC2u);
         frame.w = psx_mod_read_half(record + 0xC4u);
         frame.h = psx_mod_read_half(record + 0xC6u);
-        if (psx_mod_render_pass_status() != PSX_MOD_RENDER_PASS_READY)
+        /* Why passes could not run, by reason (mod_plugins.h), so one
+         * counter dump from a test says what to fix. */
+        static const char *const why[] = {
+            0, "moa.frame-rate.unavailable_no_presenter",
+            "moa.frame-rate.unavailable_backend", "moa.frame-rate.unavailable_disabled",
+            "moa.frame-rate.unavailable_session", "moa.frame-rate.unavailable_fast_forward",
+            "moa.frame-rate.unavailable_busy"};
+        const uint32_t status = psx_mod_render_pass_status();
+        if (status != PSX_MOD_RENDER_PASS_READY) {
             psx_mod_counter_add("moa.frame-rate.unavailable", 1);
+            psx_mod_counter_add(status < sizeof why / sizeof why[0]
+                                    ? why[status] : "moa.frame-rate.unavailable_other", 1);
+        }
         if (frame.w && frame.h && frame.w <= 640u && frame.h <= 512u) {
             moa_fr_in_pass = 1;
             const uint32_t kept = psx_mod_render_pass_frame(cpu, &frame, moa_pass, 0);

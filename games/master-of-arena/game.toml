@@ -60,6 +60,9 @@ mod_function_entry_funcs = [
     "0x80055768", "0x8008DC98", "0x8008D4AC", "0x8007F69C",
     # split-screen VS engine: controller sampler (VS AI, moa_vs_ai.c)
     "0x8007DA4C",
+    # split-screen VS engine: render passes (mod_builtin_moa_frame_rate.c): scene
+    # render (the pass point), queued sounds, frame-begin sound upkeep, start a sound
+    "0x80067404", "0x800535F4", "0x80053DD0", "0x80053284",
     # menu: save checksum (AI Battle keeps the settings on DATA LOAD)
     "0x80070F1C",
     # boot exe: archive sector read (instant loading, mod_builtin_moa_loading.c)

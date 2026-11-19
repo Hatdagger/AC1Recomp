@@ -489,6 +489,7 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_moa_phantasma.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_moa_loading.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_moa_intro.c
+    ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_moa_frame_rate.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_hd_textures.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_packages.cpp
     ${PSXRECOMP_ROOT}/runtime/src/mod_media.cpp

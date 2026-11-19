@@ -12,14 +12,9 @@ Both players need the same build and the same disc.
    online), the other joins, and the host presses Play.
 2. The host is player 1. The guest is player 2, and the guest's own memory
    card (their slot 1) is the match's slot 2.
-3. The game starts the match by itself: no logos, title or menu. Player 1's
-   AC is the first Master of Arena save on the host's card (match slot 1),
-   player 2's the first save on the guest's card (match slot 2). A player
-   without a save gets the default AC; with no save on either card the title
-   opens and both players use VS Mode as before.
-   After the match the versus menu opens: load other ACs there (SLOT 1 is the
-   host's saves, SLOT 2 the guest's), pick the stage and time limit, and press
-   VS START for a rematch.
+3. From the title screen choose VS Mode. Load an AC for each player (SLOT 1 is
+   the host's saves, SLOT 2 the guest's), pick the stage and time limit, and
+   press VS START.
 4. Each player sees and hears their own side. Start pauses for both.
 
 Memory cards are match-only copies on both sides: nothing done in a netplay
@@ -38,15 +33,6 @@ Offline, VS Mode is the stock split-screen versus on controllers 1 and 2.
   still tied to player 1 and are heard by both players.
 
 ## How it works
-
-`moa_vs_direct.c` (netplay section) starts the first match without menus:
-the boot's title is replaced by the versus menu, both cards' first saves are
-written into the versus staging area, the cursor is moved and VS START
-pressed for the players, and the units' graphics load while VS START is held
-back. A match boots in lockstep and cannot be fast forwarded, so this is what
-saves the waiting. Its progress lives in 8 bytes of guest memory (the link
-struct's send packet, idle until the link engine starts) so rollback can
-rewind it; the cards are the synced match cards, identical on both PCs.
 
 `moa_link_netplay.c` (game-owned netplay hooks, active only in a netplay
 session):

@@ -1,19 +1,16 @@
 /* Master of Arena: start a versus match with as little menu as possible.
  * See moa_vs_direct.h and docs/mapping/mode-launch.md.
  *
- * Offline: AI Battle drives it (boot arm, units, VS START loader).
- * Netplay: its own hooks below (the netplay section) start the match from
- * both players' memory cards. Each hook checks that the menu module is the
- * code in memory, since every engine loads at the same address.
+ * Offline hooks only (netplay sessions park them); each hook checks that the
+ * menu module is the code in memory, since every engine loads at the same
+ * address.
  */
 #include "moa_vs_direct.h"
 #include "moa_card.h"
 
 #include "mod_plugins.h"
 #include "cpu_state.h"
-#include "memcard.h"
 
-#include <stdlib.h>
 #include <string.h>
 
 /* ---- the game (menu module, FDAT 206) ----------------------------------- */
@@ -126,30 +123,22 @@ void moa_vs_direct_set_unit(unsigned player, const struct moa_vs_unit *u)
 /* Upload a unit's emblem where the garage rebuild reads it. The pixels go
  * through a scratch area below the guest stack (unused at this moment, and
  * put back right after: the upload is synchronous). */
-static void vsd_upload_emblem_data(struct CPUState *cpu, const uint16_t clut[16],
-                                   const uint8_t emblem[2048])
+static void vsd_upload_emblem(struct CPUState *cpu, unsigned player)
 {
+    if (!vsd_has_emblem[player]) return;
     enum { BYTES = 2048 + 32 };
     const uint32_t scratch = ((cpu->gpr[29] - 0x2000u) & ~3u) - BYTES;
     if (scratch < 0x80010000u || scratch >= 0x80200000u) return;
     uint8_t keep[BYTES];
     for (unsigned i = 0; i < BYTES; i++) keep[i] = psx_mod_read_byte(scratch + i);
     (void)psx_mod_call_guest(cpu, VSD_DRAW_SYNC, cpu->gpr[31], 0, 0, 0, 0);
-    for (unsigned i = 0; i < 2048; i++) psx_mod_write_byte(scratch + i, emblem[i]);
-    for (unsigned i = 0; i < 16; i++) psx_mod_write_half(scratch + 2048u + 2u * i, clut[i]);
+    for (unsigned i = 0; i < 2048; i++) psx_mod_write_byte(scratch + i, vsd_emblem[player][i]);
+    for (unsigned i = 0; i < 16; i++) psx_mod_write_half(scratch + 2048u + 2u * i, vsd_clut[player][i]);
     const int ok = psx_mod_psyq_load_image(VSD_EMBLEM_X, VSD_EMBLEM_Y, 16, 64, scratch) &&
                    psx_mod_psyq_load_image(VSD_CLUT_X, VSD_CLUT_Y, 16, 1, scratch + 2048u);
     for (unsigned i = 0; i < BYTES; i++) psx_mod_write_byte(scratch + i, keep[i]);
     psx_mod_counter_add(ok ? "moa.vsd.emblem" : "moa.vsd.emblem_failed", 1);
 }
-
-/* Offline: the emblems kept by moa_vs_direct_set_unit. */
-static void vsd_upload_emblem(struct CPUState *cpu, unsigned player)
-{
-    if (vsd_has_emblem[player]) vsd_upload_emblem_data(cpu, vsd_clut[player], vsd_emblem[player]);
-}
-
-typedef void (*vsd_emblem_fn)(struct CPUState *cpu, unsigned player);
 
 /* ---- 1. boot ---------------------------------------------------------------- */
 
@@ -195,7 +184,7 @@ static int vsd_cd_busy(struct CPUState *cpu)
 }
 
 /* Garage := player `player`'s files, parts, paint and emblem; rebuild. */
-static void vsd_load_unit(struct CPUState *cpu, unsigned player, vsd_emblem_fn emblem)
+static void vsd_load_unit(struct CPUState *cpu, unsigned player)
 {
     for (uint32_t i = VSD_FILE_FIRST; i < VSD_FILE_END; i++) {
         psx_mod_write_word(VSD_WORK_FILES + 4u * i,
@@ -212,7 +201,7 @@ static void vsd_load_unit(struct CPUState *cpu, unsigned player, vsd_emblem_fn e
     psx_mod_write_byte(VSD_GARAGE_PATTERN + 1u, 0);
     psx_mod_write_byte(VSD_VS_PATTERN + player, 0);
     psx_mod_write_byte(VSD_VS_VARIANT + player, 0);
-    emblem(cpu, player);
+    vsd_upload_emblem(cpu, player);
     (void)psx_mod_call_guest(cpu, VSD_REBUILD, cpu->gpr[31], 0, 0, 0, 0);
 }
 
@@ -232,56 +221,47 @@ static void vsd_swap(struct CPUState *cpu)
     (void)psx_mod_call_guest(cpu, VSD_AC_SWAP, cpu->gpr[31], 0, 0, 0, 0);
 }
 
-/* The steps, one per call, with their progress in `*step` / `*frames` (the
- * caller decides where those live: host statics offline, guest memory under
- * netplay, where rollback must be able to rewind them). */
-static int vsd_load_run(struct CPUState *cpu, uint32_t vs_state, unsigned *step, uint32_t *frames,
-                        vsd_emblem_fn emblem, int *timed_out)
+int moa_vs_direct_load_frame(struct CPUState *cpu, uint32_t vs_state, int *timed_out)
 {
     if (timed_out) *timed_out = 0;
-    if (*step == 0) {
+    if (vsd_step == 0) {
         if (psx_mod_read_word(VSD_CD_BUSY) != VSD_SIG_CD_BUSY ||
             psx_mod_read_word(VSD_REBUILD) != VSD_SIG_REBUILD ||
             psx_mod_read_word(VSD_AC_SWAP) != VSD_SIG_AC_SWAP) {
             psx_mod_counter_add("moa.vsd.no_loader", 1);
             return 0;                          /* default colours, but a match */
         }
-        *step = 1;
-        *frames = 0;
+        vsd_step = 1;
+        vsd_frames = 0;
     }
-    if (vsd_cd_busy(cpu) && ++*frames < VSD_LOAD_FRAMES_MAX)
+    if (vsd_cd_busy(cpu) && ++vsd_frames < VSD_LOAD_FRAMES_MAX)
         return 1;                              /* VS START runs again next frame */
-    switch (*step) {
+    switch (vsd_step) {
     case 1:                                    /* player 1's set in front */
         if (psx_mod_read_byte(vs_state + VSD_VS_FRONT) == 1) {
             vsd_swap(cpu);
             psx_mod_write_byte(vs_state + VSD_VS_FRONT, 0);
         }
-        vsd_load_unit(cpu, 0, emblem);
-        *step = 2;
+        vsd_load_unit(cpu, 0);
+        vsd_step = 2;
         return 1;
     case 2:                                    /* unit 1 done; player 2's set */
         vsd_commit_unit(0);
         vsd_swap(cpu);
-        vsd_load_unit(cpu, 1, emblem);
-        *step = 3;
+        vsd_load_unit(cpu, 1);
+        vsd_step = 3;
         return 1;
     default:                                   /* unit 2 done; player 1 in front */
         vsd_commit_unit(1);
         vsd_swap(cpu);
-        *step = 0;
-        if (*frames >= VSD_LOAD_FRAMES_MAX) {
+        vsd_step = 0;
+        if (vsd_frames >= VSD_LOAD_FRAMES_MAX) {
             if (timed_out) *timed_out = 1;
             psx_mod_counter_add("moa.vsd.load_timeout", 1);
         }
         psx_mod_counter_add("moa.vsd.loaded", 1);
         return 0;                              /* VS START goes ahead */
     }
-}
-
-int moa_vs_direct_load_frame(struct CPUState *cpu, uint32_t vs_state, int *timed_out)
-{
-    return vsd_load_run(cpu, vs_state, &vsd_step, &vsd_frames, vsd_upload_emblem, timed_out);
 }
 
 void moa_vs_direct_reset(void)
@@ -292,215 +272,7 @@ void moa_vs_direct_reset(void)
     moa_vs_direct_clear();
 }
 
-/* ---- netplay: from boot straight to the match ---------------------------------
- *
- * A netplay match boots on both PCs in lockstep, so nothing can be fast
- * forwarded: every logo, title and menu step costs real time. Instead, the
- * first title of a session becomes the versus menu (as offline), each
- * player's unit is the first Master of Arena save on that player's match
- * card (slot 1 = player 1 / host, slot 2 = player 2 / guest; the launcher
- * puts the chosen AC there), VS START is pressed for them and the units'
- * graphics load as offline. The link engine's loading screen follows.
- *
- * Both peers must do exactly the same thing, also when rollback runs frames
- * again. So: the cards are the session's synced match cards (identical on
- * both PCs), and the progress lives in guest memory, not in host statics:
- * 8 bytes of the link struct's send packet (0x80043C70 + 944), which only the
- * link engine uses and which is idle from boot until that engine starts.
- * They are cleared again before VS START goes ahead.
- *
- * A player whose card holds no save keeps the versus menu's default AC; with
- * no save on either card the title opens as before (players use the menu).
- * After the match the game returns to the versus menu as usual.
- */
-#define VSD_NP_STATE        (0x80043C70u + 944u)  /* 8 bytes, see above */
-#define VSD_NP_MAGIC0       0x56u              /* 'V' */
-#define VSD_NP_MAGIC1       0x44u              /* 'D' */
-#define VSD_MODE_LINK       1u
-#define VSD_TITLE_FLAG      0x8003EA7Au        /* 1 until the first title has opened */
-#define VSD_MENU_VS_START   0x800B2D7Cu        /* versus menu: VS START state */
-#define VSD_SIG_VS_START    0x27BDFFD0u
-#define VSD_INPUT_A         0x800639A4u        /* menu: controller sampling */
-#define VSD_SIG_INPUT_A     0x27BDFFE8u
-#define VSD_INPUT_B         0x800AF590u
-#define VSD_SIG_INPUT_B     0x27BDFFD0u
-#define VSD_PAD1            0x800458D8u        /* port 1: status, id, buttons (low = held) */
-#define VSD_PAD2            0x800458FAu
-#define VSD_PAD_UP          0x0010u
-#define VSD_PAD_DOWN        0x0040u
-#define VSD_PAD_X           0x4000u
-#define VSD_VS_ROW          0x801B2038u        /* versus menu cursor: 0 = VS START */
-#define VSD_NP_GIVE_UP      4000u              /* menu never answered: hand it over */
-
-enum { NP_PHASE_DOWN = 0, NP_PHASE_UP, NP_PHASE_PRESS, NP_PHASE_LOADING };
-
-struct vsd_np {                                /* the 8 guest bytes */
-    uint8_t phase, step;
-    uint16_t t, frames;
-};
-
-static int vsd_np_get(struct vsd_np *n)
-{
-    if (psx_mod_read_byte(VSD_NP_STATE) != VSD_NP_MAGIC0 ||
-        psx_mod_read_byte(VSD_NP_STATE + 1u) != VSD_NP_MAGIC1)
-        return 0;
-    n->phase = psx_mod_read_byte(VSD_NP_STATE + 2u);
-    n->step = psx_mod_read_byte(VSD_NP_STATE + 3u);
-    n->t = psx_mod_read_half(VSD_NP_STATE + 4u);
-    n->frames = psx_mod_read_half(VSD_NP_STATE + 6u);
-    return 1;
-}
-
-static void vsd_np_put(const struct vsd_np *n)
-{
-    psx_mod_write_byte(VSD_NP_STATE, VSD_NP_MAGIC0);
-    psx_mod_write_byte(VSD_NP_STATE + 1u, VSD_NP_MAGIC1);
-    psx_mod_write_byte(VSD_NP_STATE + 2u, n->phase);
-    psx_mod_write_byte(VSD_NP_STATE + 3u, n->step);
-    psx_mod_write_half(VSD_NP_STATE + 4u, n->t);
-    psx_mod_write_half(VSD_NP_STATE + 6u, n->frames);
-}
-
-static void vsd_np_end(const char *why)
-{
-    for (unsigned i = 0; i < 8; i++) psx_mod_write_byte(VSD_NP_STATE + i, 0);
-    psx_mod_counter_add(why, 1);
-}
-
-/* Player `player`'s unit from that player's match card. */
-static int vsd_np_card_unit(unsigned player, struct moa_vs_unit *u)
-{
-    static struct moa_card card;
-    uint8_t *mc = (uint8_t *)malloc(131072);
-    if (!mc) return 0;
-    const int ok = memcard_export_raw((int)player, mc) == 0 &&
-                   moa_memcard_first_unit(mc, &card) != 0;
-    free(mc);
-    if (!ok) return 0;
-    moa_vs_unit_from_card(&card, card.plus, 0, u);
-    return 1;
-}
-
-static void vsd_np_upload_emblem(struct CPUState *cpu, unsigned player)
-{
-    static struct moa_vs_unit u;
-    if (vsd_np_card_unit(player, &u)) vsd_upload_emblem_data(cpu, u.clut, u.emblem);
-}
-
-static int vsd_np_title_filter(struct CPUState *cpu, uint32_t address)
-{
-    if (psx_mod_read_word(address) != VSD_SIG_TITLE_OPEN ||
-        psx_mod_read_byte(VSD_TITLE_FLAG) != 1u ||          /* only the boot's title */
-        psx_mod_read_word(VSD_MENU_VERSUS) != VSD_SIG_MENU_VERSUS ||
-        psx_mod_read_word(VSD_FADE) != VSD_SIG_FADE ||
-        psx_mod_read_word(VSD_MENU_VS_START) != VSD_SIG_VS_START)
-        return 0;
-    static struct moa_vs_unit unit[2];
-    int have[2];
-    for (unsigned p = 0; p < 2; p++) have[p] = vsd_np_card_unit(p, &unit[p]);
-    if (!have[0] && !have[1]) {
-        psx_mod_counter_add("moa.vsd.net_no_saves", 1);
-        return 0;                                  /* the title, as before */
-    }
-    const uint32_t ra = cpu->gpr[31];
-    (void)psx_mod_call_guest(cpu, VSD_SCREEN_RESET, ra, 0, 0, 0, 0);
-    (void)psx_mod_call_guest(cpu, VSD_GARAGE_DEFAULT, ra, 0, 0, 0, 0);
-    for (unsigned i = 0; i < 8; i++) psx_mod_write_byte(VSD_PLUS_FLAGS + i, 0);
-    (void)psx_mod_call_guest(cpu, VSD_FADE, ra, 4, 0, 0, 0);
-    psx_mod_write_byte(VSD_MODE_BYTE, VSD_MODE_LINK);
-    psx_mod_write_word(VSD_MENU_FLAGS, psx_mod_read_word(VSD_MENU_FLAGS) | 0x200u);
-    (void)psx_mod_call_guest(cpu, VSD_MENU_VERSUS, ra, 0, 0, 0, 0);
-    /* After the menu's setup: its first visit copies the garage into both
-     * players' staging, which the cards' units now replace. */
-    for (unsigned p = 0; p < 2; p++)
-        if (have[p]) moa_vs_direct_set_unit(p, &unit[p]);
-    const struct vsd_np n = { NP_PHASE_DOWN, 0, 0, 0 };
-    vsd_np_put(&n);
-    psx_mod_counter_add(have[0] && have[1] ? "moa.vsd.net_boot" : "moa.vsd.net_boot_one_card", 1);
-    return 1;                                      /* the title is not opened */
-}
-
-/* The versus menu's controller sampling: while the start is ours, both pads
- * read as the script says (player 1) or idle (player 2). The cursor is moved
- * down and back first: its answer shows the menu takes input (the first
- * press after it opens is otherwise lost), then X on VS START. */
-static void vsd_np_input_entry(struct CPUState *cpu, uint32_t address)
-{
-    (void)cpu;
-    struct vsd_np n;
-    if (!vsd_np_get(&n)) return;
-    const uint32_t word = psx_mod_read_word(address);
-    if (word != VSD_SIG_INPUT_A && word != VSD_SIG_INPUT_B) return;
-    if (psx_mod_read_word(VSD_MENU_VS_START) != VSD_SIG_VS_START) {   /* not the menu */
-        vsd_np_end("moa.vsd.net_left_menu");
-        return;
-    }
-    uint16_t press = 0;
-    const uint32_t t = n.t;
-    switch (n.phase) {
-    case NP_PHASE_DOWN:
-    case NP_PHASE_UP: {
-        const unsigned want = n.phase == NP_PHASE_DOWN ? 1u : 0u;
-        const unsigned row = psx_mod_read_byte(VSD_VS_ROW);
-        if (row == want && t >= 20u) { n.phase++; n.t = 0; break; }
-        if (t > VSD_NP_GIVE_UP) { vsd_np_end("moa.vsd.net_menu_timeout"); return; }
-        if (row != want && (t % 30u) < 4u) press = row < want ? VSD_PAD_DOWN : VSD_PAD_UP;
-        n.t++;
-        break;
-    }
-    case NP_PHASE_PRESS:
-        if (t < 4u) press = VSD_PAD_X;
-        if (t >= 12u) { n.phase = NP_PHASE_LOADING; n.t = 0; break; }
-        n.t++;
-        break;
-    default:                                       /* VS START runs (filter below) */
-        if (n.step == 0 && t > 600u) {             /* it never did: press again */
-            n.phase = NP_PHASE_PRESS; n.t = 0;
-            psx_mod_counter_add("moa.vsd.net_press_again", 1);
-            break;
-        }
-        if (n.t < 0xFFFFu) n.t++;
-        break;
-    }
-    vsd_np_put(&n);
-    psx_mod_write_byte(VSD_PAD1, 0);
-    psx_mod_write_byte(VSD_PAD1 + 1u, 0x41);
-    psx_mod_write_half(VSD_PAD1 + 2u, (uint16_t)~press);
-    psx_mod_write_byte(VSD_PAD2, 0);
-    psx_mod_write_byte(VSD_PAD2 + 1u, 0x41);
-    psx_mod_write_half(VSD_PAD2 + 2u, 0xFFFFu);
-}
-
-/* VS START, held back while the units' graphics load; then it goes ahead
- * (build check, stat blocks, the link engine). Later matches in the session
- * use the versus menu as usual and are left alone. */
-static int vsd_np_vs_start_filter(struct CPUState *cpu, uint32_t address)
-{
-    struct vsd_np n;
-    if (!vsd_np_get(&n) || n.phase < NP_PHASE_PRESS ||
-        psx_mod_read_word(address) != VSD_SIG_VS_START)
-        return 0;
-    if (n.phase == NP_PHASE_PRESS) n.phase = NP_PHASE_LOADING;
-    unsigned step = n.step;
-    uint32_t frames = n.frames;
-    int timed_out = 0;
-    const int more = vsd_load_run(cpu, cpu->gpr[4], &step, &frames, vsd_np_upload_emblem, &timed_out);
-    if (more) {
-        n.step = (uint8_t)step;
-        n.frames = (uint16_t)(frames > 0xFFFFu ? 0xFFFFu : frames);
-        if (n.step == 0) n.step = 1;               /* keep "loading" visible to the input hook */
-        vsd_np_put(&n);
-        return 1;
-    }
-    vsd_np_end(timed_out ? "moa.vsd.net_loaded_timeout" : "moa.vsd.net_loaded");
-    return 0;                                      /* VS START goes ahead */
-}
-
 PSX_MOD_CONSTRUCTOR(moa_vs_direct_register)
 {
     (void)psx_game_register_offline_function_filter(VSD_TITLE_OPEN, vsd_title_filter);
-    (void)psx_game_register_netplay_function_filter(VSD_TITLE_OPEN, vsd_np_title_filter);
-    (void)psx_game_register_netplay_function_entry(VSD_INPUT_A, vsd_np_input_entry);
-    (void)psx_game_register_netplay_function_entry(VSD_INPUT_B, vsd_np_input_entry);
-    (void)psx_game_register_netplay_function_filter(VSD_MENU_VS_START, vsd_np_vs_start_filter);
 }

@@ -196,10 +196,8 @@ existing "return to launcher" logic already takes over.
 `games/master-of-arena/moa_vs_direct.c` holds steps 1–3 (boot to the versus menu, units with
 names and emblem into the staging area, graphics at VS START). AI Battle uses it by default
 (`PSX_MOA_VS_DIRECT=0` brings back the old scripted DATA LOAD route for comparison).
-Netplay (branch `netplay-direct`, 2026-11-17, not yet built or tested): the same module's
-netplay hooks boot both peers to the versus menu with each match card's first save
-(slot 1 = P1, slot 2 = P2), press VS START by script and load the graphics; progress kept
-in guest memory (link struct send packet) for rollback. See NETPLAY.md.
+Netplay: a scripted direct start (7b5e228, 2026-11-17) was removed again on 2026-11-19 (it
+stalled on the versus menu); netplay starts from the title as in 0.8.4.4.
 
 **Scenario — Load Save / New Game without the title:** set mode = 0 and the Scenario
 values from `0x800AB500`, then run the LOAD GAME state (`0x800AC8E8`) — card screens still

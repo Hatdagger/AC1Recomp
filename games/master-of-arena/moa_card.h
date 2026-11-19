@@ -126,10 +126,6 @@ void moa_card_to_save(const struct moa_card *card, uint8_t block[MOA_SAVE_BLOCK]
  * '>' after), as saves and the versus menu keep it. */
 void moa_card_put_name(uint8_t dst[18], const char *src);
 
-/* The first Master of Arena save on a card image (128 KB, in memory) as a
- * card: its directory slot (1..15), 0 if the card holds none. */
-int moa_memcard_first_unit(const uint8_t *mc, struct moa_card *out);
-
 /* A memory card image (.mcd, 128 KB) holding `count` cards as saves
  * BASLUS-01030A, B, ... in that order (the DATA LOAD list's 1, 2, ...). */
 int moa_memcard_write_units(const char *path, const struct moa_card *const units[], int count);

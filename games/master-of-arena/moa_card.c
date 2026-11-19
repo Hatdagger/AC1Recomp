@@ -965,13 +965,6 @@ static int is_story(const uint8_t *mc, int slot, int *owned)
     return 1;          /* versus units too: any MoA save can take the garage AC */
 }
 
-int moa_memcard_first_unit(const uint8_t *mc, struct moa_card *out)
-{
-    for (int i = 1; i < 16; i++)
-        if (is_story(mc, i, NULL) && moa_card_from_save(mc + i * 8192, 8192, out)) return i;
-    return 0;
-}
-
 int moa_memcard_list_story(const char *path, struct moa_story_save *out, int max)
 {
     uint8_t *mc = (uint8_t *)malloc(131072);

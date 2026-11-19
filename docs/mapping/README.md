@@ -21,7 +21,7 @@ Several chats map Master of Arena at the same time. To avoid double work:
 | Missions: weapon detail +0x04 | `parts-tables.md` | data chat | Narrow check only: does the missions engine (FDAT 207) read weapon detail +0x04? Not the rest of the missions lane | done 2026-11-17: yes, and so do VS, arena and replay (the earlier "no reader" was wrong); see `parts-tables.md` |
 | Menus: scenario hub | `menus-hub.md` | hub chat | The hub ring (FDAT 206 from `0x800552C0`): its 8 entries, tables, input, models and labels, and how to add / remove / replace entries. Not the screens behind the entries (garage, shop, …) | static read done 2026-11-17, icon and caption pictures found |
 | Missions | `missions.md` | missions chat | Scenario missions apart from the shared fight code: picking and launching a mission (mission screen table `0x8019F7A8`, list builder `0x800942BC`, which routine sets the mission id), the missions engine FDAT 207, **per-mission code and maps = FDAT 0–99** (5 entries per mission, not MIS.T), MIS.T (mission screen data, briefings, mail), objectives, win/lose checks, timer, results and rewards, non-AC enemies and the enemy list, scripted sequences, mail triggers. The AC object, damage and weapons in flight stay with the battle chat | claimed 2026-11-17 |
-| Menus and screens | `menus-screens.md` | boot chat | The screens behind the hub entries: Garage (all its pages), Shop, System (the card screen: DATA SAVE / LOAD, reports, EXIT GAME), Arena and Ex Arena lists, Arena Maker; the VS menu's own screens (AC SETUP, SELECT MAP); and the menu building blocks they share (tasks, windows, text and font, cursors and pad input, message boxes, menu sounds). For each screen: how it opens, what it loads, its states and tables, how it closes. Goal: Rogue Arena's overlays and moving menus into the launcher. Not the hub ring (hub chat), the missions or mail screens (missions chat), the title / NEW-LOAD / VS START flow (launch chat, `boot-loads.md`) or the arena fight launch (`boot-loads.md` §7) | claimed 2026-11-18 |
+| Menus and screens | `menus-screens.md` | boot chat | The screens behind the hub entries: Garage (all its pages), Shop, System (the card screen: DATA SAVE / LOAD, reports, EXIT GAME), Arena and Ex Arena lists, Arena Maker; the VS menu's own screens (AC SETUP, SELECT MAP); and the menu building blocks they share (tasks, windows, text and font, cursors and pad input, message boxes, menu sounds). For each screen: how it opens, what it loads, its states and tables, how it closes. Goal: Rogue Arena's overlays and moving menus into the launcher. Not the hub ring (hub chat), the missions or mail screens (missions chat), the title / NEW-LOAD / VS START flow (launch chat, `boot-loads.md`) or the arena fight launch (`boot-loads.md` §7) | static read done 2026-11-18: building blocks (tasks, pad, windows, text, prompts, sounds), every screen's states; open items in its §4 |
 | Renderer | `renderer.md` | renderer chat | How a fight is drawn, in every engine: frame anatomy (scene render, draw / display buffers, ordering table, flip), camera → view (GTE matrix, projection), which routine draws what (stage, ACs, object pool, effects, HUD), the ACs' joint matrices, culling and sorting. Goal: the framework's render passes (in-between frames), widescreen and draw-distance features, native drawing later. Not what AC object fields mean in play (battle chat), the camera record's setup fields (data chat), what is loaded into VRAM (boot chat) or mission maps (missions chat) | plan written 2026-11-18 (§3 work order); steps 1–2 (frame anatomy, camera) done for VS 2026-11-18; camera-only render pass written, not run yet |
 
 Not claimed yet (claim before starting): sound/music (the menu music is already described in the project doc
@@ -228,6 +228,15 @@ Renderer chat → data chat (2026-11-18):
   player block), it writes eye + look-at (16 bytes) to its argument and calls the chase camera
   `0x800878FC`. `stat-block.md` lists it as "alternate `0x80087B90`"; worth a look when you are next
   in "Camera setup". Details in `renderer.md`, "Camera (VS)".
+
+Boot chat (menus lane) → Rogue Arena work (2026-11-18, details in `menus-screens.md`):
+- Every part's in-game shop description is **`MIS.T` entry 385**: 256 lines of 76 bytes, read by
+  the shop into `0x801A0390` before it opens. Usable for the prize spec comparison.
+- Menu sounds: tone 0 back, 1 cursor, 2 OK, 6 window opens, 7 question / message opens, 10 part
+  equipped, 12 assembly slot cursor (all program 0 of the menu bank, note 60).
+- The game's own helpers, if an overlay ever wants the game's look: window `0x80063EF4` /
+  `0x80064348` (close), text `0x80065330`, yes / no `0x80065858` (answer 0 yes, 1 no), message box
+  `0x80066C08`. The shop shows a 3D part with MODEL slot 29 (`0x8009CD38`).
 
 Launch chat → data chat:
 - Stage (compiled +0x05 = player block +0x255) at VS START = byte `0x800D5800[map − 1]`,

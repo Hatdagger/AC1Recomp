@@ -323,3 +323,51 @@ Launch chat → data chat:
 - Stage (compiled +0x05 = player block +0x255) at VS START = byte `0x800D5800[map − 1]`,
   map = 0x8003EA81 (1–10), written by `0x800B348C`. VS START compiles P1 then P2 in
   `0x800B2F9C` after loading each player's parts / extras / options into the garage.
+
+Weapon chat → battle chat (2026-11-20, VS engine, details in `weapon-map.md` §5):
+- AC **+0x3A is the lock-jam timer** (flag 0x40, WR-RS7 only), not a stagger: while it counts
+  down every missile lock is wiped and the gun lock is skipped. Halved when player block +0x284
+  bit 0 is clear = the target's head has a **NOISE CANCELER**.
+- AC **+0x3C / +0x3E = burn** timer (100 steps) and AP×4 per step (damage ÷ 16 AP), flag 0x80,
+  WG-FGI-00 only: total ≈ 6.25 × the hit's damage.
+- AC **+0xDA = knockback level**, counted down 1 a step (busy flag +0x36 0x10 until 0). States
+  0x80 / 0x81 with hit animations 37–40 (ground, by side) / 41–44 (air).
+- Push (`0x80079ADC`) ≈ impact × 3.2, **added to the AC's velocity**, total capped per axis at
+  AC +0x28 (+0x2A ÷ 2 vertically). Knockback ignores the damage type: WC-SPGUN, WM-X15-EX and
+  WC-IR24 are energy weapons with impact.
+- On-hit rumble = damage × 128 ÷ 1000 + 128, 5 steps. Cannons kick the shooter back by player
+  block +0x214 × cannon table +2 >> 8.
+
+Weapon chat → data chat (2026-11-20):
+- `parts-tables.md` / `stat-block.md` say the NOISE CANCELER has no effect in fights: it halves the
+  WR-RS7 lock jam (`0x800796A4`, stat +0x34 bit 0 = player block +0x284).
+- Detail +0x12 bit 0x40 = lock jammer, 0x80 = burn (`weapon-map.md` §5).
+- Stability stat ≈ legs stability × carried weight ÷ 127,250 (Armored-CoreR
+  `acr_gen1_compile.c`), clamped 32–255; AC +0x16C = stat × 25 ÷ 4.
+
+Weapon chat → renderer chat (2026-11-20, details in `weapon-map.md` §2–§4):
+- The effect atlas `0x80091A28` has **297** entries of 12 bytes (0–49 effects, 50–278 HUD,
+  279–296 more effects; it ends where the light colours `0x80092814` start). Kind 1 colour =
+  pool +0xC4 (per-weapon tint); kind 2 colour = the atlas entry's RGB; kind 6 (trailing glow)
+  colour = pool +0xBC. Impact flashes add a light to the per-area light list (`0x8005B96C`).
+- The C (model shot) spawner `0x8008E664` uses rigid models (kind 4) only for records 6, 7, 11, 12.
+
+Sound chat → missions chat (2026-11-19, details in `sound.md`):
+- MIS.T entry 0 **T+1160 is the mission's start music** (XA id, copied to `0x8003EA29`), not an
+  enemy AC.
+- Message codes: `X` radio voice, `V` COM voice, `B` music change, `H` / `T` text only.
+- Blocks 13–18 of a mission map = three VABs (one per COM voice type) into bank slot 2; no reader.
+
+Sound chat → data chat (2026-11-19):
+- Compiled +0x2A (head byte +0x32, player block +0x27A) is the **COM voice type**: it picks the
+  XA voice set, the message block and the slot-2 VAB, not a HUD style.
+- Leg record byte +17 = footstep sound id (VS `0x8007E1DC` / `0x8007E2DC` / `0x8007E3E0`).
+
+Sound chat → battle chat (2026-11-19):
+- `0x8008B7B8` (listed as "a sound" after a hit) spawns sparks; the hit sound is from the table
+  at `0x800930A0` via `0x8008B60C`.
+
+Weapon chat → Armored-CoreR (not this repo):
+- `docs/research/gen1-weapons.md` calls detail +0x12 bit 0x40 "stagger": it is the lock jammer.
+- The comment above the stability maths in `src/gen1/acr_gen1_compile.c` has the weight divisor
+  wrong (÷ 31.25, not ÷ 2,000); the code matches the game.

@@ -4,6 +4,7 @@
 #include "psx_memory.h"
 #include "freeze_heartbeat.h"
 #include "freeze_dump_policy.h"
+#include "psx_link_session.h"
 #include "debug_server.h"
 #include "crash_trace.h"   /* g_psx_fatal_reason */
 #include "cpu_state.h"     /* g_psx_bail_* call-contract counters */
@@ -87,6 +88,8 @@ static int    s_sym_initialized = 0;
 #endif
 
 #define HB_FILE        "psx_freeze_heartbeat.json"
+/* Link session 2 (the second console on the PC) beats into its own file. */
+#define HB_FILE_LINK2  "psx_freeze_heartbeat-" PSX_LINK_FILE_TAG ".json"
 #define HB_INTERVAL_MS 100u
 
 /* Wedge detection.
@@ -1097,8 +1100,9 @@ static void heartbeat_write(void) {
     /* Atomic overwrite via .tmp + rename. Avoids a reader catching a
      * mid-write file and parsing partial JSON. Cheap on Windows
      * (MoveFileEx with REPLACE_EXISTING). */
+    const char *hb_file = psx_link_is_second_session() ? HB_FILE_LINK2 : HB_FILE;
     char tmp_path[64];
-    snprintf(tmp_path, sizeof(tmp_path), HB_FILE ".tmp");
+    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", hb_file);
 
     FILE *f = fopen(tmp_path, "wb");
     if (!f) return;
@@ -1106,10 +1110,10 @@ static void heartbeat_write(void) {
     fclose(f);
 
 #ifdef _WIN32
-    MoveFileExA(tmp_path, HB_FILE,
+    MoveFileExA(tmp_path, hb_file,
                 MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
 #else
-    rename(tmp_path, HB_FILE);
+    rename(tmp_path, hb_file);
 #endif
 }
 

@@ -68,6 +68,7 @@ extern "C" void psx_event_step_conservative_env_init(void);
 #include "frame_pacing.h"
 #include "latency_ring.h"
 #include "sio.h"
+#include "psx_link_session.h"
 #include "psx_host_rumble.h"
 #ifndef PSX_MAX_PLAYERS
 #define PSX_MAX_PLAYERS 2
@@ -2952,6 +2953,22 @@ static std::filesystem::path g_runtime_profile_dir;
 static std::filesystem::path runtime_profile_dir(const char* argv0) {
     return g_runtime_profile_dir.empty() ? exe_dir_from_argv(argv0)
                                          : g_runtime_profile_dir;
+}
+
+/* The launcher's settings file. Link session 2 (the second console of a Link
+ * Versus pair, see psx_link_session.h) keeps its own copy, started from the
+ * player's settings the first time, so the two sessions never overwrite each
+ * other's window, audio or controller choices. */
+static std::filesystem::path settings_toml_path(const char* argv0) {
+    namespace fs = std::filesystem;
+    const fs::path shared = runtime_profile_dir(argv0) / "settings.toml";
+    if (!psx_link_is_second_session()) return shared;
+    const fs::path own = runtime_profile_dir(argv0) /
+        ("settings-" PSX_LINK_FILE_TAG ".toml");
+    std::error_code ec;
+    if (!fs::exists(own, ec) && fs::exists(shared, ec))
+        fs::copy_file(shared, own, fs::copy_options::skip_existing, ec);
+    return own;
 }
 
 static std::filesystem::path sidecar_cfg_path(const char* argv0, const char* filename) {
@@ -8091,6 +8108,9 @@ static void psx_prepare_process_relaunch(void) {
 
 static void psx_relaunch_to_launcher(void) {
     psx_prepare_process_relaunch();
+    /* Link session 2 was started by session 1's launcher: it closes instead
+     * of opening a second launcher. */
+    if (psx_link_is_second_session()) std::exit(0);
 
     if (!g_saved_argv0.empty()) {
         std::error_code ec;
@@ -18098,7 +18118,7 @@ int main(int argc, char** argv) {
     bool user_settings_has_renderer = false;
     {
         std::filesystem::path settings_path =
-            runtime_profile_dir(argv[0]) / "settings.toml";
+            settings_toml_path(argv[0]);
         g_active_settings_path = settings_path;
 #if defined(RECOMP_LAUNCHER)
         g_lnch_settings_path = settings_path;
@@ -18506,8 +18526,21 @@ int main(int argc, char** argv) {
                     go_vmins.push_back(o.has_range ? (int32_t)o.vmin : (int32_t)0x80000000);
                     go_vmaxs.push_back(o.has_range ? (int32_t)o.vmax : (int32_t)0x7FFFFFFF);
                 }
-                std::string go_state = (memcard_dir /
-                    ((game_id.empty() ? std::string("game") : game_id) + ".options")).string();
+                /* Link session 2 keeps its own copy of the game's OPTION
+                 * settings, started from the player's (psx_link_session.h). */
+                const std::string go_base =
+                    game_id.empty() ? std::string("game") : game_id;
+                std::string go_state = (memcard_dir / (go_base + ".options")).string();
+                if (psx_link_is_second_session()) {
+                    const std::filesystem::path own = memcard_dir /
+                        (go_base + "." PSX_LINK_FILE_TAG ".options");
+                    std::error_code go_ec;
+                    if (!std::filesystem::exists(own, go_ec) &&
+                        std::filesystem::exists(go_state, go_ec))
+                        std::filesystem::copy_file(go_state, own,
+                            std::filesystem::copy_options::skip_existing, go_ec);
+                    go_state = own.string();
+                }
                 game_options_configure(go_state.c_str(), go_addrs.data(), go_sizes.data(),
                                        go_names.data(), go_vmins.data(), go_vmaxs.data(),
                                        (int)go_addrs.size());
@@ -19661,7 +19694,7 @@ int main(int argc, char** argv) {
             if (lr == 1) {
                 /* Keep settings changed and then dismissed with Quit. */
                 PSXRecompV4::save_user_settings(
-                    runtime_profile_dir(argv[0]) / "settings.toml", seed);
+                    settings_toml_path(argv[0]), seed);
                 std::fprintf(stdout, "psxrecomp: launcher closed; exiting.\n");
                 if (overlay_init_thread.joinable())
                     overlay_init_thread.join();
@@ -19871,7 +19904,7 @@ int main(int argc, char** argv) {
                 g_video_win_w = seed.window_width;
                 /* Persist the user's choices next to the exe. */
                 PSXRecompV4::save_user_settings(
-                    runtime_profile_dir(argv[0]) / "settings.toml", seed);
+                    settings_toml_path(argv[0]), seed);
             }
         }
     }
@@ -20006,8 +20039,14 @@ int main(int argc, char** argv) {
      * Enables a soak fleet: several instances on distinct ports + renderers,
      * including BIOS instances that have no [game]-block config. */
     if (cli_debug_port >= 0) debug_port      = (uint16_t)cli_debug_port;
+    /* Link Versus runs two sessions on one PC: session 2 takes the next debug
+     * port (unless one was given) and both say which console they are. */
+    else if (psx_link_is_second_session()) debug_port = (uint16_t)(debug_port + 1);
     if (cli_renderer   >= 0) g_video_renderer = cli_renderer;
     if (cli_window_title)    window_title     = cli_window_title;
+    else if (const int link_side = psx_link_session_from_env())
+        window_title += link_side == 1 ? " - Link Versus (Player 1)"
+                                       : " - Link Versus (Player 2)";
     if (cli_memcard_dir) {
         memcard_dir = std::filesystem::path(cli_memcard_dir);
         if (memcard_dir.is_relative())
@@ -20581,6 +20620,23 @@ session_reboot:
             const char *session_card2 = std::getenv("PSX_MEMCARD2_SESSION");
             if (session_card2 && session_card2[0] && !psx_netplay_active()) {
                 mc2 = session_card2;
+                memcard2_enabled = true;
+            }
+        }
+        /* Link session 2 is a second console: it must never share a card
+         * file with session 1 (each session keeps the whole card in memory
+         * and writes it back whole, so the later write would erase the other
+         * console's saves). The launcher always names both of its cards; a
+         * session 2 started by hand without them gets cards of its own. */
+        if (psx_link_is_second_session()) {
+            const char *sc1 = std::getenv("PSX_MEMCARD1_SESSION");
+            const char *sc2 = std::getenv("PSX_MEMCARD2_SESSION");
+            if (!sc1 || !sc1[0]) {
+                mc1 = (memcard_dir / ("card1-" PSX_LINK_FILE_TAG ".mcd")).string();
+                memcard1_enabled = true;
+            }
+            if (!sc2 || !sc2[0]) {
+                mc2 = (memcard_dir / ("card2-" PSX_LINK_FILE_TAG ".mcd")).string();
                 memcard2_enabled = true;
             }
         }
@@ -21329,7 +21385,12 @@ session_reboot:
          * is the key the slot files already use. Single-disc titles pass 0 and
          * keep their existing filenames untouched. */
         savestate_set_disc_scope(game_discs.size() > 1 ? selected_disc_index : 0);
-        savestate_configure(memcard_dir.string().c_str(),
+        /* Link session 2's savestates live in their own folder, so the two
+         * sessions never overwrite each other's slots. */
+        const std::string savestate_root = psx_link_is_second_session()
+            ? (memcard_dir / ("savestates-" PSX_LINK_FILE_TAG)).string()
+            : memcard_dir.string();
+        savestate_configure(savestate_root.c_str(),
                             memory_get_bios_checksum(), game_entry_pc,
                             bios_token, openbios_ws);
         psx_rewind_set_enabled(g_rewind_enabled);
@@ -22077,7 +22138,7 @@ soft_return_lobby:
              * the rest of settings.toml — merge into the on-disk file. */
             {
                 const auto settings_path =
-                    runtime_profile_dir(argv[0]) / "settings.toml";
+                    settings_toml_path(argv[0]);
                 PSXRecompV4::UserSettings us =
                     PSXRecompV4::load_user_settings(settings_path);
                 const int un = std::min(PSX_MAX_PLAYERS,

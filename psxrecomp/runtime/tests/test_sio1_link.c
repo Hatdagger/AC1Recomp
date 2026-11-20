@@ -12,6 +12,7 @@
  * nothing is sent without CTS, RESET clears the port, and the shared-memory
  * cable carries the same exchange between two ends opened by name. */
 #include "sio1.h"
+#include "psx_link_session.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -198,9 +199,41 @@ static void test_no_cable_port(void)
     CHECK(sio1_cycles_to_irq(0xFFFFFFFFu) == UINT32_MAX);
 }
 
+static void set_env(const char *k, const char *v)
+{
+#ifdef _WIN32
+    _putenv_s(k, v ? v : "");
+#else
+    if (v) setenv(k, v, 1); else unsetenv(k);
+#endif
+}
+
+static void test_link_session_env(void)
+{
+    /* Which end of the cable a session is, from the environment alone. */
+    set_env("PSX_LINK_CABLE", NULL);
+    set_env("PSX_LINK_SIDE", NULL);
+    CHECK(psx_link_session_from_env() == 0);
+    set_env("PSX_LINK_SIDE", "2");
+    CHECK(psx_link_session_from_env() == 0);      /* no cable name */
+    set_env("PSX_LINK_CABLE", "t");
+    CHECK(psx_link_session_from_env() == 2);
+    CHECK(psx_link_is_second_session());
+    set_env("PSX_LINK_SIDE", "1");
+    CHECK(psx_link_session_from_env() == 1);
+    CHECK(!psx_link_is_second_session());
+    set_env("PSX_LINK_SIDE", "3");
+    CHECK(psx_link_session_from_env() == 0);
+    set_env("PSX_LINK_SIDE", "12");
+    CHECK(psx_link_session_from_env() == 0);
+    set_env("PSX_LINK_CABLE", NULL);
+    set_env("PSX_LINK_SIDE", NULL);
+}
+
 int main(void)
 {
     test_no_cable_port();
+    test_link_session_env();
     test_mem_cable();
     test_shm_cable();
     if (g_fail) return 1;

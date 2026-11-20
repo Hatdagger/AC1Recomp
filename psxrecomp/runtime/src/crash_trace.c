@@ -41,12 +41,20 @@
 #include "psx_memory.h"
 #include "psx_bss.h"
 #include "crash_trace.h"
+#include "psx_link_session.h"
 #include "psx_segment_miss.h"
 #include "autocompile.h"   /* autocompile_degraded_reason — stamp a degraded
                             * (interpreter-only) run into its own report */
 
-/* Output path — overwritten per dump. */
-static const char *kReportPath = "psx_last_run_report.json";
+/* Output path — overwritten per dump. Link session 2 (the second console on
+ * the PC) keeps its own report so the two sessions never overwrite each
+ * other's. */
+static const char *report_path(void)
+{
+    return psx_link_is_second_session()
+        ? "psx_last_run_report-" PSX_LINK_FILE_TAG ".json"
+        : "psx_last_run_report.json";
+}
 
 /* Build identity, embedded into every report so a user-submitted crash can be
  * correlated to an exact build (issue #1 reports had no version field). The git
@@ -727,7 +735,7 @@ void psx_crash_trace_dump(const char *reason, void *seh_info) {
     {
         size_t safe_pos = pos;
         append_str(buf, sizeof(buf), &safe_pos, "  \"native_stack\": null\n}\n");
-        FILE *pf = fopen(kReportPath, "wb");
+        FILE *pf = fopen(report_path(), "wb");
         if (pf) { fwrite(buf, 1, safe_pos, pf); fclose(pf); }
 
         uintptr_t sp = 0;
@@ -835,7 +843,7 @@ void psx_crash_trace_dump(const char *reason, void *seh_info) {
     append_str(buf, sizeof(buf), &pos, "}\n");
 
     /* Write to file. Overwrite previous report. */
-    FILE *f = fopen(kReportPath, "wb");
+    FILE *f = fopen(report_path(), "wb");
     if (f) {
         fwrite(buf, 1, pos, f);
         fclose(f);

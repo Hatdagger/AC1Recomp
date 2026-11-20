@@ -99,6 +99,13 @@ void     sio1_write(uint32_t addr, uint32_t value, int width);
 void     sio1_advance(uint32_t cycles);
 uint32_t sio1_cycles_to_irq(uint32_t i_mask);
 int      sio1_cable_attached(void);   /* 1 when PSX_LINK_CABLE is in use */
+/* This process's end of a link cable from the environment: 1 or 2 when
+ * PSX_LINK_CABLE and PSX_LINK_SIDE name a valid end, else 0. Reads the
+ * environment only (never opens the cable), so it is safe at startup. Session
+ * 2 is the second console on the PC and keeps its own copies of the files a
+ * session writes (settings, game options, savestates, run reports); session 1
+ * uses the player's usual ones. */
+int      psx_link_session(void);
 void     sio1_shutdown(void);         /* leave the cable (also atexit) */
 
 /* Shared-memory cable (sio1_cable.c). Returns NULL on failure. */

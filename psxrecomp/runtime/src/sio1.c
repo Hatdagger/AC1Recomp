@@ -1,5 +1,6 @@
 /* sio1.c — the serial port (SIO1) and its link cable. See sio1.h. */
 #include "sio1.h"
+#include "psx_link_session.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -306,16 +307,20 @@ static void port_raise_irq(void *ctx)
     psx_irq_raise(IRQ_BIT_SIO1, 0);
 }
 
+int psx_link_session(void)
+{
+    static int cached = -1;
+    if (cached < 0) cached = psx_link_session_from_env();
+    return cached;
+}
+
 static void port_attach(void)
 {
     if (s_state) return;
     s_state = 1;
-    const char *name = getenv("PSX_LINK_CABLE");
-    const char *side = getenv("PSX_LINK_SIDE");
-    if (!name || !name[0] || !side) return;
-    int n = atoi(side);
-    if (n != 1 && n != 2) return;
-    s_cable = sio1_shm_cable_open(name, n);
+    const int n = psx_link_session();
+    if (!n) return;
+    s_cable = sio1_shm_cable_open(getenv("PSX_LINK_CABLE"), n);
     if (!s_cable) return;
     sio1_dev_init(&s_port, sio1_shm_cable_link(s_cable), port_raise_irq, NULL);
     s_state = 2;

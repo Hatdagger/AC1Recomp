@@ -23,9 +23,10 @@ Several chats map Master of Arena at the same time. To avoid double work:
 | Missions | `missions.md` | missions chat | Scenario missions apart from the shared fight code: picking and launching a mission (mission screen table `0x8019F7A8`, list builder `0x800942BC`, which routine sets the mission id), the missions engine FDAT 207, **per-mission code and maps = FDAT 0–99** (5 entries per mission, not MIS.T), MIS.T (mission screen data, briefings, mail), objectives, win/lose checks, timer, results and rewards, non-AC enemies and the enemy list, scripted sequences, mail triggers. The AC object, damage and weapons in flight stay with the battle chat | claimed 2026-11-17 |
 | Menus and screens | `menus-screens.md` | boot chat | The screens behind the hub entries: Garage (all its pages), Shop, System (the card screen: DATA SAVE / LOAD, reports, EXIT GAME), Arena and Ex Arena lists, Arena Maker; the VS menu's own screens (AC SETUP, SELECT MAP); and the menu building blocks they share (tasks, windows, text and font, cursors and pad input, message boxes, menu sounds). For each screen: how it opens, what it loads, its states and tables, how it closes. Goal: Rogue Arena's overlays and moving menus into the launcher. Not the hub ring (hub chat), the missions or mail screens (missions chat), the title / NEW-LOAD / VS START flow (launch chat, `boot-loads.md`) or the arena fight launch (`boot-loads.md` §7) | static read done 2026-11-18: building blocks (tasks, pad, windows, text, prompts, sounds), every screen's states; **ASSEMBLY in depth 2026-11-18** (§2h: controls, fit rules and fix-ups with their messages, preview numbers, loads, sortie check); **Shop in depth 2026-11-18** (§2i: lists, prices, refusals, leaving, texture backup); **the rest of the Garage in depth 2026-11-18** (§2j OPTIONAL PARTS, §2k PERFORMANCE and GRADE, §2l CHANGE COLOR: patterns, schemes, paint bytes and the palette ramp, §2m EDIT EMBLEM); **System / card screen in depth 2026-11-19** (§2n: reports and their formulas, row letters, card states, the card list and its type letters, emblem file with 7 slots, arena file, EXIT GAME); **Options in depth 2026-11-19** (§2o: the 56-byte settings record, every row, sliders, KEY ASSIGN); **VS menu in depth 2026-11-19** (§2p: map pick by VS STAGE, first-visit reset, both pads on the menu, the 2P pad swap `0x801B1CD8`, per-player key layouts and vibration, SELECT MAP, AC SETUP load / write-back); open items in its §4 |
 | Renderer | `renderer.md` | renderer chat | How a fight is drawn, in every engine: frame anatomy (scene render, draw / display buffers, ordering table, flip), camera → view (GTE matrix, projection), which routine draws what (stage, ACs, object pool, effects, HUD), the ACs' joint matrices, culling and sorting. Goal: the framework's render passes (in-between frames), widescreen and draw-distance features, native drawing later. Not what AC object fields mean in play (battle chat), the camera record's setup fields (data chat), what is loaded into VRAM (boot chat) or mission maps (missions chat) | plan written 2026-11-18 (§3 work order); steps 1–2 (frame anatomy, camera) done for VS 2026-11-18; camera-only render pass user-tested OK and merged 2026-11-18 (`99ae2cf`); step 3 (draw list) static first cut for VS 2026-11-18; step 4 (ACs: pose records, joints, model and shadow draws) read for VS 2026-11-18, test 2 (ACs glide) on branch `renderer-vs-ac-pass`, built, waiting for the user's test; step 5 (object pool draws) static first cut for VS 2026-11-18; step 7 (culling and sorting) static first cut for VS 2026-11-18 |
+| Weapon map | `weapon-map.md` | weapon chat | Every weapon from its part record to what it fires: shot families and tables, how each shot looks (sprites, tints, models), its fire and hit sounds, the impact flash and debris, knockback, stun, the lock jammer and burn. Script `tools/weapon_map.py` writes `weapon-map/weapons.csv` from the disc. Not the AC object in general (battle chat) or the part tables themselves (data chat) | static read done 2026-11-20 (VS engine); live checks in its §9 |
+| Sound and music | `sound.md` | sound chat | Every sound the game makes: banks, sound ids, the play routines, menu sounds, XA music and voices, message codes. Which weapon plays which shot / hit sound is in `weapon-map.md` | static read done 2026-11-19; checked against the weapon map 2026-11-20; open items in its §10 |
 
-Not claimed yet (claim before starting): sound/music (the menu music is already described in the project doc
-`rogue-arena-music.md`: a SEQ on the sound chip started by `0x80064F24`; fight music is CD audio), stage data
+Not claimed yet (claim before starting): stage data
 (FDAT 100–199 look like per-stage code + maps for another engine: code based near `0x80099xxx`)
 other than drawing the stage geometry, which the renderer lane has.
 
@@ -322,3 +323,51 @@ Launch chat → data chat:
 - Stage (compiled +0x05 = player block +0x255) at VS START = byte `0x800D5800[map − 1]`,
   map = 0x8003EA81 (1–10), written by `0x800B348C`. VS START compiles P1 then P2 in
   `0x800B2F9C` after loading each player's parts / extras / options into the garage.
+
+Weapon chat → battle chat (2026-11-20, VS engine, details in `weapon-map.md` §5):
+- AC **+0x3A is the lock-jam timer** (flag 0x40, WR-RS7 only), not a stagger: while it counts
+  down every missile lock is wiped and the gun lock is skipped. Halved when player block +0x284
+  bit 0 is clear = the target's head has a **NOISE CANCELER**.
+- AC **+0x3C / +0x3E = burn** timer (100 steps) and AP×4 per step (damage ÷ 16 AP), flag 0x80,
+  WG-FGI-00 only: total ≈ 6.25 × the hit's damage.
+- AC **+0xDA = knockback level**, counted down 1 a step (busy flag +0x36 0x10 until 0). States
+  0x80 / 0x81 with hit animations 37–40 (ground, by side) / 41–44 (air).
+- Push (`0x80079ADC`) ≈ impact × 3.2, **added to the AC's velocity**, total capped per axis at
+  AC +0x28 (+0x2A ÷ 2 vertically). Knockback ignores the damage type: WC-SPGUN, WM-X15-EX and
+  WC-IR24 are energy weapons with impact.
+- On-hit rumble = damage × 128 ÷ 1000 + 128, 5 steps. Cannons kick the shooter back by player
+  block +0x214 × cannon table +2 >> 8.
+
+Weapon chat → data chat (2026-11-20):
+- `parts-tables.md` / `stat-block.md` say the NOISE CANCELER has no effect in fights: it halves the
+  WR-RS7 lock jam (`0x800796A4`, stat +0x34 bit 0 = player block +0x284).
+- Detail +0x12 bit 0x40 = lock jammer, 0x80 = burn (`weapon-map.md` §5).
+- Stability stat ≈ legs stability × carried weight ÷ 127,250 (Armored-CoreR
+  `acr_gen1_compile.c`), clamped 32–255; AC +0x16C = stat × 25 ÷ 4.
+
+Weapon chat → renderer chat (2026-11-20, details in `weapon-map.md` §2–§4):
+- The effect atlas `0x80091A28` has **297** entries of 12 bytes (0–49 effects, 50–278 HUD,
+  279–296 more effects; it ends where the light colours `0x80092814` start). Kind 1 colour =
+  pool +0xC4 (per-weapon tint); kind 2 colour = the atlas entry's RGB; kind 6 (trailing glow)
+  colour = pool +0xBC. Impact flashes add a light to the per-area light list (`0x8005B96C`).
+- The C (model shot) spawner `0x8008E664` uses rigid models (kind 4) only for records 6, 7, 11, 12.
+
+Sound chat → missions chat (2026-11-19, details in `sound.md`):
+- MIS.T entry 0 **T+1160 is the mission's start music** (XA id, copied to `0x8003EA29`), not an
+  enemy AC.
+- Message codes: `X` radio voice, `V` COM voice, `B` music change, `H` / `T` text only.
+- Blocks 13–18 of a mission map = three VABs (one per COM voice type) into bank slot 2; no reader.
+
+Sound chat → data chat (2026-11-19):
+- Compiled +0x2A (head byte +0x32, player block +0x27A) is the **COM voice type**: it picks the
+  XA voice set, the message block and the slot-2 VAB, not a HUD style.
+- Leg record byte +17 = footstep sound id (VS `0x8007E1DC` / `0x8007E2DC` / `0x8007E3E0`).
+
+Sound chat → battle chat (2026-11-19):
+- `0x8008B7B8` (listed as "a sound" after a hit) spawns sparks; the hit sound is from the table
+  at `0x800930A0` via `0x8008B60C`.
+
+Weapon chat → Armored-CoreR (not this repo):
+- `docs/research/gen1-weapons.md` calls detail +0x12 bit 0x40 "stagger": it is the lock jammer.
+- The comment above the stability maths in `src/gen1/acr_gen1_compile.c` has the weight divisor
+  wrong (÷ 31.25, not ÷ 2,000); the code matches the game.

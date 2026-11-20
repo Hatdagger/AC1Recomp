@@ -23,6 +23,7 @@ Several chats map Master of Arena at the same time. To avoid double work:
 | Missions | `missions.md` | missions chat | Scenario missions apart from the shared fight code: picking and launching a mission (mission screen table `0x8019F7A8`, list builder `0x800942BC`, which routine sets the mission id), the missions engine FDAT 207, **per-mission code and maps = FDAT 0–99** (5 entries per mission, not MIS.T), MIS.T (mission screen data, briefings, mail), objectives, win/lose checks, timer, results and rewards, non-AC enemies and the enemy list, scripted sequences, mail triggers. The AC object, damage and weapons in flight stay with the battle chat | claimed 2026-11-17 |
 | Menus and screens | `menus-screens.md` | boot chat | The screens behind the hub entries: Garage (all its pages), Shop, System (the card screen: DATA SAVE / LOAD, reports, EXIT GAME), Arena and Ex Arena lists, Arena Maker; the VS menu's own screens (AC SETUP, SELECT MAP); and the menu building blocks they share (tasks, windows, text and font, cursors and pad input, message boxes, menu sounds). For each screen: how it opens, what it loads, its states and tables, how it closes. Goal: Rogue Arena's overlays and moving menus into the launcher. Not the hub ring (hub chat), the missions or mail screens (missions chat), the title / NEW-LOAD / VS START flow (launch chat, `boot-loads.md`) or the arena fight launch (`boot-loads.md` §7) | static read done 2026-11-18: building blocks (tasks, pad, windows, text, prompts, sounds), every screen's states; **ASSEMBLY in depth 2026-11-18** (§2h: controls, fit rules and fix-ups with their messages, preview numbers, loads, sortie check); **Shop in depth 2026-11-18** (§2i: lists, prices, refusals, leaving, texture backup); **the rest of the Garage in depth 2026-11-18** (§2j OPTIONAL PARTS, §2k PERFORMANCE and GRADE, §2l CHANGE COLOR: patterns, schemes, paint bytes and the palette ramp, §2m EDIT EMBLEM); **System / card screen in depth 2026-11-19** (§2n: reports and their formulas, row letters, card states, the card list and its type letters, emblem file with 7 slots, arena file, EXIT GAME); **Options in depth 2026-11-19** (§2o: the 56-byte settings record, every row, sliders, KEY ASSIGN); **VS menu in depth 2026-11-19** (§2p: map pick by VS STAGE, first-visit reset, both pads on the menu, the 2P pad swap `0x801B1CD8`, per-player key layouts and vibration, SELECT MAP, AC SETUP load / write-back); open items in its §4 |
 | Renderer | `renderer.md` | renderer chat | How a fight is drawn, in every engine: frame anatomy (scene render, draw / display buffers, ordering table, flip), camera → view (GTE matrix, projection), which routine draws what (stage, ACs, object pool, effects, HUD), the ACs' joint matrices, culling and sorting. Goal: the framework's render passes (in-between frames), widescreen and draw-distance features, native drawing later. Not what AC object fields mean in play (battle chat), the camera record's setup fields (data chat), what is loaded into VRAM (boot chat) or mission maps (missions chat) | plan written 2026-11-18 (§3 work order); steps 1–2 (frame anatomy, camera) done for VS 2026-11-18; camera-only render pass user-tested OK and merged 2026-11-18 (`99ae2cf`); step 3 (draw list) static first cut for VS 2026-11-18; step 4 (ACs: pose records, joints, model and shadow draws) read for VS 2026-11-18, test 2 (ACs glide) on branch `renderer-vs-ac-pass`, built, waiting for the user's test; step 5 (object pool draws) static first cut for VS 2026-11-18; step 7 (culling and sorting) static first cut for VS 2026-11-18 |
+| Weapons | `weapon-map.md` | weapons chat | Every weapon from part record to screen: shot families by model ID and their tables, look (sprite, tint, trailing glow, width, model), fire and hit sounds, impact flash / light / debris, impact → knockback and stun, special flags (lock jam, burn), cannon kick. Not damage maths, lock-on or missile steering (battle chat), part table bytes (data chat) or how the pool is drawn (renderer chat) | static read done 2026-11-20 (VS engine, all 73 weapons); live checks listed in its §9 |
 
 Not claimed yet (claim before starting): sound/music (the menu music is already described in the project doc
 `rogue-arena-music.md`: a SEQ on the sound chip started by `0x80064F24`; fight music is CD audio), stage data
@@ -322,3 +323,23 @@ Launch chat → data chat:
 - Stage (compiled +0x05 = player block +0x255) at VS START = byte `0x800D5800[map − 1]`,
   map = 0x8003EA81 (1–10), written by `0x800B348C`. VS START compiles P1 then P2 in
   `0x800B2F9C` after loading each player's parts / extras / options into the garage.
+
+Weapons chat → data chat (`weapon-map.md` §5, §8):
+- **NOISE CANCELER does work in fights**: it halves the WR-RS7 lock jam (player block +0x284 = stat
+  +0x34 bit 0 clear → AC +0x3A halved, `0x800796A4`). `parts-tables.md` / `stat-block.md` say no effect.
+- Detail +0x12 bit **0x40 = lock jammer** (WR-RS7), **0x80 = burn** (WG-FGI-00); both read, see §5.
+
+Weapons chat → battle chat:
+- AC **+0x3A = lock-jam timer** (attack = 200 steps, −1 a step `0x8007CF28`; while set every
+  missile lock is wiped `0x800830CC` → `0x80080084` and the gun lock is skipped `0x8008012C`), not
+  a stagger. AC **+0x3C / +0x3E = burn** (100 steps, AP −= damage ÷ 16 a step, `0x8007D038`).
+- Knockback (`0x80082430`): impact 0 → none (every energy weapon); level = impact × 256 ÷ AC +0x16C
+  → AC **+0xDA** (busy countdown, `0x8007FECC`); states **0x80** (ground, hit animations 37–40 by
+  side) / **0x81** (air, 41–44); push ≈ impact × 3.2 a step, capped 98 (rifle 7 = the measured −448).
+- On-hit pad rumble = damage × 128 ÷ 1000 + 128 (`0x800174E4`). Cannons kick the shooter back by
+  player block +0x214 × cannon table `0x80091310` +2 >> 8.
+
+Weapons chat → renderer chat:
+- The effect atlas `0x80091A28` has **297** entries (0–49 effects, 50–278 HUD, 279–296 effects).
+  Kind 1 streak colour = pool +0xC4 (per-weapon tint); kind 2 = the atlas entry's colour; kind 6
+  (trailing glows) = pool +0xBC. Impact flashes add a light to the per-area list (`0x8005B96C`).

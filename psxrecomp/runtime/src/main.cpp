@@ -72,7 +72,8 @@ extern "C" void psx_event_step_conservative_env_init(void);
 #include "sio1.h"
 #ifndef _WIN32
 #include <spawn.h>
-extern char** environ;
+#include <unistd.h>
+extern "C" char** environ;
 #endif
 #include "psx_host_rumble.h"
 #ifndef PSX_MAX_PLAYERS

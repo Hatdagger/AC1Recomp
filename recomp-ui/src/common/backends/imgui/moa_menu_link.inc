@@ -157,16 +157,16 @@ static void lv_test_stop() {
 static void lv_test_sound(int p) {
     lv_test_stop();
     const int rate = 48000;
-    const int note = rate / 6, gap = rate / 16;
+    const int tone = rate / 6, gap = rate / 16;
     const int notes = p + 1;
-    std::vector<int16_t> pcm((size_t)(notes * (note + gap)) * 2, 0);
+    std::vector<int16_t> pcm((size_t)(notes * (tone + gap)) * 2, 0);
     for (int k = 0; k < notes; ++k) {
         const double freq = k ? 1318.5 : 880.0;
-        for (int i = 0; i < note; ++i) {
-            const double env = std::min(1.0, i / 400.0) * std::max(0.0, 1.0 - (double)i / note);
+        for (int i = 0; i < tone; ++i) {
+            const double env = std::min(1.0, i / 400.0) * std::max(0.0, 1.0 - (double)i / tone);
             const int16_t v = (int16_t)(std::sin(2.0 * 3.14159265358979 * freq * i / rate) * env * 9000.0);
-            const size_t at = (size_t)(k * (note + gap) + i) * 2;
-            pcm[at] = pcm[at + 1] = v;
+            const size_t pos = (size_t)(k * (tone + gap) + i) * 2;
+            pcm[pos] = pcm[pos + 1] = v;
         }
     }
 #if defined(LNG_SDL3)
@@ -261,18 +261,18 @@ static void lv_step_card(int p, int dir) {
     std::vector<std::string> choices;
     for (const std::string& c : g_lv_cards) if (c != g_lv[p ^ 1].card) choices.push_back(c);
     choices.push_back(std::string());
-    int at = 0;
-    for (size_t i = 0; i < choices.size(); ++i) if (choices[i] == g_lv[p].card) at = (int)i;
+    int pos = 0;
+    for (size_t i = 0; i < choices.size(); ++i) if (choices[i] == g_lv[p].card) pos = (int)i;
     const int n = (int)choices.size();
-    g_lv[p].card = choices[(size_t)((at + dir + n) % n)];
+    g_lv[p].card = choices[(size_t)((pos + dir + n) % n)];
 }
 
 static void lv_step_audio(int p, int dir) {
     const int n = (int)g_lv_audio.size() + 1;
-    int at = 0;
-    for (size_t i = 0; i < g_lv_audio.size(); ++i) if (g_lv_audio[i] == g_lv[p].audio) at = (int)i + 1;
-    at = (at + dir + n) % n;
-    g_lv[p].audio = at ? g_lv_audio[(size_t)at - 1] : std::string();
+    int pos = 0;
+    for (size_t i = 0; i < g_lv_audio.size(); ++i) if (g_lv_audio[i] == g_lv[p].audio) pos = (int)i + 1;
+    pos = (pos + dir + n) % n;
+    g_lv[p].audio = pos ? g_lv_audio[(size_t)pos - 1] : std::string();
     lv_test_sound(p);
 }
 

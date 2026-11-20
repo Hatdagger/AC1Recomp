@@ -13,6 +13,7 @@
  */
 
 #include "sio.h"
+#include "sio1.h"
 #include "psx_bss.h"
 #include "memcard.h"
 #include "debug_server.h"
@@ -908,8 +909,10 @@ void sio_init(void) {
  * nearest armed countdown: shift-complete, pending ack, or the pad/card IRQ
  * delivery countdown. See PRECISE_IRQ_SLICE.md. */
 uint32_t sio_cycles_to_irq(uint32_t i_mask) {
-    if (!(i_mask & (1u << 7))) return 0xFFFFFFFFu;   /* IRQ_SIO0 masked */
-    uint32_t best = 0xFFFFFFFFu;
+    /* The serial port (SIO1) first: its cable must be sampled whatever the
+     * mask says, since a masked request is still polled from I_STAT/SIO1_STAT. */
+    uint32_t best = sio1_cycles_to_irq(i_mask);
+    if (!(i_mask & (1u << 7))) return best;          /* IRQ_SIO0 masked */
     if (sio_irq_pending && sio_irq_countdown > 0 && (uint32_t)sio_irq_countdown < best)
         best = (uint32_t)sio_irq_countdown;
 #if SIO_MODEL_CYCLE_PACED
@@ -2107,6 +2110,9 @@ static void sio_process_byte(uint8_t tx_byte) {
 }
 
 uint32_t sio_read(uint32_t addr) {
+    /* 0x1F801050..0x1F80105F: the serial port (sio1.c). memory.c routes
+     * sized accesses there directly; this covers any other caller. */
+    if (addr >= 0x1F801050u && addr <= 0x1F80105Fu) return sio1_read(addr, 4);
     sio_debug_poll_maybe();
 
     /* Advance delayed IRQ on every SIO register access.
@@ -2156,13 +2162,6 @@ uint32_t sio_read(uint32_t addr) {
     case 0x1F80104E: /* SIO_BAUD */
         return sio_baud;
 
-#if defined(PSX_SIO1_IDLE_STAT)
-    case 0x1F801054: /* SIO1_STAT: the serial (link cable) port is not
-                      * emulated. A title can pin the status word an idle,
-                      * unconnected port reports (constant, so it is
-                      * deterministic for netplay and savestates). */
-        return (uint32_t)(PSX_SIO1_IDLE_STAT);
-#endif
 
     default:
         return 0;
@@ -2183,6 +2182,7 @@ uint16_t sio_peek_ctrl(void) { return sio_ctrl; }
 uint8_t  sio_peek_rx_data(void) { return sio_rx_data; }
 
 void sio_write(uint32_t addr, uint32_t value) {
+    if (addr >= 0x1F801050u && addr <= 0x1F80105Fu) { sio1_write(addr, value, 4); return; }
     sio_debug_poll_maybe();
 
     /* Advance delayed IRQ AFTER write processing (not before).
@@ -2810,6 +2810,7 @@ static void sio_pace_walk(int cycles) {
 
 void sio_advance(uint32_t cycles) {
     if (cycles == 0) return;
+    sio1_advance(cycles);
     s_sio_advance_called++;
     if (!g_sio_timing_active) return;
     s_sio_advance_with_work++;
@@ -2817,7 +2818,7 @@ void sio_advance(uint32_t cycles) {
 }
 #else
 /* Macro=0: stubs for ABI symmetry. */
-void sio_advance(uint32_t cycles) { (void)cycles; }
+void sio_advance(uint32_t cycles) { sio1_advance(cycles); }
 uint64_t sio_get_advance_called(void)    { return 0; }
 uint64_t sio_get_advance_with_work(void) { return 0; }
 #endif /* SIO_MODEL_CYCLE_PACED */

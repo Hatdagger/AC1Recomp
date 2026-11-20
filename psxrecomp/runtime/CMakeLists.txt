@@ -519,6 +519,8 @@ if(BUILD_TESTING)
             tests/test_psx_ram_runtime_map.c
             tests/psx_ram_runtime_map_stubs.c
             src/memory.c
+            src/sio1.c
+            src/sio1_cable.c
             src/dma.c
             src/gpu_timeline.c
             src/boot_state.c
@@ -540,6 +542,8 @@ if(BUILD_TESTING)
             tests/test_isc_store.c
             tests/psx_ram_runtime_map_stubs.c
             src/memory.c
+            src/sio1.c
+            src/sio1_cable.c
             src/dma.c
             src/gpu_timeline.c
             src/boot_state.c
@@ -563,6 +567,8 @@ if(BUILD_TESTING)
             tests/test_pgxp_untracked_store.c
             tests/psx_ram_runtime_map_stubs.c
             src/memory.c
+            src/sio1.c
+            src/sio1_cable.c
             src/dma.c
             src/gpu_timeline.c
             src/boot_state.c
@@ -675,22 +681,30 @@ if(BUILD_TESTING)
     # cover both DualShock rumble and JogCon wire/state behavior.
     add_executable(sio_dualshock_rumble_test
         tests/test_sio_dualshock_rumble.c
-        src/sio.c)
+        src/sio.c
+        src/sio1.c
+        src/sio1_cable.c)
     target_include_directories(sio_dualshock_rumble_test PRIVATE include)
     add_test(NAME sio_dualshock_rumble_test COMMAND sio_dualshock_rumble_test)
     add_executable(sio_jogcon_protocol_test
         tests/test_sio_jogcon_protocol.c
-        src/sio.c)
+        src/sio.c
+        src/sio1.c
+        src/sio1_cable.c)
     target_include_directories(sio_jogcon_protocol_test PRIVATE include)
     add_test(NAME sio_jogcon_protocol_test COMMAND sio_jogcon_protocol_test)
     add_executable(sio_negcon_protocol_test
         tests/test_sio_negcon_protocol.c
-        src/sio.c)
+        src/sio.c
+        src/sio1.c
+        src/sio1_cable.c)
     target_include_directories(sio_negcon_protocol_test PRIVATE include)
     add_test(NAME sio_negcon_protocol_test COMMAND sio_negcon_protocol_test)
     add_executable(sio_negcon_protocol_multitap_test
         tests/test_sio_negcon_protocol.c
-        src/sio.c)
+        src/sio.c
+        src/sio1.c
+        src/sio1_cable.c)
     target_include_directories(sio_negcon_protocol_multitap_test PRIVATE include)
     target_compile_definitions(sio_negcon_protocol_multitap_test PRIVATE
         PSX_MAX_PLAYERS=5)
@@ -701,7 +715,9 @@ if(BUILD_TESTING)
         tests/test_psx_pad_apply.c
         src/psx_pad_apply.c
         src/psx_net_pad.c
-        src/sio.c)
+        src/sio.c
+        src/sio1.c
+        src/sio1_cable.c)
     target_include_directories(psx_pad_apply_test PRIVATE include)
     add_test(NAME psx_pad_apply_test COMMAND psx_pad_apply_test)
 
@@ -1361,6 +1377,8 @@ if(BUILD_TESTING)
     add_executable(sio_spu_istat_ownership_test
         tests/test_sio_spu_istat_ownership.c
         src/sio.c
+        src/sio1.c
+        src/sio1_cable.c
         src/memcard.c)
     target_include_directories(sio_spu_istat_ownership_test PRIVATE include src)
     file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/sio_spu_istat_scratch)
@@ -1886,11 +1904,23 @@ if(BUILD_TESTING)
                          --cc ${CMAKE_C_COMPILER})
     endif()
 
+    # Serial port (SIO1) and its link cable: two devices driven the way
+    # Master of Arena's "sio:" driver drives them, over an in-memory cable and
+    # over the shared-memory cable two sessions use.
+    add_executable(sio1_link_test
+        tests/test_sio1_link.c
+        src/sio1.c
+        src/sio1_cable.c)
+    target_include_directories(sio1_link_test PRIVATE include)
+    add_test(NAME sio1_link_test COMMAND sio1_link_test)
+
     # Full card protocol regression: read, write, address echo, per-slot state,
     # pad interruption, terminal ACK behavior and persistent FLAG semantics.
     add_executable(sio_card_protocol_test
         tests/test_sio_card_protocol.c
         src/sio.c
+        src/sio1.c
+        src/sio1_cable.c
         src/memcard.c)
     target_include_directories(sio_card_protocol_test PRIVATE include src)
     # Runs in a build-tree scratch dir, NOT in tests/: the test writes

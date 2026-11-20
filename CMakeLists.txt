@@ -121,7 +121,9 @@ if(TARGET psx-master-of-arena)
         # Netplay never writes a player's own card: the host's slot 1 is a
         # match-only file as well (the guest's cards already are).
         PSX_NET_HOST_TEMP_CARD=1
-        # The serial (link cable) port is not emulated; pin its status word.
+        # The serial (link cable) port's status with no cable plugged in
+        # (psxrecomp/runtime/src/sio1.c; a cable is plugged in by running two
+        # sessions with PSX_LINK_CABLE / PSX_LINK_SIDE, see sio1.h).
         # Bit 7: the title menu then offers "VS Mode" (the versus setup with
         # both players' garages) instead of "VS Mode (Link)". Bit 8: the link
         # engine's "partner present" poll passes at once (the netplay match

@@ -18,6 +18,7 @@
 #include "mod_memory.h"
 #include "pst_wire.h"
 #include "sio.h"
+#include "sio1.h"
 #include "spu.h"
 #include "timers.h"
 #include "lockstep.h"
@@ -1277,8 +1278,12 @@ static uint32_t mmio_read32_impl(uint32_t addr) {
     if (addr >= 0x1F801000u && addr <= 0x1F80103Cu) {
         return mem_ctrl[(addr - 0x1F801000u) >> 2];
     }
-    /* SIO: 0x1F801040..0x1F80105F */
-    if (addr >= 0x1F801040u && addr <= 0x1F80105Fu) {
+    /* Serial port (link cable): 0x1F801050..0x1F80105F */
+    if (addr >= 0x1F801050u && addr <= 0x1F80105Fu) {
+        return sio1_read(addr, 4);
+    }
+    /* SIO: 0x1F801040..0x1F80104F */
+    if (addr >= 0x1F801040u && addr <= 0x1F80104Fu) {
         return sio_read(addr);
     }
     /* RAM size: 0x1F801060 */
@@ -1340,8 +1345,13 @@ static void mmio_write32(uint32_t addr, uint32_t val) {
         mem_ctrl[(addr - 0x1F801000u) >> 2] = val;
         return;
     }
-    /* SIO: 0x1F801040..0x1F80105F */
-    if (addr >= 0x1F801040u && addr <= 0x1F80105Fu) {
+    /* Serial port (link cable): 0x1F801050..0x1F80105F */
+    if (addr >= 0x1F801050u && addr <= 0x1F80105Fu) {
+        sio1_write(addr, val, 4);
+        return;
+    }
+    /* SIO: 0x1F801040..0x1F80104F */
+    if (addr >= 0x1F801040u && addr <= 0x1F80104Fu) {
         sio_write(addr, val);
         return;
     }
@@ -1410,8 +1420,12 @@ static uint16_t mmio_read16_impl(uint32_t addr) {
     if (addr >= 0x1F801060u && addr <= 0x1F801063u) {
         return (uint16_t)(ram_size_reg >> (8u * (addr & 2u)));
     }
-    /* SIO: 0x1F801040..0x1F80105F */
-    if (addr >= 0x1F801040u && addr <= 0x1F80105Fu) {
+    /* Serial port (link cable): 0x1F801050..0x1F80105F */
+    if (addr >= 0x1F801050u && addr <= 0x1F80105Fu) {
+        return (uint16_t)sio1_read(addr, 2);
+    }
+    /* SIO: 0x1F801040..0x1F80104F */
+    if (addr >= 0x1F801040u && addr <= 0x1F80104Fu) {
         return (uint16_t)sio_read(addr);
     }
     /* Interrupts */
@@ -1473,8 +1487,13 @@ static void mmio_write16(uint32_t addr, uint16_t val) {
                      | ((uint32_t)val << shift);
         return;
     }
-    /* SIO: 0x1F801040..0x1F80105F */
-    if (addr >= 0x1F801040u && addr <= 0x1F80105Fu) {
+    /* Serial port (link cable): 0x1F801050..0x1F80105F */
+    if (addr >= 0x1F801050u && addr <= 0x1F80105Fu) {
+        sio1_write(addr, val, 2);
+        return;
+    }
+    /* SIO: 0x1F801040..0x1F80104F */
+    if (addr >= 0x1F801040u && addr <= 0x1F80104Fu) {
         sio_write(addr, val);
         return;
     }
@@ -1536,6 +1555,10 @@ static uint8_t mmio_read8_impl(uint32_t addr) {
         if (addr < 0x1F801074u && !g_psx_render_pass_active) sio_tick(0);
         uint32_t val = (addr < 0x1F801074u) ? i_stat : i_mask;
         return (uint8_t)(val >> (8 * (addr & 3)));
+    }
+    /* Serial port (link cable): 0x1F801050..0x1F80105F */
+    if (addr >= 0x1F801050u && addr <= 0x1F80105Fu) {
+        return (uint8_t)sio1_read(addr, 1);
     }
     /* SIO: 0x1F801040..0x1F80104F */
     if (addr >= 0x1F801040u && addr <= 0x1F80104Fu) {
@@ -1606,8 +1629,13 @@ static void mmio_write8(uint32_t addr, uint8_t val) {
         interrupt_write_mask_masked((uint32_t)val << shift, 0xFFu << shift, 8);
         return;
     }
-    /* SIO: 0x1F801040..0x1F80105F */
-    if (addr >= 0x1F801040u && addr <= 0x1F80105Fu) {
+    /* Serial port (link cable): 0x1F801050..0x1F80105F */
+    if (addr >= 0x1F801050u && addr <= 0x1F80105Fu) {
+        sio1_write(addr, (uint32_t)val, 1);
+        return;
+    }
+    /* SIO: 0x1F801040..0x1F80104F */
+    if (addr >= 0x1F801040u && addr <= 0x1F80104Fu) {
         sio_write(addr & ~3u, (uint32_t)val);
         return;
     }

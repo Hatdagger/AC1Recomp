@@ -346,7 +346,8 @@ bool protected_path(const std::string& rel) {
         "games/master-of-arena/settings.toml", "games/master-of-arena/game_options.toml",
         "games/master-of-arena/keybinds.ini", "games/master-of-arena/input.ini",
         /* Link Versus session 2's own settings (psx_link_session.h). */
-        "settings-link2.toml", "games/master-of-arena/settings-link2.toml" };
+        "settings-link2.toml", "games/master-of-arena/settings-link2.toml",
+        "link-seats.txt", "games/master-of-arena/link-seats.txt" };
     /* Mods/bundled holds the mods each release ships: replace and add them, so
      * a mod new in this release reaches players who update. */
     if (rel.compare(0, 13, "Mods/bundled/") == 0)

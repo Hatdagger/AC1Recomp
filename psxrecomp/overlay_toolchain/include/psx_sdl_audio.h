@@ -16,6 +16,11 @@ typedef struct PsxSdlAudioSpec {
     int allow_frequency_change;
     PsxSdlAudioCallback callback;
     void *userdata;
+    /* Output device by its SDL name (as SDL lists it); NULL or empty = the
+     * system default. A name that is not connected falls back to the default. */
+    const char *device_name;
+    /* Out (have): 1 when the named device was the one opened. */
+    int named_device_used;
 } PsxSdlAudioSpec;
 
 SDL_AudioDeviceID psx_sdl_audio_open(

@@ -34,8 +34,23 @@ extern "C" SDL_AudioDeviceID psx_sdl_audio_open(
 
     s_audio_callback = want->callback;
     s_audio_userdata = want->userdata;
+    SDL_AudioDeviceID target = SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK;
+    int named = 0;
+    if (want->device_name && want->device_name[0]) {
+        int count = 0;
+        SDL_AudioDeviceID *ids = SDL_GetAudioPlaybackDevices(&count);
+        for (int i = 0; ids && i < count; ++i) {
+            const char *name = SDL_GetAudioDeviceName(ids[i]);
+            if (name && std::strcmp(name, want->device_name) == 0) {
+                target = ids[i];
+                named = 1;
+                break;
+            }
+        }
+        SDL_free(ids);
+    }
     s_audio_stream = SDL_OpenAudioDeviceStream(
-        SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,
+        target,
         &requested,
         s_audio_callback ? psx_sdl3_audio_feed : nullptr,
         nullptr);
@@ -55,6 +70,7 @@ extern "C" SDL_AudioDeviceID psx_sdl_audio_open(
         have->format = requested.format;
         have->channels = requested.channels;
         have->samples = want->samples;
+        have->named_device_used = named;
     }
 
     return device;
@@ -121,15 +137,22 @@ extern "C" SDL_AudioDeviceID psx_sdl_audio_open(
     requested.samples = want->samples;
     requested.callback = want->callback;
     requested.userdata = want->userdata;
-    const SDL_AudioDeviceID device = SDL_OpenAudioDevice(
-        nullptr, 0, &requested, &obtained,
-        want->allow_frequency_change ? SDL_AUDIO_ALLOW_FREQUENCY_CHANGE : 0);
+    const int flags = want->allow_frequency_change ? SDL_AUDIO_ALLOW_FREQUENCY_CHANGE : 0;
+    SDL_AudioDeviceID device = 0;
+    int named = 0;
+    if (want->device_name && want->device_name[0]) {
+        device = SDL_OpenAudioDevice(want->device_name, 0, &requested, &obtained, flags);
+        named = device != 0;
+    }
+    if (!device)
+        device = SDL_OpenAudioDevice(nullptr, 0, &requested, &obtained, flags);
     if (device && have) {
         std::memset(have, 0, sizeof(*have));
         have->freq = obtained.freq;
         have->format = obtained.format;
         have->channels = obtained.channels;
         have->samples = obtained.samples;
+        have->named_device_used = named;
     }
     return device;
 }

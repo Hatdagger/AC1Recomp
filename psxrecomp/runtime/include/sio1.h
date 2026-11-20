@@ -113,6 +113,34 @@ typedef struct Sio1ShmCable Sio1ShmCable;
 Sio1ShmCable  *sio1_shm_cable_open(const char *name, int side /* 1 or 2 */);
 const Sio1Link *sio1_shm_cable_link(Sio1ShmCable *c);
 void           sio1_shm_cable_close(Sio1ShmCable *c);
+void           sio1_shm_cable_beat(Sio1ShmCable *c);   /* keep this end alive */
+int            sio1_shm_cable_partner_present(Sio1ShmCable *c);
+
+/* ── Seats ───────────────────────────────────────────────────────────────
+ * Who plays at which console, shared by the two sessions of a cable (Link
+ * Versus on one PC). Not part of the console: the game never sees it.
+ *   focus   the side whose window was clicked last (0 = none yet)
+ *   prompt  the side showing "press any button to take this screen" (0 = none)
+ *   claim   each side's controller, as an id string the frontend makes
+ *           ("keyboard", or one for a game controller); "" = none chosen */
+#define SIO1_SEAT_ID 64
+typedef struct Sio1Seats {
+    int      focus, prompt;
+    char     claim[2][SIO1_SEAT_ID];
+    uint32_t generation;               /* changes on every write */
+} Sio1Seats;
+enum { SIO1_SEAT_FOCUS = 1u, SIO1_SEAT_PROMPT = 2u,
+       SIO1_SEAT_CLAIM1 = 4u, SIO1_SEAT_CLAIM2 = 8u };
+uint32_t sio1_shm_seat_generation(Sio1ShmCable *c);
+void     sio1_shm_seat_read(Sio1ShmCable *c, Sio1Seats *out);
+void     sio1_shm_seat_write(Sio1ShmCable *c, const Sio1Seats *in, unsigned what);
+
+/* The runtime's cable (attached from the environment as sio1_cable_attached
+ * does). All are no-ops / zero without a cable. */
+uint32_t sio1_seat_generation(void);
+void     sio1_seat_read(Sio1Seats *out);
+void     sio1_seat_write(const Sio1Seats *in, unsigned what);
+int      sio1_partner_present(void);
 
 #ifdef __cplusplus
 }

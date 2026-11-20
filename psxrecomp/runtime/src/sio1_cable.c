@@ -27,7 +27,7 @@
 
 #define SIO1_CABLE_MAGIC    0x4B4E4C31u   /* "1LNK" */
 #define SIO1_CABLE_BUSY     0x59535542u   /* being set up */
-#define SIO1_CABLE_VERSION  1u
+#define SIO1_CABLE_VERSION  2u           /* 2: seats */
 #define SIO1_CABLE_RING     4096u         /* power of two */
 #define SIO1_CABLE_STALE_MS 15000u        /* well past every game timeout */
 #define SIO1_HEARTBEAT_MS   250u
@@ -45,6 +45,13 @@ typedef struct {
     uint32_t  lines[2];
     uint64_t  heartbeat_ms[2];
     CableRing ring[2];                    /* ring[i]: bytes sent by side i */
+    /* Seats (sio1.h "seats"): who plays at which console. Guarded by
+     * seat_lock; seat_gen counts every change. */
+    uint32_t  seat_lock;
+    uint32_t  seat_gen;
+    uint32_t  seat_focus;                 /* 0, or the side last clicked */
+    uint32_t  seat_prompt;                /* 0, or the side asking for a controller */
+    char      seat_claim[2][SIO1_SEAT_ID]; /* each side's controller id */
 } CableShm;
 
 struct Sio1ShmCable {
@@ -154,6 +161,69 @@ static void cable_poll(void *ctx)
         c->last_beat = now;
         st64(&c->shm->heartbeat_ms[c->me], now);
     }
+}
+
+/* ── seats ───────────────────────────────────────────────────────────────── */
+
+static void seat_lock(CableShm *s)
+{
+    for (int i = 0; !cas32(&s->seat_lock, 0u, 1u); i++)
+        if (i > 64) pause_briefly();
+}
+
+static void seat_unlock(CableShm *s)
+{
+    st32(&s->seat_gen, ld32(&s->seat_gen) + 1u);
+    st32(&s->seat_lock, 0u);
+}
+
+void sio1_shm_cable_beat(Sio1ShmCable *c)
+{
+    if (c) cable_poll(c);
+}
+
+int sio1_shm_cable_partner_present(Sio1ShmCable *c)
+{
+    return c ? cable_present(c) : 0;
+}
+
+uint32_t sio1_shm_seat_generation(Sio1ShmCable *c)
+{
+    return c ? ld32(&c->shm->seat_gen) : 0u;
+}
+
+void sio1_shm_seat_read(Sio1ShmCable *c, Sio1Seats *out)
+{
+    memset(out, 0, sizeof *out);
+    if (!c) return;
+    CableShm *s = c->shm;
+    seat_lock(s);
+    out->focus  = (int)s->seat_focus;
+    out->prompt = (int)s->seat_prompt;
+    for (int i = 0; i < 2; i++) {
+        memcpy(out->claim[i], s->seat_claim[i], SIO1_SEAT_ID);
+        out->claim[i][SIO1_SEAT_ID - 1] = '\0';
+    }
+    out->generation = s->seat_gen;
+    /* a read releases the lock without counting a change */
+    st32(&s->seat_lock, 0u);
+}
+
+void sio1_shm_seat_write(Sio1ShmCable *c, const Sio1Seats *in, unsigned what)
+{
+    if (!c) return;
+    CableShm *s = c->shm;
+    seat_lock(s);
+    if (what & SIO1_SEAT_FOCUS)  s->seat_focus  = (uint32_t)in->focus;
+    if (what & SIO1_SEAT_PROMPT) s->seat_prompt = (uint32_t)in->prompt;
+    for (int i = 0; i < 2; i++) {
+        if (!(what & (SIO1_SEAT_CLAIM1 << i))) continue;
+        memset(s->seat_claim[i], 0, SIO1_SEAT_ID);
+        size_t n = strlen(in->claim[i]);
+        if (n > SIO1_SEAT_ID - 1) n = SIO1_SEAT_ID - 1;
+        memcpy(s->seat_claim[i], in->claim[i], n);
+    }
+    seat_unlock(s);
 }
 
 /* ── open / close ────────────────────────────────────────────────────────── */

@@ -333,6 +333,31 @@ int sio1_cable_attached(void)
     return s_state == 2;
 }
 
+uint32_t sio1_seat_generation(void)
+{
+    return sio1_cable_attached() ? sio1_shm_seat_generation(s_cable) : 0u;
+}
+
+void sio1_seat_read(Sio1Seats *out)
+{
+    if (sio1_cable_attached()) {
+        sio1_shm_cable_beat(s_cable);
+        sio1_shm_seat_read(s_cable, out);
+    } else {
+        memset(out, 0, sizeof *out);
+    }
+}
+
+void sio1_seat_write(const Sio1Seats *in, unsigned what)
+{
+    if (sio1_cable_attached()) sio1_shm_seat_write(s_cable, in, what);
+}
+
+int sio1_partner_present(void)
+{
+    return sio1_cable_attached() ? sio1_shm_cable_partner_present(s_cable) : 0;
+}
+
 void sio1_shutdown(void)
 {
     if (s_state != 2) return;

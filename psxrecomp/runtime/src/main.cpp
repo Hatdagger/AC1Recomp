@@ -69,6 +69,11 @@ extern "C" void psx_event_step_conservative_env_init(void);
 #include "latency_ring.h"
 #include "sio.h"
 #include "psx_link_session.h"
+#include "sio1.h"
+#ifndef _WIN32
+#include <spawn.h>
+extern char** environ;
+#endif
 #include "psx_host_rumble.h"
 #ifndef PSX_MAX_PLAYERS
 #define PSX_MAX_PLAYERS 2
@@ -5494,6 +5499,78 @@ static int device_claimed_by_other(int self_slot, SDL_JoystickID inst) {
     return 0;
 }
 
+/* ---- Link Versus seats --------------------------------------------------------
+ * Two sessions on one PC are two consoles (psx_link_session.h). Each console has
+ * one player: its pad port 1. Which controller plays at which console is kept
+ * in the cable's seats (sio1.h), so both sessions agree:
+ *   - the keyboard always plays at session 1;
+ *   - a controller is named by an id both sessions compute alike
+ *     ("pad:<GUID>:<n>", n counting same-model pads in SDL's order);
+ *   - with no choice made, session 1 takes the first controller and session 2
+ *     the next one session 1 does not have;
+ *   - holding START+SELECT for a second asks the window clicked last which
+ *     controller it wants ("press any button to take this screen"); the
+ *     controller that answers moves there, and the two swap if need be.
+ * The choices are kept in link-seats.txt beside settings.toml. */
+/* Read each time (two getenv calls): the launcher sets the link options in
+ * this same process just before the game starts. */
+static int link_side(void) {
+    return psx_link_session_from_env();
+}
+static std::string g_link_seats_file;
+
+static void link_pad_id(int index, char* out, size_t n) {
+    char guid[40] = {0};
+    SDL_JoystickGetGUIDString(SDL_JoystickGetDeviceGUID(index), guid, (int)sizeof(guid));
+    int ordinal = 0;
+    for (int i = 0; i < index; ++i) {
+        if (!SDL_IsGameController(i)) continue;
+        char g[40] = {0};
+        SDL_JoystickGetGUIDString(SDL_JoystickGetDeviceGUID(i), g, (int)sizeof(g));
+        if (std::strcmp(g, guid) == 0) ++ordinal;
+    }
+    std::snprintf(out, n, "pad:%s:%d", guid, ordinal);
+}
+
+static int link_pad_index_for_id(const char* id) {
+    if (!id || std::strncmp(id, "pad:", 4) != 0) return -1;
+    const int count = SDL_NumJoysticks();
+    for (int i = 0; i < count; ++i) {
+        if (!SDL_IsGameController(i)) continue;
+        char mine[SIO1_SEAT_ID];
+        link_pad_id(i, mine, sizeof mine);
+        if (std::strcmp(mine, id) == 0) return i;
+    }
+    return -1;
+}
+
+/* The device index this console's player 1 should open; -1 = no controller
+ * (keyboard only, or none free). */
+static int link_seat_device_index(void) {
+    const int me = link_side() - 1;
+    Sio1Seats st;
+    sio1_seat_read(&st);
+    const char* mine = st.claim[me];
+    const char* theirs = st.claim[me ^ 1];
+    if (std::strcmp(mine, "keyboard") == 0) return -1;
+    if (mine[0]) {
+        const int i = link_pad_index_for_id(mine);
+        if (i >= 0) return i;
+    }
+    /* No choice yet (or that controller is unplugged): the default order. */
+    const int target = (me == 0 || theirs[0]) ? 0 : 1;
+    int order = 0;
+    const int count = SDL_NumJoysticks();
+    for (int i = 0; i < count; ++i) {
+        if (!SDL_IsGameController(i)) continue;
+        char id[SIO1_SEAT_ID];
+        link_pad_id(i, id, sizeof id);
+        if (theirs[0] && std::strcmp(id, theirs) == 0) continue;
+        if (order++ == target) return i;
+    }
+    return -1;
+}
+
 /* Open the SDL controller whose GUID matches p.guid. If no exact GUID match
  * exists (e.g. a different physical unit of the same model, or Steam's virtual
  * pad at an unpredictable slot), fall back to the first controller not already
@@ -5502,7 +5579,11 @@ static void open_player(PlayerInput& p, int self_slot) {
     if (p.kind != 2 || p.handle) return;
 
     int chosen = -1, fallback = -1;
-    const int joysticks = SDL_NumJoysticks();
+    /* Link Versus: this console's one player takes the controller its seat
+     * names (see link_seat_device_index); there is no player 2 here. */
+    const bool link = link_side() != 0;
+    if (link && self_slot == 0) chosen = link_seat_device_index();
+    const int joysticks = link ? 0 : SDL_NumJoysticks();
     for (int i = 0; i < joysticks; i++) {
         if (!SDL_IsGameController(i)) continue;
         SDL_JoystickGUID g = SDL_JoystickGetDeviceGUID(i);
@@ -6060,7 +6141,8 @@ static PadSources pad_sources_for(const PlayerInput& p, bool dev_here) {
      * consumes the binds through pad_buttons_for/pad_sticks_for, and applying
      * them twice is idempotent. */
     (void)dev_here;
-    s.keybinds = true;
+    /* Link Versus: the keyboard belongs to session 1 only. */
+    s.keybinds = link_side() != 2;
     s.all_pads = dev_here;
     return s;
 }
@@ -8111,6 +8193,25 @@ static void psx_relaunch_to_launcher(void) {
     /* Link session 2 was started by session 1's launcher: it closes instead
      * of opening a second launcher. */
     if (psx_link_is_second_session()) std::exit(0);
+    /* Session 1 goes back to an ordinary launcher: the link options stay
+     * behind (the launcher sets them again for the next Link Versus). */
+    for (const char* e : { "PSX_LINK_CABLE", "PSX_LINK_SIDE", "PSX_LINK_SPAWN", "PSX_AUDIO_DEVICE",
+                           "PSX_LINK_P2_CARD1", "PSX_LINK_P2_CARD2", "PSX_LINK_P2_AUDIO" }) {
+#ifdef _WIN32
+        _putenv_s(e, "");
+#else
+        unsetenv(e);
+#endif
+    }
+    if (link_side()) {
+#ifdef _WIN32
+        _putenv_s("PSX_MEMCARD1_SESSION", "");
+        _putenv_s("PSX_MEMCARD2_SESSION", "");
+#else
+        unsetenv("PSX_MEMCARD1_SESSION");
+        unsetenv("PSX_MEMCARD2_SESSION");
+#endif
+    }
 
     if (!g_saved_argv0.empty()) {
         std::error_code ec;
@@ -9401,9 +9502,203 @@ static void headless_present_image_ring_capture(void) {
 static int debug_toggles_on(void);
 static int debug_toggle_key(int key, char *out, int cap);
 #endif
+/* ---- Link Versus seats: claims, the START+SELECT prompt, window focus ---------- */
+struct LinkScanPad { SDL_GameController* h; char id[SIO1_SEAT_ID]; uint32_t last; uint64_t held_since; bool fired; };
+static std::vector<LinkScanPad> g_link_scan;
+static bool     g_link_scan_dirty = true;
+static uint32_t g_link_gen_seen = 0xFFFFFFFFu;
+static char     g_link_claim_seen[SIO1_SEAT_ID] = "\x01";   /* never a real id */
+static bool     g_link_prompting = false;
+static bool     g_link_armed = false;      /* every button let go since the prompt */
+static bool     g_link_started = false;
+
+static uint32_t link_pad_buttons(SDL_GameController* h) {
+    uint32_t m = 0;
+    for (int b = 0; b < 15; ++b)   /* face, BACK/GUIDE/START, sticks, shoulders, D-pad */
+        if (SDL_GameControllerGetButton(h, (SDL_GameControllerButton)b)) m |= 1u << b;
+    return m;
+}
+
+static void link_scan_refresh(void) {
+    for (LinkScanPad& p : g_link_scan) if (p.h) SDL_GameControllerClose(p.h);
+    g_link_scan.clear();
+    const int count = SDL_NumJoysticks();
+    for (int i = 0; i < count; ++i) {
+        if (!SDL_IsGameController(i)) continue;
+        LinkScanPad p{};
+        p.h = SDL_GameControllerOpen(i);
+        if (!p.h) continue;
+        link_pad_id(i, p.id, sizeof p.id);
+        p.last = link_pad_buttons(p.h);
+        g_link_scan.push_back(p);
+    }
+    g_link_scan_dirty = false;
+}
+
+static void link_seats_save(const Sio1Seats& st) {
+    if (g_link_seats_file.empty()) return;
+    FILE* f = std::fopen(g_link_seats_file.c_str(), "wb");
+    if (!f) return;
+    std::fprintf(f, "p1=%s\np2=%s\n", st.claim[0], st.claim[1]);
+    std::fclose(f);
+}
+
+/* Session 1, once: the choices from last time, or (none kept) ask both
+ * windows in turn, session 1 first. */
+static void link_seats_start(void) {
+    g_link_started = true;
+    if (link_side() != 1) return;
+    Sio1Seats st;
+    sio1_seat_read(&st);
+    if (st.claim[0][0] || st.claim[1][0]) return;
+    Sio1Seats w{};
+    unsigned what = 0;
+    if (FILE* f = g_link_seats_file.empty() ? nullptr : std::fopen(g_link_seats_file.c_str(), "rb")) {
+        char line[160];
+        while (std::fgets(line, sizeof line, f)) {
+            size_t n = std::strlen(line);
+            while (n && (line[n - 1] == '\n' || line[n - 1] == '\r')) line[--n] = '\0';
+            if (std::strncmp(line, "p1=", 3) == 0) { std::snprintf(w.claim[0], SIO1_SEAT_ID, "%s", line + 3); what |= SIO1_SEAT_CLAIM1; }
+            if (std::strncmp(line, "p2=", 3) == 0) { std::snprintf(w.claim[1], SIO1_SEAT_ID, "%s", line + 3); what |= SIO1_SEAT_CLAIM2; }
+        }
+        std::fclose(f);
+    }
+    if (!w.claim[0][0] && !w.claim[1][0]) { w.prompt = 1; what = SIO1_SEAT_PROMPT; }
+    sio1_seat_write(&w, what);
+}
+
+/* This console takes controller `id` ("keyboard" for session 1's keys). */
+static void link_seats_claim(const char* id) {
+    const int me = link_side() - 1;
+    Sio1Seats st;
+    sio1_seat_read(&st);
+    Sio1Seats w = st;
+    unsigned what = (me == 0 ? SIO1_SEAT_CLAIM1 : SIO1_SEAT_CLAIM2) | SIO1_SEAT_PROMPT;
+    if (std::strcmp(st.claim[me ^ 1], id) == 0) {   /* it was theirs: swap */
+        std::snprintf(w.claim[me ^ 1], SIO1_SEAT_ID, "%s", st.claim[me]);
+        what |= me == 0 ? SIO1_SEAT_CLAIM2 : SIO1_SEAT_CLAIM1;
+    }
+    std::snprintf(w.claim[me], SIO1_SEAT_ID, "%s", id);
+    /* First run: once session 1 has chosen, session 2 asks. */
+    w.prompt = (me == 0 && !w.claim[1][0]) ? 2 : 0;
+    sio1_seat_write(&w, what);
+    link_seats_save(w);
+}
+
+static void link_seats_tick(void) {
+    if (!link_side()) return;
+    if (!g_link_started) link_seats_start();
+    if (g_link_scan_dirty) link_scan_refresh();
+    const int side = link_side();
+    Sio1Seats st;
+    sio1_seat_read(&st);
+
+    /* The seats changed: reopen this console's controller if its choice did. */
+    if (st.generation != g_link_gen_seen) {
+        g_link_gen_seen = st.generation;
+        if (std::strcmp(st.claim[side - 1], g_link_claim_seen) != 0) {
+            std::snprintf(g_link_claim_seen, sizeof g_link_claim_seen, "%s", st.claim[side - 1]);
+            close_player(g_players[0]);
+            refresh_player_devices();
+            if (g_link_claim_seen[0]) {
+                char msg[160];
+                if (std::strcmp(g_link_claim_seen, "keyboard") == 0)
+                    std::snprintf(msg, sizeof msg, "PLAYER %d: KEYBOARD", side);
+                else {
+                    const char* name = g_players[0].handle ? SDL_GameControllerName(g_players[0].handle) : nullptr;
+                    std::snprintf(msg, sizeof msg, "PLAYER %d: %s", side,
+                                  name ? name : "CONTROLLER NOT CONNECTED");
+                }
+                host_osd_push(msg, 3000);
+            }
+        }
+    }
+
+    /* START+SELECT held for a second on any controller: the window clicked
+     * last asks for its controller (both sessions see the hold; both write
+     * the same thing). */
+    const uint64_t now = (uint64_t)SDL_GetTicks();
+    uint32_t any_down = 0;
+    const uint32_t start_select = (1u << SDL_CONTROLLER_BUTTON_START) | (1u << SDL_CONTROLLER_BUTTON_BACK);
+    for (LinkScanPad& p : g_link_scan) {
+        const uint32_t m = link_pad_buttons(p.h);
+        any_down |= m;
+        if ((m & start_select) == start_select) {
+            if (!p.held_since) p.held_since = now ? now : 1;
+            else if (!p.fired && now - p.held_since >= 1000) {
+                p.fired = true;
+                Sio1Seats w{};
+                w.prompt = st.focus ? st.focus : 1;
+                sio1_seat_write(&w, SIO1_SEAT_PROMPT);
+                st.prompt = w.prompt;
+            }
+        } else {
+            p.held_since = 0;
+            p.fired = false;
+        }
+        /* The answer: a button pressed (not held over from the hold). */
+        if (st.prompt == side && g_link_armed && (m & ~p.last)) {
+            g_link_armed = false;
+            link_seats_claim(p.id);
+            st.prompt = 0;
+        }
+        p.last = m;
+    }
+
+    const bool prompting = st.prompt == side;
+    if (prompting && !g_link_prompting) g_link_armed = false;
+    if (prompting && !any_down) g_link_armed = true;
+    if (prompting != g_link_prompting) {
+        if (prompting) {
+            char msg[200];
+            std::snprintf(msg, sizeof msg, side == 1
+                ? "PLAYER 1: PRESS ANY BUTTON ON YOUR CONTROLLER TO TAKE THIS SCREEN (OR ANY KEY TO PLAY ON THE KEYBOARD)"
+                : "PLAYER 2: PRESS ANY BUTTON ON YOUR CONTROLLER TO TAKE THIS SCREEN");
+            host_osd_set_status(msg);
+        } else {
+            host_osd_set_status(nullptr);
+        }
+        g_link_prompting = prompting;
+    }
+}
+
+/* Window events for Link Versus: a click or focus marks this window as the
+ * one a START+SELECT hold asks for; a double-click toggles fullscreen on the
+ * monitor the window is on. Returns true when the event was used up. */
+static bool link_window_event(const SDL_Event& ev) {
+    if (!link_side()) return false;
+    bool focus = false;
+#if defined(PSX_SDL3)
+    if (ev.type == SDL_EVENT_WINDOW_FOCUS_GAINED) focus = true;
+#else
+    if (ev.type == SDL_WINDOWEVENT && ev.window.event == SDL_WINDOWEVENT_FOCUS_GAINED) focus = true;
+#endif
+    if (ev.type == SDL_MOUSEBUTTONDOWN) focus = true;
+    if (focus) {
+        Sio1Seats w{};
+        w.focus = link_side();
+        sio1_seat_write(&w, SIO1_SEAT_FOCUS);
+    }
+    if (ev.type == SDL_MOUSEBUTTONDOWN && ev.button.button == SDL_BUTTON_LEFT && ev.button.clicks == 2) {
+        psx_toggle_fullscreen();
+        return true;
+    }
+    if (ev.type == SDL_CONTROLLERDEVICEADDED || ev.type == SDL_CONTROLLERDEVICEREMOVED)
+        g_link_scan_dirty = true;
+    /* Session 1's prompt also takes a key: the keyboard plays there. */
+    if (ev.type == SDL_KEYDOWN && g_link_prompting && g_link_armed && link_side() == 1) {
+        g_link_armed = false;
+        link_seats_claim("keyboard");
+        return true;
+    }
+    return false;
+}
+
 static bool drain_host_events() {
     SDL_Event ev;
+    link_seats_tick();
     while (SDL_PollEvent(&ev)) {
+        if (link_window_event(ev)) continue;
         if (psx_local_mouse_event(ev)) continue;
         if (sdl_close_requested(ev)) {
             if (psx_netplay_active()) {
@@ -17205,11 +17500,100 @@ static uint32_t gcs_gate_read_ram(uint32_t phys, uint32_t size) {
     return v;
 }
 
+/* Link Versus: session 1 starts session 2 with its options on the command line
+ * (--link-cable / --link-side / --link-card1 / --link-card2 / --link-audio).
+ * They become the environment every part of the runtime reads, before anything
+ * looks at it (psx_link_session.h, the card and audio setup). */
+static void link_options_to_env(int argc, char** argv) {
+    static const struct { const char* opt; const char* env; } k[] = {
+        { "--link-cable", "PSX_LINK_CABLE" },
+        { "--link-side",  "PSX_LINK_SIDE" },
+        { "--link-card1", "PSX_MEMCARD1_SESSION" },
+        { "--link-card2", "PSX_MEMCARD2_SESSION" },
+        { "--link-audio", "PSX_AUDIO_DEVICE" },
+    };
+    /* Session 2 never inherits session 1's own cards or sound. */
+    for (int i = 1; i + 1 < argc; ++i) {
+        if (std::strcmp(argv[i], "--link-side") != 0 || std::strcmp(argv[i + 1], "2") != 0) continue;
+        for (const char* env : { "PSX_MEMCARD1_SESSION", "PSX_MEMCARD2_SESSION", "PSX_AUDIO_DEVICE" }) {
+#ifdef _WIN32
+            _putenv_s(env, "");
+#else
+            unsetenv(env);
+#endif
+        }
+    }
+    for (int i = 1; i + 1 < argc; ++i) {
+        for (const auto& e : k) {
+            if (std::strcmp(argv[i], e.opt) != 0) continue;
+#ifdef _WIN32
+            _putenv_s(e.env, argv[i + 1]);
+#else
+            setenv(e.env, argv[i + 1], 1);
+#endif
+        }
+    }
+}
+
+/* Session 1 of a Link Versus pair, asked by the launcher (PSX_LINK_SPAWN=1):
+ * start session 2, the second console, on the same disc. Its cards and sound
+ * come from PSX_LINK_P2_CARD1 / _CARD2 / _AUDIO. */
+static void link_spawn_partner(const std::string& disc) {
+    const char* want = std::getenv("PSX_LINK_SPAWN");
+    if (!want || std::strcmp(want, "1") != 0 || link_side() != 1) return;
+#ifdef _WIN32
+    _putenv_s("PSX_LINK_SPAWN", "");
+#else
+    unsetenv("PSX_LINK_SPAWN");
+#endif
+    std::error_code ec;
+    const std::filesystem::path abs = std::filesystem::absolute(g_saved_argv0, ec);
+    const std::string exe = ec ? g_saved_argv0 : abs.string();
+    std::vector<std::string> args;
+    args.push_back(exe);
+    args.push_back("--no-launcher");
+    for (size_t i = 1; i < g_saved_argv.size(); ++i) {
+        const std::string& a = g_saved_argv[i];
+        if (a == "--launcher" || a == "--no-launcher") continue;
+        if ((a == "--disc" || a == "--debug-port" || a == "--window-title" ||
+             a.rfind("--link-", 0) == 0) && i + 1 < g_saved_argv.size()) { ++i; continue; }
+        args.push_back(a);
+    }
+    if (!disc.empty()) { args.push_back("--disc"); args.push_back(disc); }
+    auto add = [&](const char* opt, const char* env) {
+        const char* v = std::getenv(env);
+        if (v && v[0]) { args.push_back(opt); args.push_back(v); }
+    };
+    add("--link-cable", "PSX_LINK_CABLE");
+    args.push_back("--link-side"); args.push_back("2");
+    add("--link-card1", "PSX_LINK_P2_CARD1");
+    add("--link-card2", "PSX_LINK_P2_CARD2");
+    add("--link-audio", "PSX_LINK_P2_AUDIO");
+#ifdef _WIN32
+    /* _spawnv joins its arguments with spaces: quote each one. */
+    std::vector<std::string> quoted;
+    for (const std::string& a : args) quoted.push_back("\"" + a + "\"");
+    std::vector<const char*> av;
+    for (const std::string& a : quoted) av.push_back(a.c_str());
+    av.push_back(nullptr);
+    const intptr_t rc = _spawnv(_P_NOWAIT, exe.c_str(), av.data());
+    const bool ok = rc != -1;
+#else
+    std::vector<char*> av;
+    for (std::string& a : args) av.push_back(a.data());
+    av.push_back(nullptr);
+    pid_t pid = 0;
+    const bool ok = posix_spawn(&pid, exe.c_str(), nullptr, nullptr, av.data(), environ) == 0;
+#endif
+    host_osd_push(ok ? "LINK VERSUS: PLAYER 2 IS STARTING" : "LINK VERSUS: PLAYER 2 COULD NOT BE STARTED", 4000);
+}
+
 int main(int argc, char** argv) {
     if (argv && argv[0]) {
         g_saved_argv0 = argv[0];
         g_saved_argv.assign(argv, argv + argc);
     }
+    link_options_to_env(argc, argv);
     /* Force line-buffered output so messages appear even if killed. */
     std::setvbuf(stdout, nullptr, _IOLBF, BUFSIZ);
     std::setvbuf(stderr, nullptr, _IOLBF, BUFSIZ);
@@ -17338,7 +17722,9 @@ int main(int argc, char** argv) {
      *   <positional>        deprecated alias for --bios
      * No --game-root flag: that remains config-driven. */
     for (int i = 1; i < argc; i++) {
-        if (std::strcmp(argv[i], "--bios") == 0 && i + 1 < argc) {
+        if (std::strncmp(argv[i], "--link-", 7) == 0 && i + 1 < argc) {
+            ++i;   /* Link Versus partner options: read at the top of main() */
+        } else if (std::strcmp(argv[i], "--bios") == 0 && i + 1 < argc) {
             bios_path = consume_path_arg(i);
             bios_from_cli = true;
             bios_explicit = true;
@@ -18120,6 +18506,8 @@ int main(int argc, char** argv) {
         std::filesystem::path settings_path =
             settings_toml_path(argv[0]);
         g_active_settings_path = settings_path;
+        /* Link Versus: which controller plays at which console (both sessions). */
+        g_link_seats_file = (runtime_profile_dir(argv[0]) / "link-seats.txt").string();
 #if defined(RECOMP_LAUNCHER)
         g_lnch_settings_path = settings_path;
 #endif
@@ -20067,6 +20455,8 @@ int main(int argc, char** argv) {
     std::string bios_path_str    = resolved_bios.string();
     std::string memcard_dir_str  = memcard_dir.string();
     std::string disc_path_str = session_disc_path(resolved_disc);
+    /* Link Versus: the second console starts now, on the same disc. */
+    link_spawn_partner(resolved_disc.string());
 
 session_reboot:
     /* Rematch after lobby soft-return re-enters here with updated net_cfg. */
@@ -20446,6 +20836,13 @@ session_reboot:
         g_players[s].preferred_instance = player_instance[s]
             ? (SDL_JoystickID)(player_instance[s] - 1) : -1;
         g_players[s].deadzone = player_deadzone[s];
+        /* Link Versus: one player per console, on a controller chosen by
+         * the seats (the keyboard stays live for session 1). */
+        if (link_side()) {
+            g_players[s].kind = s == 0 ? 2 : 0;
+            g_players[s].guid[0] = '\0';
+            g_players[s].preferred_instance = -1;
+        }
     }
     /* Multitap stays OFF through BIOS boot: SCPH-1070 on port 1 breaks shell /
      * LoadExe pad bring-up for titles that expect a lone digital pad. Offline
@@ -20811,6 +21208,9 @@ session_reboot:
         want.allow_frequency_change = legacy ? 0 : 1;
         if (!legacy)
             want.callback = sdl_drc_callback;  /* pull model: bridge resamples + DRC */
+        /* A chosen output device (Link Versus: each player's own speakers,
+         * picked on the launcher's card screen). Unset = system default. */
+        want.device_name = std::getenv("PSX_AUDIO_DEVICE");
         sdl_audio_device = psx_sdl_audio_open(&want, &have);
         if (sdl_audio_device) {
             if (!legacy) {
@@ -20824,6 +21224,20 @@ session_reboot:
             g_audio_host_rate = have.freq;
             audio_trace_set_tap_rate(AUDIO_TAP_HOST, (uint32_t)have.freq);
             (void)psx_sdl_audio_resume(sdl_audio_device);
+        }
+        /* Link Versus: say which output this console's sound went to. */
+        if (const int link_side = psx_link_session_from_env()) {
+            const bool asked = want.device_name && want.device_name[0];
+            char msg[240];
+            if (!sdl_audio_device)
+                std::snprintf(msg, sizeof msg, "PLAYER %d SOUND: NONE (NO OUTPUT COULD BE OPENED)", link_side);
+            else if (asked && !have.named_device_used)
+                std::snprintf(msg, sizeof msg, "PLAYER %d SOUND: SYSTEM DEFAULT (%s IS NOT CONNECTED)",
+                              link_side, want.device_name);
+            else
+                std::snprintf(msg, sizeof msg, "PLAYER %d SOUND: %s", link_side,
+                              asked ? want.device_name : "SYSTEM DEFAULT");
+            host_osd_push(msg, 6000);
         }
     }
     /* Always register: SPU advance is guest-cycle budgeted and must not

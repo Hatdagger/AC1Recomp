@@ -152,6 +152,8 @@ if(TARGET psx-master-of-arena)
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_screen.c"
         # AI Battle cards (Raven Card Builder images) -> builds.
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_card.c"
+        # Link Versus: QUICK START cards and the simple save manager (launcher).
+        "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_link.c"
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_parts.c"
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_arena_run.c"
         "${CMAKE_CURRENT_SOURCE_DIR}/games/master-of-arena/moa_arena_run_boot.c"

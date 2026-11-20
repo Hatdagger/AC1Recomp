@@ -30,7 +30,7 @@ enum Page {
     PAGE_MAIN = 0, PAGE_SETTINGS, PAGE_MODS,
     PAGE_NET_MODE, PAGE_NET_ROOMS, PAGE_LOBBY, PAGE_AI, PAGE_EXTRAS, PAGE_UPDATES,
     PAGE_AI_CARDS, PAGE_AI_EDIT, PAGE_AI_ADV, PAGE_AI_BUILD, PAGE_AI_PICK, PAGE_AI_OPTS,
-    PAGE_AI_PAINT, PAGE_AI_EMBLEM, PAGE_RUN, PAGE_START, PAGE_START_LOAD, PAGE__COUNT
+    PAGE_AI_PAINT, PAGE_AI_EMBLEM, PAGE_RUN, PAGE_START, PAGE_START_LOAD, PAGE_LINK, PAGE__COUNT
 };
 
 struct State {
@@ -56,6 +56,7 @@ struct State {
     bool   run_page = false;           /* the Arena Run page is up */
     bool   updates_page = false;       /* the Updates page is up */
     bool   garage_page = false;        /* EXTRA GARAGE is up */
+    bool   link_page = false;          /* the Link Versus card screen is up */
     char   note[200] = {0};
     double note_until = 0.0;
 };
@@ -1048,8 +1049,9 @@ static void draw_updates_page(const Gfx& g, const Input& in) {
 
 #include "moa_menu_garage.inc"
 #include "moa_menu_start.inc"
+#include "moa_menu_link.inc"
 
-enum MainEntry { MAIN_START = 0, MAIN_RUN, MAIN_NETWORK, MAIN_GARAGE, MAIN_EXTRAS, MAIN_SETTINGS, MAIN_MODS, MAIN_UPDATES, MAIN_EXIT };
+enum MainEntry { MAIN_START = 0, MAIN_RUN, MAIN_NETWORK, MAIN_LINK, MAIN_GARAGE, MAIN_EXTRAS, MAIN_SETTINGS, MAIN_MODS, MAIN_UPDATES, MAIN_EXIT };
 
 static int enabled_mod_count(const LauncherModel* m, int* total_out) {
     int on = 0, total = 0;
@@ -1119,6 +1121,10 @@ static void draw_main(LauncherModel* m, const Gfx& g, const Input& in) {
             "Versus for two players over your network, or straight to an address "
             "a friend gives you. The host is player 1; the guest is player 2 and "
             "brings their own memory card." };
+    if (!m->in_session)
+        entries[count++] = { MAIN_LINK, "LINK VERSUS",
+            "Two game sessions on one PC, one per monitor, joined by an emulated "
+            "link cable." };
     if (!m->in_session)
         entries[count++] = { MAIN_GARAGE, "EXTRA GARAGE",
             "Build the garage AC in 3D, manage AI cards and memory card saves, and "
@@ -1218,6 +1224,7 @@ static void draw_main(LauncherModel* m, const Gfx& g, const Input& in) {
         case MAIN_GARAGE:   open_garage_page(m); break;
         case MAIN_EXTRAS:   open_extras_page(m); break;
         case MAIN_RUN:      open_run_page(m); break;
+        case MAIN_LINK:     open_link_page(m); break;
         case MAIN_UPDATES:  open_updates_page(); break;
         case MAIN_NETWORK:  launcher_model_set_view(m, LNG_VIEW_NETPLAY_MODE); break;
         case MAIN_SETTINGS: launcher_model_set_view(m, LNG_VIEW_SETTINGS); break;
@@ -1612,7 +1619,7 @@ static void draw_mods_page(LauncherModel* m, const Gfx& g, const Input& in) {
 
 /* True when this menu, not the stock page, draws the current view. */
 static bool owns_view(const LauncherModel* m) {
-    if (m->view != LNG_VIEW_DASHBOARD) { g_state.ai_page = g_state.extras_page = g_state.updates_page = g_state.garage_page = g_state.run_page = false; g_start_page = false; }
+    if (m->view != LNG_VIEW_DASHBOARD) { g_state.ai_page = g_state.extras_page = g_state.updates_page = g_state.garage_page = g_state.run_page = false; g_start_page = false; if (g_state.link_page) close_link_page(); }
     if (m->view == LNG_VIEW_DASHBOARD) {
         g_state.classic_settings = false;
         g_state.classic_mods = false;
@@ -1679,6 +1686,7 @@ static void draw(LauncherModel* m, const LauncherTheme& th) {
             else if (g_state.garage_page && !m->in_session) draw_garage_page(m, g, in);
             else if (g_state.extras_page && !m->in_session) draw_extras_page(m, g, in);
             else if (g_state.run_page && !m->in_session) draw_run_page(m, g, in);
+            else if (g_state.link_page && !m->in_session) draw_link_page(m, g, in);
             else if (g_state.updates_page && !m->in_session) draw_updates_page(g, in);
             else if (g_start_page && !m->in_session) draw_start_page(m, g, in);
             else draw_main(m, g, in);

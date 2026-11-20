@@ -39,7 +39,8 @@ USER_FILES=(launcher.ini launcher-window.ini config.ini settings.toml keybinds.i
             input.ini disc.cfg bios.cfg rom.cfg
             games/master-of-arena/settings.toml games/master-of-arena/game_options.toml
             games/master-of-arena/keybinds.ini games/master-of-arena/input.ini
-            settings-link2.toml games/master-of-arena/settings-link2.toml)
+            settings-link2.toml games/master-of-arena/settings-link2.toml
+            link-seats.txt games/master-of-arena/link-seats.txt)
 
 # The game: runnable files only. No build state, none of the other games,
 # no saves or mods (they have their own folders), no disc images.

@@ -760,6 +760,25 @@ void moa_card_to_save(const struct moa_card *c, uint8_t b[MOA_SAVE_BLOCK])
     b[386] = (uint8_t)(sum >> 16); b[387] = (uint8_t)(sum >> 24);
 }
 
+void moa_card_to_save_full(const struct moa_card *c, uint8_t b[MOA_SAVE_BLOCK])
+{
+    moa_card_to_save(c, b);
+    /* Every part owned: two of each back weapon (the same one on both sides
+     * takes two), one of everything else; owned parts leave the shop as when
+     * bought, back weapons stay on sale. Hand weapon 0 is NO WEAPON. */
+    for (int k = 0; k < 249; k++) {
+        if (k == 217) continue;
+        const int back = k >= 157 && k < 217;
+        b[SAVE_OWNED + k] = back ? 2 : 1;
+        if (!back) b[SAVE_SHOP + k] = 0;
+    }
+    save_summary(b);
+    uint32_t sum = 0;
+    for (int i = 0; i < 3240; i++) sum += 0xFFFFFFFFu - b[432 + i];
+    b[384] = (uint8_t)sum; b[385] = (uint8_t)(sum >> 8);
+    b[386] = (uint8_t)(sum >> 16); b[387] = (uint8_t)(sum >> 24);
+}
+
 static void mc_frame(uint8_t *fr, uint32_t state, uint32_t size, const char *name)
 {
     memset(fr, 0, 128);

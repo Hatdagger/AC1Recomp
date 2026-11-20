@@ -230,12 +230,49 @@ static void test_link_session_env(void)
     set_env("PSX_LINK_SIDE", NULL);
 }
 
+static void test_seats(void)
+{
+    /* Both ends see one set of seats; a write by either is seen by both. */
+    char name[32];
+    snprintf(name, sizeof name, "seat-test-%u", (unsigned)rand());
+    Sio1ShmCable *a = sio1_shm_cable_open(name, 1);
+    Sio1ShmCable *b = sio1_shm_cable_open(name, 2);
+    CHECK(a && b);
+    if (!a || !b) return;
+    Sio1Seats s;
+    sio1_shm_seat_read(b, &s);
+    CHECK(s.focus == 0 && s.prompt == 0 && !s.claim[0][0] && !s.claim[1][0]);
+    const uint32_t g0 = sio1_shm_seat_generation(a);
+    memset(&s, 0, sizeof s);
+    s.focus = 2; s.prompt = 1;
+    snprintf(s.claim[0], sizeof s.claim[0], "keyboard");
+    sio1_shm_seat_write(a, &s, SIO1_SEAT_FOCUS | SIO1_SEAT_PROMPT | SIO1_SEAT_CLAIM1);
+    CHECK(sio1_shm_seat_generation(b) != g0);
+    Sio1Seats r;
+    sio1_shm_seat_read(b, &r);
+    CHECK(r.focus == 2 && r.prompt == 1);
+    CHECK(strcmp(r.claim[0], "keyboard") == 0 && r.claim[1][0] == 0);
+    /* Only the named fields change; a long id is cut, never overrun. */
+    memset(s.claim[1], 'x', sizeof s.claim[1]);
+    s.claim[1][SIO1_SEAT_ID - 1] = 0;
+    s.focus = 1;
+    sio1_shm_seat_write(b, &s, SIO1_SEAT_CLAIM2);
+    sio1_shm_seat_read(a, &r);
+    CHECK(r.focus == 2 && strlen(r.claim[1]) == SIO1_SEAT_ID - 1);
+    const uint32_t g1 = sio1_shm_seat_generation(a);
+    sio1_shm_seat_read(a, &r);
+    CHECK(sio1_shm_seat_generation(a) == g1);   /* reading is not a change */
+    sio1_shm_cable_close(b);
+    sio1_shm_cable_close(a);
+}
+
 int main(void)
 {
     test_no_cable_port();
     test_link_session_env();
     test_mem_cable();
     test_shm_cable();
+    test_seats();
     if (g_fail) return 1;
     printf("sio1_link_test: ok\n");
     return 0;

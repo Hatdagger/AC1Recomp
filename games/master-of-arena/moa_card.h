@@ -122,6 +122,9 @@ int moa_card_from_save(const uint8_t *block, size_t bytes, struct moa_card *out)
  * game's DATA LOAD checks. Everything else in the save is left empty. */
 void moa_card_to_save(const struct moa_card *card, uint8_t block[MOA_SAVE_BLOCK]);
 
+/* The same, with every part in the game owned (Link Versus quick start). */
+void moa_card_to_save_full(const struct moa_card *card, uint8_t block[MOA_SAVE_BLOCK]);
+
 /* A name in the game's own text (18 bytes: up to 8 two-byte characters,
  * '>' after), as saves and the versus menu keep it. */
 void moa_card_put_name(uint8_t dst[18], const char *src);

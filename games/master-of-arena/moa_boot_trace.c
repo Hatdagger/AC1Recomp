@@ -6,7 +6,8 @@
  * the second). The menu route has neither problem. This trace shows what the
  * menu route runs that the direct boot doesn't.
  *
- * What: whenever Rogue Arena is on, from the boot (menu entry with the
+ * What: only when PSX_MOA_BOOT_TRACE=1 (off by default) and Rogue Arena is
+ * on, from the boot (menu entry with the
  * "go to the title" flag 0x8003EA7A still 1) until the second fight starts:
  *   <run file>.boot-<menu|direct>.csv  one row per call of the routines in
  *                                       k_bt (frame, address, name, a0-a3, ra);
@@ -130,6 +131,11 @@ static void bt_end(const char *why)
 static void bt_begin(void)
 {
     if (bt_f) bt_end("a new boot");
+    /* Opt-in since 2026-11-20: the trace writes about 9 MB (three RAM and
+     * VRAM snapshots) at the hub and the first two fights, a hitch every
+     * Rogue Arena boot. Set PSX_MOA_BOOT_TRACE=1 to record it. */
+    const char *want = getenv("PSX_MOA_BOOT_TRACE");
+    if (!want || want[0] != '1') return;
     const char *on = getenv("PSX_MOA_ARENA_RUN");
     const char *run = getenv("PSX_MOA_RUN_FILE");
     if (!on || on[0] != '1' || !run || !run[0]) return;

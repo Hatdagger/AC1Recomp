@@ -1,0 +1,151 @@
+{
+  "schema": "psxrecomp AOT methods v1",
+  "game_id": "SLUS-01030",
+  "_comment": "Draft (2026-11-20). The six code modules of FDAT.T that the boot exe loads whole at 0x80050DD8: 0x80012640 loads 206 (menu) and calls 0x800A69C8; 0x800126D8 loads 207-211 by mode and calls the entry word at module +4 (0x80050DDC). Checked against disc 1 files by the pipeline's prepare(). Not active: move to aot/overlays.json with static_output once psxrecomp-game builds. The two md5s are game.toml's known_md5 (which is disc 1 is not recorded there).",
+  "disc_set": [
+    {
+      "name": "usa-disc1-md5-a",
+      "disc_hashes": {
+        "md5": "4d5774c4baa65d6eaf281db59ee8e945"
+      }
+    },
+    {
+      "name": "usa-disc1-md5-b",
+      "disc_hashes": {
+        "md5": "809f240cfecf2b90ade1322cba61c013"
+      }
+    }
+  ],
+  "strict_bounds": true,
+  "expected_records": 6,
+  "images": [
+    {
+      "note": "FDAT 206: menu (title, hub, garage, shop, arena and VS menus)",
+      "method": "fixed_address_extents",
+      "extents": [
+        {
+          "file": "GG/COM/FDAT.T",
+          "address": "0xEF2000",
+          "size": "0x97000",
+          "load_addr": "0x80050DD8",
+          "sha256": "ee67c20c4f35ea5bae8fe8101ec599257da72d81c49155d7158d65c9ecb251e8"
+        }
+      ],
+      "allow_missing": true,
+      "entries": [
+        "0x800A69C8"
+      ]
+    },
+    {
+      "note": "FDAT 207: missions",
+      "method": "fixed_address_extents",
+      "extents": [
+        {
+          "file": "GG/COM/FDAT.T",
+          "address": "0xF89000",
+          "size": "0x48000",
+          "load_addr": "0x80050DD8",
+          "sha256": "9ebfb604c56201efdda50b1a039a7782c624752b455d26beeb1c1ec3ada0ee3d"
+        }
+      ],
+      "allow_missing": true,
+      "entry_pointer_offsets": [
+        4
+      ]
+    },
+    {
+      "note": "FDAT 208: link versus (netplay)",
+      "method": "fixed_address_extents",
+      "extents": [
+        {
+          "file": "GG/COM/FDAT.T",
+          "address": "0xFD1000",
+          "size": "0x44000",
+          "load_addr": "0x80050DD8",
+          "sha256": "20c53b98d473fa5661bf522995c2fc91a3761ac86877cf75cce4eb62ed0223f2"
+        }
+      ],
+      "allow_missing": true,
+      "entry_pointer_offsets": [
+        4
+      ]
+    },
+    {
+      "note": "FDAT 209: split-screen VS",
+      "method": "fixed_address_extents",
+      "extents": [
+        {
+          "file": "GG/COM/FDAT.T",
+          "address": "0x1015000",
+          "size": "0x43000",
+          "load_addr": "0x80050DD8",
+          "sha256": "75da8cfd54be93e2525929f906a24c45f788b8402f486501db2b5903f8b9dec6"
+        }
+      ],
+      "allow_missing": true,
+      "entry_pointer_offsets": [
+        4
+      ]
+    },
+    {
+      "note": "FDAT 210: arena (also AI Battle)",
+      "method": "fixed_address_extents",
+      "extents": [
+        {
+          "file": "GG/COM/FDAT.T",
+          "address": "0x1058000",
+          "size": "0x4A000",
+          "load_addr": "0x80050DD8",
+          "sha256": "4a197df64b2dadcf89d986ffb6f77831527a7e350fc1e6dfd3553947492767e8"
+        }
+      ],
+      "allow_missing": true,
+      "entry_pointer_offsets": [
+        4
+      ]
+    },
+    {
+      "note": "FDAT 211: VS replay",
+      "method": "fixed_address_extents",
+      "extents": [
+        {
+          "file": "GG/COM/FDAT.T",
+          "address": "0x10A2000",
+          "size": "0x43000",
+          "load_addr": "0x80050DD8",
+          "sha256": "a9d9dd756bdb8ff018c60507e183f1e689fab64430c738a377b655496cd95574"
+        }
+      ],
+      "allow_missing": true,
+      "entry_pointer_offsets": [
+        4
+      ]
+    }
+  ],
+  "checks": [
+    {
+      "method": "words",
+      "file": "SLUS_010.30",
+      "file_offset": "0x800",
+      "base": "0x80011000",
+      "values": {
+        "0x800112F0": "0x80050DD8",
+        "0x80012660": "0x24040002",
+        "0x80012664": "0x3C068001",
+        "0x80012668": "0x8CC612F0",
+        "0x8001266C": "0x0C005A96",
+        "0x80012670": "0x240500CE",
+        "0x80012674": "0x0C029A72",
+        "0x80012740": "0x240500CF",
+        "0x80012798": "0x240500D0",
+        "0x800127D4": "0x240500D1",
+        "0x80012808": "0x240500D3",
+        "0x80012838": "0x240500D2",
+        "0x8001283C": "0x0C005A96",
+        "0x80012844": "0x3C028005",
+        "0x80012848": "0x8C420DDC",
+        "0x80012850": "0x0040F809"
+      }
+    }
+  ]
+}
